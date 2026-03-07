@@ -74,23 +74,27 @@
     filtered))
 
 (defn income-statement
-  "Return income statement data as a dataset for a given CIK.
+  "Return income statement data as a dataset for a ticker or CIK.
    Options:
      :form - \"10-K\" (default) or \"10-Q\""
-  [cik & {:keys [form] :or {form "10-K"}}]
-  (let [ds (xbrl/get-facts-dataset cik)]
+  [ticker-or-cik & {:keys [form] :or {form "10-K"}}]
+  (let [ds (xbrl/get-facts-dataset (company/company-cik ticker-or-cik))]
     (build-statement ds income-statement-concepts :form form)))
 
 (defn balance-sheet
-  "Return balance sheet data as a dataset for a given CIK."
-  [cik & {:keys [form] :or {form "10-K"}}]
-  (let [ds (xbrl/get-facts-dataset cik)]
+  "Return balance sheet data as a dataset for a ticker or CIK.
+   Options:
+     :form - \"10-K\" (default) or \"10-Q\""
+  [ticker-or-cik & {:keys [form] :or {form "10-K"}}]
+  (let [ds (xbrl/get-facts-dataset (company/company-cik ticker-or-cik))]
     (build-statement ds balance-sheet-concepts :form form)))
 
 (defn cash-flow
-  "Return cash flow statement data as a dataset for a given CIK."
-  [cik & {:keys [form] :or {form "10-K"}}]
-  (let [ds (xbrl/get-facts-dataset cik)]
+  "Return cash flow statement data as a dataset for a ticker or CIK.
+   Options:
+     :form - \"10-K\" (default) or \"10-Q\""
+  [ticker-or-cik & {:keys [form] :or {form "10-K"}}]
+  (let [ds (xbrl/get-facts-dataset (company/company-cik ticker-or-cik))]
     (build-statement ds cash-flow-concepts :form form)))
 
 (defn get-financials

@@ -59,9 +59,12 @@
   (first filings))
 
 (defn get-filing
-  "Convenience: get the single latest filing of a given form type for a company."
-  [ticker-or-cik form]
-  (latest-filing (get-filings ticker-or-cik :form form)))
+  "Return the nth latest filing for a company.
+   Options:
+     :form - form type string e.g. \"10-K\" \"10-Q\" \"4\"
+     :n    - 0-indexed position in results (default 0 = latest)"
+  [ticker-or-cik & {:keys [form n] :or {n 0}}]
+  (nth (get-filings ticker-or-cik :form form) n nil))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Full-index quarterly (for bulk / historical crawling)
