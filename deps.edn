@@ -1,0 +1,34 @@
+{:paths ["src" "resources"]
+ :deps {;; HTTP client
+        hato/hato {:mvn/version "1.0.0"}
+
+        ;; JSON
+        metosin/jsonista {:mvn/version "0.3.8"}
+
+        ;; HTML parsing
+        hickory/hickory {:mvn/version "0.7.1"}
+
+        ;; Rate limiting
+        com.bucket4j/bucket4j-core {:mvn/version "8.10.1"}
+
+        ;; Filesystem
+        babashka/fs {:mvn/version "0.5.22"}
+
+        ;; Persistence
+        com.github.seancorfield/next.jdbc {:mvn/version "1.3.939"}
+        com.github.seancorfield/honeysql {:mvn/version "2.6.1126"}
+        org.xerial/sqlite-jdbc {:mvn/version "3.47.1.0"}
+
+        ;; Schema/validation
+        metosin/malli {:mvn/version "0.16.4"}
+
+        ;; Data
+        techascent/tech.ml.dataset {:mvn/version "7.030"}
+        com.github.clojure-finance/datajure {:mvn/version "2.0.0"}}
+
+ :aliases
+ {:nrepl
+  {:extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}
+   :main-opts ["-m" "nrepl.cmdline" "--port" "7888"]
+   :extra-paths ["test"]}}}
+
