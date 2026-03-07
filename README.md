@@ -13,6 +13,7 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 - **XBRL / company-facts** → `tech.ml.dataset` integration
 - **Financial statements** — income statement, balance sheet, cash flow (long-format datasets)
 - **NLP item-section extraction** — 10-K, 10-Q, 8-K items; strip numeric tables; batch mode
+- **Form 4 parsing** — insider trades: issuer, reporting owner, non-derivative and derivative transactions
 - **Dataset utilities** — panel datasets, cross-sectional snapshots, pivot helpers (Datajure-compatible)
 
 ## Requirements
@@ -64,6 +65,22 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 ;=> {:income-statement ds, :balance-sheet ds, :cash-flow ds}
 ```
 
+### Form 4 — Insider Trades
+
+```clojure
+(require '[edgar.forms.form4]          ; side-effectful: registers filing-obj "4"
+         '[edgar.filings :as filings]
+         '[edgar.filing :as filing])
+
+(-> (filings/get-filing "AAPL" "4")
+    filing/filing-obj)
+;=> {:form "4"
+;    :issuer {:cik "0000320193" :name "Apple Inc." :ticker "AAPL"}
+;    :reporting-owner {:name "..." :is-officer? true :officer-title "CEO" ...}
+;    :transactions [{:type :non-derivative :date "2024-01-15" :coding "S"
+;                    :shares 50000.0 :price 185.50 :acquired-disposed "D" ...}]}
+```
+
 ## Namespace Overview
 
 | Namespace | Role |
@@ -77,6 +94,7 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 | `edgar.financials` | income statement, balance sheet, cash flow builders |
 | `edgar.extract` | NLP item-section extraction (10-K/10-Q/8-K); batch mode |
 | `edgar.dataset` | panel datasets, cross-sectional snapshots, pivot helpers |
+| `edgar.forms.form4` | Form 4 parser — insider trades (require to activate) |
 
 ## SEC Rate Limits
 
