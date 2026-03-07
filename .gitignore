@@ -32,3 +32,6 @@ data/
 # Secrets
 .env
 secrets.edn
+
+# Internal docs
+PROJECT_SUMMARY.md
