@@ -14,7 +14,7 @@
 (defn set-identity!
   "Set the SEC Edgar identity used in all HTTP requests.
    Required by SEC fair-use policy.
-   Example: (set-identity! \"Dr. B buehlmaier@hku.hk\")"
+   Example: (set-identity! \"Your Name your@email.com\")"
   [name-and-email]
   (alter-var-root #'*identity* (constantly name-and-email)))
 

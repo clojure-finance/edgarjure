@@ -1,23 +1,8 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+All notable changes to edgarjure are documented here.
 
 ## [Unreleased]
 
 ### Added
-- `edgar.core` — HTTP client with Bucket4j rate limiter (10 req/s), SEC base URLs
-- `edgar.company` — ticker↔CIK resolution, company metadata, search; tickers cache
-- `edgar.filings` — filing index queries via SEC submissions JSON; quarterly full-index; EFTS full-text search
-- `edgar.filing` — individual filing content (HTML, text, attachments); bulk save to disk; `filing-obj` multimethod
-- `edgar.download` — bulk downloader for single company and batch (pmap-based); quarterly index download
-- `edgar.xbrl` — XBRL company-facts JSON → `tech.ml.dataset`; cross-sectional concept frames
-- `edgar.financials` — income statement, balance sheet, cash flow builders (long-format datasets)
-- `edgar.extract` — NLP item-section extraction for 10-K, 10-Q, 8-K; table stripping; batch mode
-- `edgar.dataset` — panel datasets, cross-sectional snapshots, `pivot-wide`, Datajure-compatible output
-- Unit tests for `edgar.core`, `edgar.filings`, `edgar.extract` (pure/offline, no HTTP calls)
-- `:test` alias in `deps.edn` — run with `clj -M:test`
-
-### Changed
-- License changed from MIT to EPL-2.0
+- `edgar.forms.form4` — Form 4 parser (Statement of Changes in Beneficial Ownership / insider trades). Parses issuer, reporting owner, non-derivative and derivative transactions from XML. Registers `filing-obj "4"` via the standard multimethod. No new dependencies — uses only `clojure.xml` and `clojure.string`.
