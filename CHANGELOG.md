@@ -16,3 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `edgar.financials` — income statement, balance sheet, cash flow builders (long-format datasets)
 - `edgar.extract` — NLP item-section extraction for 10-K, 10-Q, 8-K; table stripping; batch mode
 - `edgar.dataset` — panel datasets, cross-sectional snapshots, `pivot-wide`, Datajure-compatible output
+- Unit tests for `edgar.core`, `edgar.filings`, `edgar.extract` (pure/offline, no HTTP calls)
+- `:test` alias in `deps.edn` — run with `clj -M:test`
+
+### Changed
+- License changed from MIT to EPL-2.0
