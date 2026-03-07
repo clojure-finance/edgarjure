@@ -78,8 +78,6 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 | `edgar.extract` | NLP item-section extraction (10-K/10-Q/8-K); batch mode |
 | `edgar.dataset` | panel datasets, cross-sectional snapshots, pivot helpers |
 
-For full API documentation see [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md).
-
 ## SEC Rate Limits
 
 SEC enforces a `User-Agent` header on all requests and a rate limit of ~10 requests/second. `edgarjure` handles both automatically via `edgar.core/set-identity!` and a Bucket4j token-bucket rate limiter.
@@ -90,10 +88,13 @@ SEC enforces a `User-Agent` header on all requests and a rate limit of ~10 reque
 # Start REPL on port 7888
 clj -M:nrepl
 
+# Run tests
+clj -M:test
+
 # In the REPL
 (edgar.core/set-identity! "Your Name your@email.com")
 ```
 
 ## License
 
-MIT License — see [LICENSE](LICENSE).
+EPL-2.0 — see [LICENSE](LICENSE).
