@@ -188,11 +188,13 @@
 ;;; ---------------------------------------------------------------------------
 
 (defn batch-extract!
-  "Process all .html files in raw-dir, extracting item sections.
-   Writes {accession-no}.edn files to output-dir.
-   Options: same as extract-items."
-  [raw-dir output-dir filing-seq & {:keys [items remove-tables? skip-existing?]
-                                    :or {remove-tables? false skip-existing? true}}]
+  "Extract item sections from a seq of filings and write {accession-no}.edn files to output-dir.
+   Options:
+     :items          - set of item ids to extract (default all)
+     :remove-tables? - strip numeric tables (default false)
+     :skip-existing? - skip filings whose output file already exists (default true)"
+  [filing-seq output-dir & {:keys [items remove-tables? skip-existing?]
+                            :or {remove-tables? false skip-existing? true}}]
   (fs/create-dirs output-dir)
   (doall
    (for [f filing-seq

@@ -36,16 +36,17 @@
   "Fetch XBRL facts for multiple tickers/CIKs and combine into a single dataset.
    Returns a long-format dataset with an additional :ticker column.
    Options:
-     :concepts  - seq of concept strings to keep (default all)
+     :concept   - string or collection of concept strings to keep (default all)
      :form      - \"10-K\" | \"10-Q\" (default \"10-K\")"
-  [tickers & {:keys [concepts form] :or {form "10-K"}}]
-  (let [rows (for [ticker tickers
+  [tickers & {:keys [concept form] :or {form "10-K"}}]
+  (let [concept-set (when concept
+                      (if (string? concept) #{concept} (set concept)))
+        rows (for [ticker tickers
                    :let [cik (company/company-cik ticker)
-                         ds (-> (xbrl/get-facts-dataset cik)
-                                (ds/filter-column :form #(= % form)))
-                         ds (if concepts
-                              (ds/filter-column ds :concept #(contains? (set concepts) %))
-                              ds)]]
+                         ds (xbrl/get-facts-dataset cik
+                                                    :form form
+                                                    :concept concept-set
+                                                    :sort nil)]]
                (ds/add-column ds :ticker (repeat (ds/row-count ds) ticker)))]
     (apply ds/concat rows)))
 
@@ -63,7 +64,7 @@
    frame    : e.g. \"CY2023Q4I\" \"CY2023\" \"CY2022Q3\"
    Returns a dataset sorted by :val descending."
   [taxonomy concept unit frame]
-  (-> (xbrl/get-concept-frame taxonomy concept unit frame)
+  (-> (xbrl/get-concept-frame concept frame :taxonomy taxonomy :unit unit)
       (ds/sort-by-column :val {:comparator compare :reverse? true})))
 
 ;;; ---------------------------------------------------------------------------
@@ -88,11 +89,12 @@
   "Pivot a long-format facts dataset to wide format.
    Rows = :end (period), columns = :concept, values = :val.
    Deduplicates by taking the first observation per [end, concept].
-   Returns a seq of maps (one per period) — use ds/->dataset to re-materialize."
+   Returns a tech.ml.dataset."
   [ds]
   (let [deduped (ds/unique-by ds (fn [row] [(:end row) (:concept row)]))]
-    (->> (ds/rows deduped)
-         (group-by :end)
-         (map (fn [[period rows]]
-                (into {:end period}
-                      (map (fn [r] [(:concept r) (:val r)]) rows)))))))
+    (ds/->dataset
+     (->> (ds/rows deduped)
+          (group-by :end)
+          (map (fn [[period rows]]
+                 (into {:end period}
+                       (map (fn [r] [(:concept r) (:val r)]) rows))))))))

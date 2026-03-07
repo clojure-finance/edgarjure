@@ -14,7 +14,7 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 - **Financial statements** — income statement, balance sheet, cash flow (long-format datasets)
 - **NLP item-section extraction** — 10-K, 10-Q, 8-K items; strip numeric tables; batch mode
 - **Form 4 parsing** — insider trades: issuer, reporting owner, non-derivative and derivative transactions
-- **Dataset utilities** — panel datasets, cross-sectional snapshots, pivot helpers (Datajure-compatible)
+- **Dataset utilities** — panel datasets, cross-sectional snapshots, pivot (Datajure-compatible)
 
 ## Requirements
 
@@ -31,13 +31,13 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 ```
 
 ```clojure
-(require '[edgar.core     :as core]
-         '[edgar.company  :as company]
-         '[edgar.filings  :as filings]
-         '[edgar.filing   :as filing]
-         '[edgar.xbrl     :as xbrl]
+(require '[edgar.core       :as core]
+         '[edgar.company    :as company]
+         '[edgar.filings    :as filings]
+         '[edgar.filing     :as filing]
+         '[edgar.xbrl       :as xbrl]
          '[edgar.financials :as financials]
-         '[edgar.extract  :as extract])
+         '[edgar.extract    :as extract])
 
 ;; SEC requires a User-Agent header — call this once at startup
 (core/set-identity! "Your Name your@email.com")
@@ -45,8 +45,8 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 ;; Resolve ticker → CIK
 (company/ticker->cik "AAPL")   ;=> "0000320193"
 
-;; Get the latest 10-K
-(def f (filings/get-filing "AAPL" "10-K"))
+;; Get the latest 10-K (keyword args throughout)
+(def f (filings/get-filing "AAPL" :form "10-K"))
 
 ;; Read its plain text
 (filing/filing-text f)
@@ -54,15 +54,45 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 ;; Extract MD&A section (Item 7)
 (extract/extract-item f "7")
 
-;; XBRL facts as a dataset (~24k rows for AAPL)
+;; XBRL facts as a dataset (~24k rows for AAPL), sorted :end descending
 (def facts (xbrl/get-facts-dataset "0000320193"))
 
-;; Income statement
-(financials/income-statement "0000320193")
+;; Filter at fetch time
+(xbrl/get-facts-dataset "0000320193" :concept "Assets" :form "10-K")
+
+;; Income statement — accepts ticker or CIK
+(financials/income-statement "AAPL")
 
 ;; All three financial statements at once
 (financials/get-financials "AAPL")
 ;=> {:income-statement ds, :balance-sheet ds, :cash-flow ds}
+```
+
+### Unified API (`edgar.api`)
+
+For exploratory work the `edgar.api` namespace wraps everything with consistent defaults:
+
+```clojure
+(require '[edgar.api :as e])
+(e/init! "Your Name your@email.com")
+
+;; Filings
+(e/filing "AAPL" :form "10-K")        ; latest
+(e/filing "AAPL" :form "10-K" :n 2)   ; 3rd latest (0-indexed)
+
+;; XBRL facts — :concept accepts string or collection
+(e/facts "AAPL" :concept "Assets")
+(e/facts "AAPL" :concept ["Assets" "NetIncomeLoss"] :form "10-K")
+
+;; Cross-sectional frame — defaults: taxonomy=us-gaap, unit=USD
+(e/frame "Assets" "CY2023Q4I")
+(e/frame "SharesOutstanding" "CY2023Q4I" :unit "shares")
+
+;; Panel — :concept accepts string or collection
+(e/panel ["AAPL" "MSFT" "GOOG"] :concept ["Assets" "NetIncomeLoss"])
+
+;; Pivot long → wide, returns tech.ml.dataset directly
+(e/pivot some-facts-ds)
 ```
 
 ### Form 4 — Insider Trades
@@ -72,7 +102,7 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
          '[edgar.filings :as filings]
          '[edgar.filing :as filing])
 
-(-> (filings/get-filing "AAPL" "4")
+(-> (filings/get-filing "AAPL" :form "4")
     filing/filing-obj)
 ;=> {:form "4"
 ;    :issuer {:cik "0000320193" :name "Apple Inc." :ticker "AAPL"}
@@ -86,15 +116,23 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 | Namespace | Role |
 |---|---|
 | `edgar.core` | HTTP client, Bucket4j rate limiter (10 req/s), SEC base URLs |
+| `edgar.api` | unified power-user entry point (wraps all namespaces below) |
 | `edgar.company` | ticker↔CIK resolution, company metadata, search |
 | `edgar.filings` | filing index queries, quarterly full-index, EFTS full-text search |
 | `edgar.filing` | individual filing content, save to disk, `filing-obj` multimethod |
 | `edgar.download` | bulk downloader — single company + batch |
 | `edgar.xbrl` | XBRL company-facts → `tech.ml.dataset`; cross-sectional frames |
-| `edgar.financials` | income statement, balance sheet, cash flow builders |
+| `edgar.financials` | income statement, balance sheet, cash flow (ticker or CIK) |
 | `edgar.extract` | NLP item-section extraction (10-K/10-Q/8-K); batch mode |
 | `edgar.dataset` | panel datasets, cross-sectional snapshots, pivot helpers |
 | `edgar.forms.form4` | Form 4 parser — insider trades (require to activate) |
+
+## API Conventions
+
+- **Keyword args throughout** — no positional `form` or `type` args anywhere
+- **Ticker or CIK interchangeably** — all functions resolve via `company/company-cik`
+- **`:concept` accepts string or collection** — coerced to a set internally
+- **Datasets always return `tech.ml.dataset`** — never seq-of-maps
 
 ## SEC Rate Limits
 

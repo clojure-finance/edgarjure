@@ -56,29 +56,20 @@
     (ds/->dataset rows {:dataset-name (:entityName facts-map)})))
 
 (defn get-facts-dataset
-  "Fetch company facts for a CIK and return as a tech.ml.dataset."
-  [cik]
-  (-> cik
-      get-company-facts
-      facts->dataset))
-
-(defn facts-for-concept
-  "Filter a facts dataset to a single concept e.g. \"Assets\" \"Revenues\".
-   Returns a dataset sorted by :end descending."
-  [ds concept]
-  (-> ds
-      (ds/filter-column :concept #(= % concept))
-      (ds/reverse-rows)))
-
-(defn annual-facts
-  "Filter a facts dataset to annual (10-K) observations only."
-  [ds]
-  (ds/filter-column ds :form #(= % "10-K")))
-
-(defn quarterly-facts
-  "Filter a facts dataset to quarterly (10-Q) observations only."
-  [ds]
-  (ds/filter-column ds :form #(= % "10-Q")))
+  "Fetch company facts for a CIK and return as a tech.ml.dataset.
+   Options:
+     :concept - string or set of strings to filter concepts
+     :form    - \"10-K\" | \"10-Q\" to filter by form type
+     :sort    - :desc (default) or :asc — sort :end column descending/ascending
+                Pass nil to skip sorting."
+  [cik & {:keys [concept form sort] :or {sort :desc}}]
+  (let [concept-set (when concept
+                      (if (string? concept) #{concept} (set concept)))
+        ds (-> cik get-company-facts facts->dataset)]
+    (cond-> ds
+      concept-set (ds/filter-column :concept #(contains? concept-set %))
+      form (ds/filter-column :form #(= % form))
+      (= sort :desc) ds/reverse-rows)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Concept frames — cross-sectional data for a given concept + period
@@ -94,8 +85,11 @@
 (defn get-concept-frame
   "Fetch cross-sectional data for a concept across all companies for a period.
    frame examples: \"CY2023Q4I\" (instant) or \"CY2023Q4\" (duration)
+   Options:
+     :taxonomy - default \"us-gaap\"
+     :unit     - default \"USD\"
    Returns a dataset with columns: accn cik entityName loc end val."
-  [taxonomy concept unit frame]
+  [concept frame & {:keys [taxonomy unit] :or {taxonomy "us-gaap" unit "USD"}}]
   (let [resp (core/edgar-get (concept-frame-url taxonomy concept unit frame))]
     (ds/->dataset (:data resp)
                   {:column-names (mapv keyword (:columns resp))
