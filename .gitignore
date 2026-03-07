@@ -1,0 +1,34 @@
+# Clojure
+.cpcache/
+.clj-kondo/
+.lsp/
+target/
+classes/
+pom.xml
+
+# REPL / editor
+.nrepl-port
+.calva/
+.clojure-mcp/
+
+# Java
+*.class
+*.jar
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Data / output
+data/
+*.db
+*.sqlite
+
+# Secrets
+.env
+secrets.edn
