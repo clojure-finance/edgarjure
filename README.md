@@ -291,7 +291,7 @@ SEC enforces a `User-Agent` header on all requests and a rate limit of ~10 reque
 # Start REPL on port 7888
 clj -M:nrepl
 
-# Run tests
+# Run tests (48 tests, 198 assertions)
 clj -M:test
 
 # In the REPL

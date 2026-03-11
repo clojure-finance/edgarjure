@@ -109,7 +109,9 @@
    (fn [node]
      (if (and (map? node) (= :table (:tag node)))
        nil
-       node))
+       (if (map? node)
+         (update node :content (fn [c] (when c (remove nil? c))))
+         node)))
    tree))
 
 ;;; ---------------------------------------------------------------------------

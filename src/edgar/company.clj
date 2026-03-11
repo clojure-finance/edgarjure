@@ -34,7 +34,7 @@
   (let [cik-long (Long/parseLong (str cik))]
     (->> (load-tickers!)
          vals
-         (filter #(= cik-long (Long/parseLong (str (:cik_str %)))))
+         (filter #(= cik-long (long (Double/parseDouble (str (:cik_str %))))))
          first
          :ticker)))
 

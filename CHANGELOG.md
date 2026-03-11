@@ -4,6 +4,15 @@ All notable changes to edgarjure are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+**`edgar.filings/parse-filings-recent` — double `(keys recent)` call**
+- `(keys recent)` was called twice: once to build the keyword key sequence and once to get the column values. Although Clojure maps have stable iteration order within a single JVM session, calling `keys` twice is fragile. Bound the result once to `raw-ks` and reused it for both `ks` (keywordised) and `cols` (value extraction). Eliminates any theoretical risk of column/key misalignment.
+
+---
+
+## [Unreleased — previous batch]
+
 ### Added
 
 **`edgar.financials` / `edgar.api` — Point-in-time `:as-of` option**
@@ -16,12 +25,12 @@ All notable changes to edgarjure are documented here.
 - Central parser loader namespace. `(require '[edgar.forms])` loads all built-in form parsers (currently `form4` and `form13f`) in a single call, solving the discoverability problem where users would forget to require individual parser namespaces. Individual requires (`[edgar.forms.form4]`, `[edgar.forms.form13f]`) continue to work unchanged.
 
 **`edgar.tables`** (new file)
-- `extract-tables` — parses a filing's HTML with hickory, collects all `<table>` elements, extracts cell text per row (`th` + `td`), uses the first row with ≥2 non-blank cells as the header, aligns data rows to header width, deduplicates column names (suffixes `_1`, `_2`), and infers numeric types (strips `$`, `,`, `%`; converts `(123)` → `-123`). Layout tables with <2 data rows are skipped automatically. Options: `:min-rows`, `:min-cols` for post-hoc filtering; `:nth` to return a single table by index.
+- `extract-tables` — parses a filing's HTML with hickory, collects all `<table>` elements, extracts cell text per row (`th` + `td`), uses the first row with ≥2 non-blank cells as the header, aligns data rows to header width, deduplicates column names (suffixes `_1`, `_2`), and infers numeric types (strips `$`, `,`, `%`; converts `(123)` → `-123`). Layout tables with <2 data rows are skipped automatically. Options: `:min-rows`, `:min-cols` for post-hoc filtering; `:nth` to return a single table by index. `row-cells` uses direct-child filtering (not recursive subtree selection) to avoid double-counting cells in nested tables.
 
 **`edgar.financials`**
 - Concept fallback chains — each line item now has a primary GAAP concept and one or more fallback alternatives. Revenue, for example, tries `RevenueFromContractWithCustomerExcludingAssessedTax` (post-ASC-606) before falling back to `Revenues` and `SalesRevenueNet`. The first concept present in the company's facts wins.
 - Duration vs instant filtering — balance sheet uses only observations where `:frame` ends in `"I"` (instant snapshots, e.g. `CY2023Q4I`); income statement and cash flow use only duration observations. Prevents mixing point-in-time and period values.
-- Restatement deduplication — when multiple filings report the same concept+period, the observation with the latest `:filed` date wins.
+- Restatement deduplication — when multiple filings report the same concept+period, the observation with the latest `:filed` date wins. Implemented via `reduce` + `(pos? (compare (:filed %1) (:filed %2)))`.
 - `:line-item` column — all normalized datasets now carry a human-readable label alongside the raw GAAP concept name.
 - `:shape :wide` option — pass `:shape :wide` to `income-statement`, `balance-sheet`, `cash-flow`, or `get-financials` to receive a pivoted dataset with one row per period and one column per line item. Default remains `:long`.
 - Public concept vars — `income-statement-concepts`, `balance-sheet-concepts`, `cash-flow-concepts` are now public `def`s. Users can inspect and override the concept fallback chains for non-standard filers.
@@ -38,9 +47,23 @@ All notable changes to edgarjure are documented here.
 - `e/tables` — thin wrapper around `tables/extract-tables`.
 - `e/income`, `e/balance`, `e/cashflow`, `e/financials` — all now accept `:shape :wide` option.
 
-All notable changes to edgarjure are documented here.
+### Fixed
 
-## [Unreleased]
+**`edgar.forms.form13f/is-amendment?`**
+- Previously checked the XML `reportType` field for the string `"RESTATEMENT"`, which is never present (the field contains values like `"13F HOLDINGS REPORT"`). This caused `:is-amendment?` to always be `false`. Fixed by overriding the value in the `merge` call inside `parse-form13f` using `(= "13F-HR/A" (:form filing))` — the `:form` key of the filing map is the correct source.
+
+**`edgar.financials/dedup-restatements` and `dedup-point-in-time` — bad `max-key` comparator**
+- Both functions previously used `(apply max-key #(compare (:filed %) "") group)`. `max-key` expects a key function returning a comparable value, not a comparator; using `compare` against `""` returned `-1/0/1` integers, which accidentally selected the lexicographically largest `:filed` string for non-empty values but would silently return a wrong entry for `nil` or empty `:filed`. Replaced with `reduce` + `(pos? (compare (:filed %1) (:filed %2)))`, which is semantically correct in all cases.
+
+**`edgar.extract/remove-tables` — nil nodes in `:content` causing NPE**
+- `clojure.walk/postwalk` replaced `<table>` nodes with `nil`, leaving `nil` entries in parent `:content` vectors. Downstream `node-text` and `flatten-nodes` did not guard against `nil` content entries, causing NullPointerExceptions when extracting items from filings with tables near item boundaries. Fixed by additionally filtering `nil` from each node's `:content` during postwalk.
+
+**`edgar.tables/row-cells` — recursive subtree selection double-counting nested cells**
+- Previously used `(sel/select (sel/tag :th) tr-node)` and `(sel/select (sel/tag :td) tr-node)`, which select all matching elements in the entire subtree including nested tables. For filings with nested tables this double-counted cells and produced misaligned columns. Fixed by filtering direct `<th>` and `<td>` children from `:content` of each `<tr>` node.
+
+---
+
+## [Unreleased — earlier batch]
 
 ### Added
 

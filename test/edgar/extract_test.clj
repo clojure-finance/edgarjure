@@ -1,6 +1,8 @@
 (ns edgar.extract-test
   (:require [clojure.test :refer [deftest is testing]]
-            [edgar.extract :as extract]))
+            [edgar.extract :as extract]
+            [clojure.string :as str]
+            [hickory.core :as hickory]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Item map completeness
@@ -60,3 +62,98 @@
   (testing "does not match non-item text"
     (is (nil? (re-find extract/item-pattern "The following table shows")))
     (is (nil? (re-find extract/item-pattern "Total revenues 1,234")))))
+
+(def ^:private simple-html
+  "<html><body>
+     <p>Table of Contents</p>
+     <p>Item 1. Business</p>
+     <p>Some business text here.</p>
+     <p>Item 1A. Risk Factors</p>
+     <p>Risk discussion here.</p>
+     <p>Item 7. Management's Discussion and Analysis</p>
+     <p>MD&amp;A text goes here.</p>
+   </body></html>")
+
+(deftest find-item-boundaries-test
+  (let [f #'edgar.extract/find-item-boundaries
+        flat-fn #'edgar.extract/flatten-nodes
+        tree (-> simple-html hickory/parse hickory/as-hickory)
+        flat (flat-fn tree)
+        boundaries (f flat)]
+    (testing "returns a non-empty seq for a document with item headings"
+      (is (seq boundaries)))
+    (testing "each boundary has :item-id :title :node-index"
+      (is (every? #(and (contains? % :item-id)
+                        (contains? % :title)
+                        (contains? % :node-index))
+                  boundaries)))
+    (testing "boundaries are sorted by :node-index"
+      (let [idxs (map :node-index boundaries)]
+        (is (= idxs (sort idxs)))))
+    (testing "finds item 1A"
+      (is (some #(= "1A" (:item-id %)) boundaries)))
+    (testing "finds item 7"
+      (is (some #(= "7" (:item-id %)) boundaries)))))
+
+(deftest text-from-node-slice-test
+  (let [f #'edgar.extract/text-from-node-slice]
+    (testing "extracts non-blank strings from a mixed node sequence"
+      (is (= "hello world" (f ["hello" "world"]))))
+    (testing "blank strings are ignored"
+      (is (= "hello" (f ["hello" "   " ""]))))
+    (testing "empty seq returns empty string"
+      (is (= "" (f []))))))
+
+(deftest extract-items-html-test
+  (let [f #'edgar.extract/extract-items-html
+        tree (-> simple-html hickory/parse hickory/as-hickory)
+        result (f tree #{"1A" "7"})]
+    (testing "returns a map"
+      (is (map? result)))
+    (testing "keys are the requested item ids"
+      (is (= #{"1A" "7"} (set (keys result)))))
+    (testing "each value has :title :text :method"
+      (is (every? #(and (contains? % :title)
+                        (contains? % :text)
+                        (contains? % :method))
+                  (vals result))))
+    (testing "method is :html-heading-boundaries"
+      (is (every? #(= :html-heading-boundaries (:method %)) (vals result))))
+    (testing "item 1A title contains Risk"
+      (is (str/includes? (get-in result ["1A" :title]) "Risk")))
+    (testing "item 7 text contains MD&A text"
+      (is (str/includes? (get-in result ["7" :text]) "MD")))))
+
+(def ^:private plain-text-filing
+  "UNITED STATES SECURITIES AND EXCHANGE COMMISSION
+
+ITEM 1. BUSINESS
+
+The company manufactures widgets. It was founded in 1990.
+
+ITEM 1A. RISK FACTORS
+
+The main risks are competition and regulation.
+
+ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS
+
+Revenue increased 10% year over year.
+")
+
+(deftest extract-items-text-test
+  (let [f #'edgar.extract/extract-items-text
+        items-map extract/items-10k
+        result (f plain-text-filing items-map)]
+    (testing "returns a map"
+      (is (map? result)))
+    (testing "finds item 1"
+      (is (contains? result "1")))
+    (testing "item 1 method is :plain-text-regex"
+      (is (= :plain-text-regex (get-in result ["1" :method]))))
+    (testing "item 1 text contains business content"
+      (is (str/includes? (get-in result ["1" :text]) "widgets")))
+    (testing "all found items have :title :text :method"
+      (is (every? #(and (contains? % :title)
+                        (contains? % :text)
+                        (contains? % :method))
+                  (vals result))))))
