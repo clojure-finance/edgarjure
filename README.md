@@ -52,6 +52,7 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 (filing/filing-text f)
 
 ;; Extract MD&A section (Item 7)
+;; Returns {:title "..." :text "...20k chars..." :method :html-heading-boundaries}
 (extract/extract-item f "7")
 
 ;; XBRL facts as a dataset (~24k rows for AAPL), sorted :end descending

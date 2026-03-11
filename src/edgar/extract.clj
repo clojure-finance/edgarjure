@@ -3,8 +3,6 @@
             [clojure.string :as str]
             [hickory.core :as hickory]
             [hickory.select :as sel]
-            [hickory.zip :as hzip]
-            [clojure.zip :as zip]
             [babashka.fs :as fs])
   (:import [java.io File]))
 
@@ -70,72 +68,38 @@
     {}))
 
 ;;; ---------------------------------------------------------------------------
-;;; HTML item boundary detection
-;;; Strategy: look for heading elements whose text matches "Item N" patterns
+;;; Item pattern
 ;;; ---------------------------------------------------------------------------
 
 (def item-pattern
-  #"(?i)^\s*item\s+(\d{1,2}[AB]?(?:\.\d{2})?)\s*[.:\-—]?\s*(.{0,80})")
+  #"(?i)^\s*item\s+(\d{1,2}[AB]?(?:\.\d{2})?)\s*[.:\-\u2014]?\s*(.{0,80})")
 
-(defn- heading-text
-  "Extract normalised text from a hickory node."
+;;; ---------------------------------------------------------------------------
+;;; Hickory tree utilities
+;;; ---------------------------------------------------------------------------
+
+(defn- node-text
+  "Recursively extract all text strings from a hickory node."
   [node]
-  (when (map? node)
-    (let [children (:content node)]
-      (str/trim
-       (str/join " "
-                 (filter string?
-                         (tree-seq #(and (map? %) (:content %))
-                                   :content
-                                   node)))))))
+  (cond
+    (string? node) node
+    (map? node) (str/join "" (map node-text (:content node)))
+    :else ""))
 
-(defn- dedupe-by [k coll]
-  (vals (reduce (fn [acc x] (if (acc (k x)) acc (assoc acc (k x) x))) {} coll)))
-
-(defn- item-headings
-  "Extract all (position, item-id, text) tuples from hickory HTML tree."
+(defn- flatten-nodes
+  "Return a flat indexed vector of all hickory nodes in document order."
   [tree]
-  (let [headings (sel/select (sel/or (sel/tag :h1)
-                                     (sel/tag :h2)
-                                     (sel/tag :h3)
-                                     (sel/tag :h4)
-                                     (sel/tag :p)
-                                     (sel/tag :div))
-                             tree)]
-    (->> headings
-         (keep (fn [node]
-                 (let [text (heading-text node)]
-                   (when-let [m (re-find item-pattern (or text ""))]
-                     {:item-id (str/upper-case (nth m 1))
-                      :label (str/trim (nth m 2))
-                      :node node}))))
-         (dedupe-by :item-id))))
-
-;;; ---------------------------------------------------------------------------
-;;; Plain-text item boundary detection (pre-2000 filings)
-;;; ---------------------------------------------------------------------------
-
-(defn- extract-items-text
-  "Extract item sections from plain-text filing content using regex boundaries."
-  [text items-map]
-  (let [pattern (re-pattern
-                 (str "(?im)^\\s*ITEM\\s+("
-                      (str/join "|" (map #(str/replace % "." "\\.") (keys items-map)))
-                      ")\\s*[.:\\-—]?\\s*[\\w\\s]{0,80}$"))]
-    (let [matches (vec (re-seq pattern text))
-          positions (vec (map #(.start (re-matcher pattern (first %))) matches))]
-      (into {}
-            (for [i (range (count matches))]
-              (let [item-id (str/upper-case (second (nth matches i)))
-                    start (nth positions i)
-                    end (if (< (inc i) (count positions))
-                          (nth positions (inc i))
-                          (count text))]
-                [item-id (str/trim (subs text start end))]))))))
+  (let [result (transient [])]
+    (letfn [(walk [node]
+              (conj! result node)
+              (when (map? node)
+                (doseq [child (:content node)]
+                  (walk child))))]
+      (walk tree))
+    (persistent! result)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Table removal (for NLP mode)
-;;; Strips <table> elements from HTML before text extraction
 ;;; ---------------------------------------------------------------------------
 
 (defn- remove-tables
@@ -149,50 +113,155 @@
    tree))
 
 ;;; ---------------------------------------------------------------------------
+;;; HTML heading boundary detection
+;;;
+;;; Strategy:
+;;; 1. Flatten the full hickory tree into a document-order node sequence
+;;; 2. Walk each node; when its text matches item-pattern, record the
+;;;    node index as a boundary
+;;; 3. Deduplicate: keep only the *last* match per item-id (avoids
+;;;    table-of-contents entries which come before the real heading)
+;;; 4. Slice the flat-nodes vector between consecutive boundary indices
+;;;    and extract text from each slice
+;;; ---------------------------------------------------------------------------
+
+(def ^:private heading-tags #{:h1 :h2 :h3 :h4 :p :div :span :td})
+
+(defn- find-item-boundaries
+  "Returns a seq of {:item-id :title :node-index} sorted by :node-index.
+   Deduplicates by taking the *last* match per item-id to skip TOC entries."
+  [flat-nodes]
+  (let [candidates
+        (keep-indexed
+         (fn [idx node]
+           (when (and (map? node) (heading-tags (:tag node)))
+             (let [text (str/trim (node-text node))]
+               (when-let [m (re-find item-pattern text)]
+                 {:item-id (str/upper-case (nth m 1))
+                  :title (str/trim (nth m 2))
+                  :node-index idx}))))
+         flat-nodes)]
+    ;; keep last occurrence of each item-id (body heading, not TOC)
+    (->> candidates
+         (reduce (fn [acc x] (assoc acc (:item-id x) x)) {})
+         vals
+         (sort-by :node-index))))
+
+(defn- text-from-node-slice
+  "Extract plain text from a sub-sequence of flat nodes, deduplicating
+   string content that appears at multiple levels in the tree."
+  [nodes]
+  (let [strings (->> nodes
+                     (filter string?)
+                     (map str/trim)
+                     (remove str/blank?))]
+    (str/trim (str/join " " strings))))
+
+(defn- extract-items-html
+  "Main HTML extraction path. Returns a map of item-id ->
+   {:title \"...\" :text \"...\" :method :html-heading-boundaries}."
+  [tree target-ids]
+  (let [flat (flatten-nodes tree)
+        boundaries (find-item-boundaries flat)
+        relevant (filter #(target-ids (:item-id %)) boundaries)]
+    (into {}
+          (for [[{:keys [item-id title node-index]}
+                 next-boundary]
+                (partition-all 2 1 relevant)]
+            (let [end-idx (if next-boundary
+                            (:node-index next-boundary)
+                            (count flat))
+                  body-nodes (subvec (vec flat) (inc node-index) end-idx)
+                  text (text-from-node-slice body-nodes)]
+              [item-id {:title title
+                        :text text
+                        :method :html-heading-boundaries}])))))
+
+;;; ---------------------------------------------------------------------------
+;;; Plain-text item boundary detection (pre-2000 filings)
+;;; ---------------------------------------------------------------------------
+
+(defn- extract-items-text
+  "Extract item sections from plain-text filing content using regex boundaries.
+   Returns a map of item-id ->
+   {:title \"\" :text \"...\" :method :plain-text-regex}."
+  [text items-map]
+  (let [ids-pattern (str/join "|"
+                              (map #(str/replace % "." "\\.") (keys items-map)))
+        pattern (re-pattern
+                 (str "(?im)^\\s*ITEM\\s+(" ids-pattern
+                      ")\\s*[.:\\-\u2014]?\\s*([\\w\\s]{0,80})$"))
+        matcher (re-matcher pattern text)
+        matches (loop [acc []]
+                  (if (.find matcher)
+                    (recur (conj acc {:item-id (str/upper-case (.group matcher 1))
+                                      :title (str/trim (.group matcher 2))
+                                      :start (.start matcher)}))
+                    acc))]
+    (into {}
+          (for [[{:keys [item-id title start]} next-m]
+                (partition-all 2 1 matches)]
+            (let [end (if next-m (:start next-m) (count text))
+                  body (str/trim (subs text start end))]
+              [item-id {:title title
+                        :text body
+                        :method :plain-text-regex}])))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Main extraction API
 ;;; ---------------------------------------------------------------------------
 
 (defn extract-items
-  "Extract item sections from a filing as a map of item-id → text.
-   filing     : filing metadata map (from edgar.filings/get-filings)
+  "Extract item sections from a filing.
+   Returns a map of item-id -> {:title \"...\" :text \"...\" :method ...}.
+
+   filing  : filing metadata map (from edgar.filings/get-filings)
    Options:
-     :items         - set of item ids to extract e.g. #{\"7\" \"1A\"} (default all)
-     :remove-tables? - strip numerical tables before extraction (default false, set
-                       true for NLP/text-only workflows)
-   Returns a map like:
-     {\"1A\" \"Risk factors text...\"
-      \"7\"  \"MD&A text...\"}"
+     :items          - set of item ids to extract e.g. #{\"7\" \"1A\"} (default: all)
+     :remove-tables? - strip <table> elements before text extraction (default: false)
+
+   Example:
+     (extract-items f :items #{\"7\" \"1A\"} :remove-tables? true)
+     ;=> {\"7\"  {:title \"Management's Discussion...\" :text \"...20k chars...\"
+     ;            :method :html-heading-boundaries}
+     ;    \"1A\" {:title \"Risk Factors\" :text \"...\" :method :html-heading-boundaries}}"
   [filing & {:keys [items remove-tables?] :or {remove-tables? false}}]
-  (let [html (filing/filing-html filing)
-        form (:form filing)
-        items-map (items-for-form form)]
-    (if (str/blank? html)
-      {}
+  (let [form (:form filing)
+        items-map (items-for-form form)
+        target-ids (if items
+                     (set (map str/upper-case items))
+                     (set (keys items-map)))
+        html (filing/filing-html filing)]
+    (cond
+      ;; modern HTML path
+      (and html (not (str/blank? html)))
       (let [tree (-> html hickory/parse hickory/as-hickory)
-            clean-tree (if remove-tables? (remove-tables tree) tree)
-            headings (item-headings clean-tree)
-            target-ids (if items (set (map str/upper-case items)) (set (keys items-map)))]
-        (into {}
-              (for [{:keys [item-id]} (filter #(target-ids (:item-id %)) headings)]
-                [item-id (heading-text (some #(when (= item-id (:item-id %)) (:node %))
-                                             headings))]))))))
+            clean-tree (if remove-tables? (remove-tables tree) tree)]
+        (extract-items-html clean-tree target-ids))
+
+      ;; plain-text fallback (pre-2000 filings)
+      :else
+      (let [text (filing/filing-text filing)]
+        (if (str/blank? text)
+          {}
+          (extract-items-text text items-map))))))
 
 (defn extract-item
-  "Extract a single item section from a filing. Returns text string or nil."
+  "Extract a single item section from a filing.
+   Returns {:title \"...\" :text \"...\" :method ...} or nil."
   [filing item-id]
   (get (extract-items filing :items #{item-id}) (str/upper-case item-id)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Batch extraction (edgar-crawler analog)
-;;; Process a directory of saved HTML filings → write .edn output files
 ;;; ---------------------------------------------------------------------------
 
 (defn batch-extract!
-  "Extract item sections from a seq of filings and write {accession-no}.edn files to output-dir.
+  "Extract item sections from a seq of filings and write {accession-no}.edn to output-dir.
    Options:
-     :items          - set of item ids to extract (default all)
-     :remove-tables? - strip numeric tables (default false)
-     :skip-existing? - skip filings whose output file already exists (default true)"
+     :items          - set of item ids to extract (default: all)
+     :remove-tables? - strip numeric tables (default: false)
+     :skip-existing? - skip if output file already exists (default: true)"
   [filing-seq output-dir & {:keys [items remove-tables? skip-existing?]
                             :or {remove-tables? false skip-existing? true}}]
   (fs/create-dirs output-dir)
@@ -202,9 +271,7 @@
                out-file (fs/path output-dir (str acc ".edn"))]
          :when (or (not skip-existing?) (not (fs/exists? out-file)))]
      (try
-       (let [extracted (extract-items f
-                                      :items items
-                                      :remove-tables? remove-tables?)]
+       (let [extracted (extract-items f :items items :remove-tables? remove-tables?)]
          (spit (str out-file) (pr-str extracted))
          {:accession-no acc :status :ok :items (keys extracted)})
        (catch Exception e

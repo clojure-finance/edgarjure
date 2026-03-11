@@ -27,6 +27,11 @@ All notable changes to edgarjure are documented here.
 
 **`edgar.extract`**
 - `batch-extract!` arg order changed to `[filing-seq output-dir & opts]`. The unused `raw-dir` first argument has been removed. Old call `(batch-extract! raw-dir output-dir filing-seq ...)` must be updated to `(batch-extract! filing-seq output-dir ...)`.
+- `extract-items` now returns section bodies, not heading text. Return shape changed from `{item-id "text"}` to `{item-id {:title "..." :text "..." :method ...}}`. The `:method` key is `:html-heading-boundaries` (modern HTML) or `:plain-text-regex` (pre-2000 plain-text fallback). **Breaking change:** callers that previously did `(get result "7")` and expected a string must now do `(get-in result ["7" :text])`.
+- `extract-item` return shape changed accordingly: returns `{:title "..." :text "..." :method ...}` or `nil` (previously a string or `nil`).
+- Detection algorithm rewritten: flattens the full hickory tree into a document-order node sequence, identifies item heading boundaries by matching `item-pattern`, deduplicates by keeping the last match per item-id (body heading wins over TOC entry), then extracts text from the node slice between consecutive boundaries. Fixes the bug where only heading text was returned instead of section content.
+- Plain-text fallback (`extract-items-text`) is now wired into the main `extract-items` dispatch path. Previously defined but never called.
+- Removed unused `hickory.zip` and `clojure.zip` requires.
 
 **`edgar.api`**
 - `e/facts` simplified — delegates filtering to `xbrl/get-facts-dataset` directly.
