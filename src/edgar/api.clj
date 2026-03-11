@@ -303,31 +303,46 @@
 (defn income
   "Return income statement as a long-format tech.ml.dataset.
    Options:
-     :form - \"10-K\" (default) or \"10-Q\""
-  [ticker-or-cik & {:keys [form] :or {form "10-K"}}]
-  (financials/income-statement ticker-or-cik :form form))
+     :form  - \"10-K\" (default) or \"10-Q\"
+     :shape - :long (default) or :wide
+     :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
+               When set, only filings where :filed <= as-of-date are used
+               (point-in-time / look-ahead-safe mode)."
+  [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
+  (financials/income-statement ticker-or-cik :form form :shape shape :as-of as-of))
 
 (defn balance
   "Return balance sheet as a long-format tech.ml.dataset.
    Options:
-     :form - \"10-K\" (default) or \"10-Q\""
-  [ticker-or-cik & {:keys [form] :or {form "10-K"}}]
-  (financials/balance-sheet ticker-or-cik :form form))
+     :form  - \"10-K\" (default) or \"10-Q\"
+     :shape - :long (default) or :wide
+     :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
+               When set, only filings where :filed <= as-of-date are used
+               (point-in-time / look-ahead-safe mode)."
+  [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
+  (financials/balance-sheet ticker-or-cik :form form :shape shape :as-of as-of))
 
 (defn cashflow
   "Return cash flow statement as a long-format tech.ml.dataset.
    Options:
-     :form - \"10-K\" (default) or \"10-Q\""
-  [ticker-or-cik & {:keys [form] :or {form "10-K"}}]
-  (financials/cash-flow ticker-or-cik :form form))
+     :form  - \"10-K\" (default) or \"10-Q\"
+     :shape - :long (default) or :wide
+     :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
+               When set, only filings where :filed <= as-of-date are used
+               (point-in-time / look-ahead-safe mode)."
+  [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
+  (financials/cash-flow ticker-or-cik :form form :shape shape :as-of as-of))
 
 (defn financials
   "Return all three financial statements for a company.
    Returns {:income ds :balance ds :cashflow ds}
    Options:
-     :form - \"10-K\" (default) or \"10-Q\""
-  [ticker-or-cik & {:keys [form] :or {form "10-K"}}]
-  (let [stmts (financials/get-financials ticker-or-cik :form form)]
+     :form  - \"10-K\" (default) or \"10-Q\"
+     :shape - :long (default) or :wide
+     :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
+               All three statements use point-in-time deduplication."
+  [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
+  (let [stmts (financials/get-financials ticker-or-cik :form form :shape shape :as-of as-of)]
     {:income (:income-statement stmts)
      :balance (:balance-sheet stmts)
      :cashflow (:cash-flow stmts)}))
