@@ -170,10 +170,14 @@
         primary (->> (:files idx)
                      (filter #(= "1" (str (:sequence %))))
                      first)]
-    (assoc stub
-           :form (or (get-in idx [:formType]) (get-in idx [:form-type]))
-           :primaryDocument (:name primary)
-           :filingDate (get-in idx [:filingDate]))))
+    (let [form-type (or (:formType idx)
+                        (throw (ex-info "Could not determine form type from filing index"
+                                        {:type ::not-found
+                                         :accession-number accession-number})))]
+      (assoc stub
+             :form form-type
+             :primaryDocument (:name primary)
+             :filingDate (:filingDate idx)))))
 
 (defmulti filing-obj
   "Parse a filing into a structured form-specific map.

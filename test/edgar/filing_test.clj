@@ -44,3 +44,20 @@
     (let [digits "000032019323000106"
           dashed (str (subs digits 0 10) "-" (subs digits 10 12) "-" (subs digits 12))]
       (is (= "0000320193-23-000106" dashed)))))
+
+(deftest filing-by-accession-form-type-test
+  (testing "throws ex-info with ::not-found when :formType is absent from index"
+    (let [acc "0000320193-23-000106"
+          bad-idx {}
+          ex (try
+               (or (:formType bad-idx)
+                   (throw (ex-info "Could not determine form type from filing index"
+                                   {:type :edgar.filing/not-found
+                                    :accession-number acc})))
+               (catch clojure.lang.ExceptionInfo e e))]
+      (is (instance? clojure.lang.ExceptionInfo ex))
+      (is (= :edgar.filing/not-found (:type (ex-data ex))))
+      (is (= acc (:accession-number (ex-data ex))))))
+  (testing ":formType key is returned when present"
+    (let [idx {:formType "10-K"}]
+      (is (= "10-K" (:formType idx))))))

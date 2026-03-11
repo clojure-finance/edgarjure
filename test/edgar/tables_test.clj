@@ -190,6 +190,24 @@
     (testing "layout table returns nil"
       (is (nil? (f table-node 0))))))
 
+(deftest extract-table-nested-no-double-count-test
+  (let [f #'edgar.tables/extract-table
+        ;; Outer table has 2 data rows; each td in row 2 contains a nested table.
+        ;; Without the direct-rows fix, sel/select would also collect the inner <tr>
+        ;; nodes, inflating the row count.
+        html "<table>
+          <tr><th>Company</th><th>Revenue</th></tr>
+          <tr><td>AAPL</td><td><table><tr><td>inner</td></tr></table>394328</td></tr>
+          <tr><td>MSFT</td><td>211915</td></tr>
+        </table>"
+        tree (hickory/as-hickory (hickory/parse html))
+        table-node (first (sel/select (sel/tag :table) tree))
+        result (f table-node 0)]
+    (testing "returns a dataset (not nil)"
+      (is (some? result)))
+    (testing "nested-table rows are not double-counted — exactly 2 data rows"
+      (is (= 2 (ds/row-count result))))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Fixture HTML file — integration test for extract-tables via mock filing
 ;;; ---------------------------------------------------------------------------

@@ -54,11 +54,25 @@
 ;;; ---------------------------------------------------------------------------
 
 (deftest item-pattern-test
-  (testing "matches standard item headings"
+  (testing "matches standard 10-K item headings"
     (is (re-find extract/item-pattern "Item 1. Business"))
     (is (re-find extract/item-pattern "ITEM 1A. Risk Factors"))
     (is (re-find extract/item-pattern "Item 7  Management's Discussion"))
     (is (re-find extract/item-pattern "item 2.02 Results of Operations")))
+  (testing "matches 10-Q Roman-numeral-prefixed item headings"
+    (is (re-find extract/item-pattern "Item I-1. Financial Statements"))
+    (is (re-find extract/item-pattern "ITEM II-1A. Risk Factors"))
+    (is (re-find extract/item-pattern "Item I-2. Management's Discussion"))
+    (is (re-find extract/item-pattern "Item II-6. Exhibits")))
+  (testing "10-Q pattern captures correct item-id group"
+    (is (= "I-1" (-> (re-find extract/item-pattern "Item I-1. Financial Statements") second
+                     str/trim
+                     (str/replace #"\s*[-\s]\s*(?=\d)" "-")
+                     str/upper-case)))
+    (is (= "II-1A" (-> (re-find extract/item-pattern "Item II-1A. Risk Factors") second
+                       str/trim
+                       (str/replace #"\s*[-\s]\s*(?=\d)" "-")
+                       str/upper-case))))
   (testing "does not match non-item text"
     (is (nil? (re-find extract/item-pattern "The following table shows")))
     (is (nil? (re-find extract/item-pattern "Total revenues 1,234")))))
@@ -98,6 +112,34 @@
       (is (some #(= "1A" (:item-id %)) boundaries)))
     (testing "finds item 7"
       (is (some #(= "7" (:item-id %)) boundaries)))))
+
+(deftest find-item-boundaries-10q-test
+  (let [f #'edgar.extract/find-item-boundaries
+        flat-fn #'edgar.extract/flatten-nodes
+        html "<html><body>
+               <h2>Item I-1. Financial Statements</h2>
+               <p>Balance sheet data here.</p>
+               <h2>Item I-2. Management's Discussion and Analysis</h2>
+               <p>Revenue increased this quarter.</p>
+               <h2>ITEM II-1A. Risk Factors</h2>
+               <p>Market risk disclosures.</p>
+               <h2>Item II-6. Exhibits</h2>
+               <p>Exhibit list.</p>
+              </body></html>"
+        tree (-> html hickory/parse hickory/as-hickory)
+        flat (flat-fn tree)
+        boundaries (f flat)
+        ids (set (map :item-id boundaries))]
+    (testing "finds all four 10-Q items with normalized ids"
+      (is (= #{"I-1" "I-2" "II-1A" "II-6"} ids)))
+    (testing "ids match items-10q keys exactly"
+      (is (every? #(contains? @(resolve 'edgar.extract/items-10q) %) ids)))
+    (testing "boundaries sorted by node-index"
+      (is (= (map :node-index boundaries) (sort (map :node-index boundaries)))))
+    (testing "titles extracted correctly"
+      (let [bm (into {} (map (juxt :item-id :title) boundaries))]
+        (is (str/includes? (get bm "I-1") "Financial"))
+        (is (str/includes? (get bm "II-1A") "Risk"))))))
 
 (deftest text-from-node-slice-test
   (let [f #'edgar.extract/text-from-node-slice]
@@ -224,6 +266,37 @@
         (is (str/includes? text "Revenue"))))
     (testing "method is :html-heading-boundaries"
       (is (every? #(= :html-heading-boundaries (:method %)) (vals result))))))
+
+(def mock-10q-html
+  "<html><body>
+   <h2>Item I-1. Financial Statements</h2>
+   <p>Quarterly balance sheet and income statement.</p>
+   <h2>Item I-2. Management's Discussion and Analysis</h2>
+   <p>Revenue increased 12% year-over-year.</p>
+   <h2>ITEM II-1A. Risk Factors</h2>
+   <p>We face significant market risks.</p>
+   <h2>Item II-6. Exhibits</h2>
+   <p>See exhibit index.</p>
+  </body></html>")
+
+(deftest extract-items-10q-normalized-ids-test
+  (testing "explicit correct 10-Q ids"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] mock-10q-html)]
+                   (extract/extract-items {:form "10-Q"} :items #{"I-1" "II-1A"}))]
+      (is (= #{"I-1" "II-1A"} (set (keys result))))
+      (is (str/includes? (get-in result ["I-1" :text]) "balance sheet"))
+      (is (str/includes? (get-in result ["II-1A" :text]) "risk"))))
+  (testing "lower-case user-supplied 10-Q ids are normalized"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] mock-10q-html)]
+                   (extract/extract-items {:form "10-Q"} :items #{"i-1" "ii-1a"}))]
+      (is (= #{"I-1" "II-1A"} (set (keys result))))))
+  (testing "no :items extracts all 10-Q sections"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] mock-10q-html)]
+                   (extract/extract-items {:form "10-Q"}))]
+      (is (contains? result "I-1"))
+      (is (contains? result "I-2"))
+      (is (contains? result "II-1A"))
+      (is (contains? result "II-6")))))
 
 (deftest extract-items-remove-tables-mock-test
   (let [result (with-redefs [edgar.filing/filing-html (fn [_] mock-filing-html)]

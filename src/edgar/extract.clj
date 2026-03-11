@@ -72,7 +72,7 @@
 ;;; ---------------------------------------------------------------------------
 
 (def item-pattern
-  #"(?i)^\s*item\s+(\d{1,2}[AB]?(?:\.\d{2})?)\s*[.:\-\u2014]?\s*(.{0,80})")
+  #"(?i)^\s*item\s+((?:[IVXivx]+\s*[-\s]\s*)?\d{1,2}[AB]?(?:\.\d{2})?)\s*[.:\-\u2014]?\s*(.{0,80})")
 
 ;;; ---------------------------------------------------------------------------
 ;;; Hickory tree utilities
@@ -139,7 +139,10 @@
            (when (and (map? node) (heading-tags (:tag node)))
              (let [text (str/trim (node-text node))]
                (when-let [m (re-find item-pattern text)]
-                 {:item-id (str/upper-case (nth m 1))
+                 {:item-id (-> (nth m 1)
+                               str/trim
+                               (str/replace #"\s*[-\s]\s*(?=\d)" "-")
+                               str/upper-case)
                   :title (str/trim (nth m 2))
                   :node-index idx}))))
          flat-nodes)]
@@ -231,7 +234,10 @@
   (let [form (:form filing)
         items-map (items-for-form form)
         target-ids (if items
-                     (set (map str/upper-case items))
+                     (set (map #(-> % str/trim
+                                    (str/replace #"\s*[-\s]\s*(?=\d)" "-")
+                                    str/upper-case)
+                               items))
                      (set (keys items-map)))
         html (filing/filing-html filing)]
     (cond

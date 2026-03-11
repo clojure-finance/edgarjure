@@ -149,10 +149,25 @@
   [html-str]
   (hickory/as-hickory (hickory/parse html-str)))
 
+(defn- tr-node? [n] (and (map? n) (= :tr (:tag n))))
+
+(defn- direct-rows
+  "Return only the <tr> nodes that are direct children of a <table> node,
+   or direct children of its <thead>/<tbody>/<tfoot> sections.
+   Does not recurse into nested tables, preventing double-counting."
+  [table-node]
+  (let [direct-children (filter map? (:content table-node))
+        section-tags #{:thead :tbody :tfoot}
+        sections (filter #(section-tags (:tag %)) direct-children)
+        tr-from-sections (mapcat (fn [sec] (filter tr-node? (filter map? (:content sec))))
+                                 sections)
+        tr-direct (filter tr-node? direct-children)]
+    (vec (concat tr-direct tr-from-sections))))
+
 (defn- extract-table
   "Convert a single hickory table node into a dataset, or nil if it's a layout table."
   [table-node table-idx]
-  (let [rows (->> (sel/select (sel/tag :tr) table-node)
+  (let [rows (->> (direct-rows table-node)
                   (mapv row-texts)
                   (filterv seq))
         ;; Find the first row with >=2 cells as the header

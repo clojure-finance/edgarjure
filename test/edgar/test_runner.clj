@@ -9,7 +9,9 @@
             edgar.tables-test
             edgar.forms.form4-test
             edgar.forms.form13f-test
-            edgar.xbrl-test))
+            edgar.xbrl-test
+            edgar.schema-test
+            edgar.dataset-test))
 
 (defn -main [& _]
   (let [result (t/run-tests 'edgar.core-test
@@ -21,5 +23,7 @@
                             'edgar.tables-test
                             'edgar.forms.form4-test
                             'edgar.forms.form13f-test
-                            'edgar.xbrl-test)]
+                            'edgar.xbrl-test
+                            'edgar.schema-test
+                            'edgar.dataset-test)]
     (System/exit (if (= 0 (:fail result) (:error result)) 0 1))))

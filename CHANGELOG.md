@@ -2,6 +2,35 @@
 
 All notable changes to edgarjure are documented here.
 
+## [Unreleased — bug fixes batch 2]
+
+### Fixed
+
+**`edgar.filing/filing-by-accession` — silent nil `:form` on missing index key**
+- The accession lookup previously contained a fallback `:form-type` key that does not exist in the SEC filing index JSON (the correct key is `:formType`, keywordised by jsonista). When `:formType` was absent for any reason, `:form` silently became `nil`, causing `filing-obj` to dispatch on `nil` rather than throwing a useful error. Fixed by removing the fallback entirely; the function now throws `ex-info` with `{:type ::not-found :accession-number "..."}` when `:formType` is absent. Tested in `filing-by-accession-form-type-test`.
+
+**`edgar.schema/FilingArgs` — `:n` and `:include-amends?` required instead of optional**
+- `FilingArgs` declared `:n` and `:include-amends?` as required fields, while `FilingsArgs` (plural) marked its optional fields with `{:optional true}`. In practice `edgar.api/filing` always supplies defaults for these keys before calling `validate!`, so there was no user-visible failure — but calling `validate!` directly with a minimal map would throw confusingly. Fixed by adding `{:optional true}` to `:n` and `:include-amends?` in `FilingArgs`, aligning the schema with the actual call-site behaviour. Covered by new `schema_test.clj`.
+
+**`edgar.dataset/multi-company-facts` — `(apply ds/concat [])` arity error on empty result**
+- When all tickers threw (bad CIK, HTTP error, etc.) or the input vector was empty, the `for` comprehension produced an empty sequence and `(apply ds/concat [])` threw an arity exception. Fixed in two parts: (1) each ticker fetch is now wrapped in `try/catch` and failed tickers return `nil`, collected via `keep identity`; (2) `ds/concat` is only called when `(seq rows)` is truthy, otherwise an empty dataset is returned. Tested in new `dataset_test.clj` with `with-redefs` stubs covering all three cases: empty input, all-fail, and partial-fail.
+
+**`edgar.tables/extract-table` — `sel/select` recursively included nested-table `<tr>` rows**
+- `extract-table` used `(sel/select (sel/tag :tr) table-node)` to collect rows, which recursively traverses the entire subtree including nested `<table>` elements. This inflated the row count for filings with nested tables (common in SEC HTML exhibits) and caused column misalignment. Fixed by replacing `sel/select` with a new private function `direct-rows` that collects only `<tr>` nodes that are direct children of the `<table>`, `<thead>`, `<tbody>`, or `<tfoot>` elements — the same direct-child pattern already used by `row-cells` for cells. Tested in `extract-table-nested-no-double-count-test`.
+
+**`edgar.extract/item-pattern` — regex could not match 10-Q Roman-numeral item IDs**
+- The `item-pattern` regex only matched `\d{1,2}[AB]?` for the item number, making it impossible to match 10-Q item headings like `"Item I-1. Financial Statements"` or `"Item II-1A. Risk Factors"`. As a result, `extract-items` on 10-Q filings always returned `{}`. Fixed by extending the regex with an optional `(?:[IVXivx]+\s*[-\s]\s*)?` prefix before the digit group. ID normalization (`str/replace #"\s*[-\s]\s*(?=\d)" "-"` + `str/upper-case`) is applied in both `find-item-boundaries` (to produce correctly cased boundary IDs) and in `extract-items` (to normalize user-supplied `:items` to match `items-10q` map keys). Tested in `item-pattern-test`, `find-item-boundaries-10q-test`, and `extract-items-10q-normalized-ids-test`.
+
+### Added
+
+**`test/edgar/schema_test.clj`** (new file)
+- Comprehensive Malli schema unit tests: `validate!` helper (nil on success, `ex-info` on failure, `:args` and `:errors` in ex-data), `FilingArgs` required/optional fields, `FilingsArgs` optional `:form` with `[:maybe FormType]`, `StatementArgs` (`:shape` enum, `:as-of` regex), `AccessionNumber` primitive (dashed format required). Added to `test_runner.clj`.
+
+**`test/edgar/dataset_test.clj`** (new file)
+- Offline tests for `multi-company-facts` robustness using `with-redefs`: empty tickers vector returns empty dataset; all tickers failing returns empty dataset; partial failure returns only the rows from the succeeding ticker. Added to `test_runner.clj`.
+
+---
+
 ## [Unreleased]
 
 ### Fixed
