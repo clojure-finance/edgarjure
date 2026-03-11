@@ -14,7 +14,7 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 - **Bulk download** — single company or batch (bounded parallelism), skip-existing, structured result envelopes
 - **XBRL / company-facts** — `tech.ml.dataset` with `:label` and `:description` columns
 - **XBRL concept discovery** — `(e/concepts "AAPL")` → dataset of all available concepts with labels
-- **Financial statements** — income statement, balance sheet, cash flow; concept fallback chains, restatement deduplication, long or wide output
+- **Financial statements** — income statement, balance sheet, cash flow; concept fallback chains, restatement deduplication, long or wide output; **point-in-time `:as-of` mode** for look-ahead-safe backtesting
 - **NLP item-section extraction** — 10-K, 10-Q, 8-K items with full section bodies; strip numeric tables; batch mode
 - **Form parsers** — Form 4 (insider trades), 13F-HR (institutional holdings); central `edgar.forms` loader
 - **HTML table extraction** — `(e/tables filing)` → seq of `tech.ml.dataset`; infers numeric types, deduplicates column names
@@ -224,6 +224,32 @@ edgar.financials/income-statement-concepts    ; vector of [label concept fallbac
 edgar.financials/balance-sheet-concepts
 edgar.financials/cash-flow-concepts
 ```
+
+## Point-in-Time Data (Look-Ahead-Safe Mode)
+
+> **Essential for backtesting and investment strategy research.**
+
+By default all financial-statement functions return the **latest restated value** for each period — suitable for current analysis but biased for historical backtests. Pass `:as-of "YYYY-MM-DD"` to get **point-in-time** data: only filings submitted on or before that date are used.
+
+```clojure
+;; As-reported (default): uses Apple's most recently restated FY2021 figures
+(e/income "AAPL")
+
+;; Point-in-time: uses only what was available in EDGAR as of 2022-01-01
+;; FY2021 revenue = original 10-K value, not a later restatement
+(e/income "AAPL" :as-of "2022-01-01")
+
+;; Backtesting panel ? each observation uses only data available at rebalance date
+(for [date ["2019-01-15" "2020-01-15" "2021-01-15" "2022-01-15"]
+      ticker ["AAPL" "MSFT" "GOOG"]]
+  {:date date :ticker ticker
+   :data (e/income ticker :as-of date :shape :wide)})
+```
+
+**Caveats:**
+- Accounting standard changes (e.g. ASC 606 in 2018) restate prior periods within the same filing. `:as-of` correctly excludes these for earlier dates, but the pre-adoption figures use the old accounting basis — inconsistent with post-adoption data. Restrict your panel or model the break explicitly.
+- Raw `e/facts` / `e/balance-sheet` datasets are unfiltered. Filter manually on `:filed` if needed.
+- `:filed` is the SEC submission date, not the earnings announcement date. Add a few days buffer for tight event windows.
 
 ## Namespace Overview
 
