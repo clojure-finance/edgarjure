@@ -79,9 +79,7 @@
   [query & {:keys [limit] :or {limit 10}}]
   (let [resp (core/edgar-get (str core/efts-url
                                   "?q=" (java.net.URLEncoder/encode query "UTF-8")
-                                  "&dateRange=custom"
-                                  "&forms=10-K"
-                                  "&hits.hits._source=period_of_report,entity_name,file_num,period_of_report,biz_location,inc_states"))]
+                                  "&hits.hits._source=entity_name,file_num,biz_location,inc_states"))]
     (->> (get-in resp [:hits :hits])
          (take limit)
          (map #(get % :_source)))))
