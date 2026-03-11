@@ -113,6 +113,35 @@
 ;;; This multimethod is the extension point.
 ;;; ---------------------------------------------------------------------------
 
+(defn filing-by-accession
+  "Hydrate a filing map from an accession number string.
+   Accepts dashed format: \"XXXXXXXXXX-YY-ZZZZZZ\"
+   The first 10 digits of the accession number are the filer's CIK.
+   Returns a filing map with :cik :accessionNumber :form :primaryDocument,
+   ready for filing-html, filing-text, filing-obj, extract-items, etc.
+   Throws ex-info with ::not-found if the accession number does not exist."
+  [accession-number]
+  (let [digits (str/replace accession-number "-" "")
+        cik (str (Long/parseLong (subs digits 0 10)))
+        acc-dashed (if (re-matches #"\d{10}-\d{2}-\d{6}" accession-number)
+                     accession-number
+                     (str (subs digits 0 10) "-" (subs digits 10 12) "-" (subs digits 12)))
+        stub {:cik cik :accessionNumber acc-dashed}
+        idx (try
+              (filing-index stub)
+              (catch Exception e
+                (throw (ex-info "Filing not found"
+                                {:type ::not-found
+                                 :accession-number accession-number}
+                                e))))
+        primary (->> (:files idx)
+                     (filter #(= "1" (str (:sequence %))))
+                     first)]
+    (assoc stub
+           :form (or (get-in idx [:formType]) (get-in idx [:form-type]))
+           :primaryDocument (:name primary)
+           :filingDate (get-in idx [:filingDate]))))
+
 (defmulti filing-obj
   "Parse a filing into a structured form-specific map.
    Dispatches on the :form key of the filing map."

@@ -5,34 +5,52 @@ All notable changes to edgarjure are documented here.
 ## [Unreleased]
 
 ### Added
-- `edgar.forms.form4` — Form 4 parser (Statement of Changes in Beneficial Ownership / insider trades). Parses issuer, reporting owner, non-derivative and derivative transactions from XML. Registers `filing-obj "4"` via the standard multimethod. No new dependencies — uses only `clojure.xml` and `clojure.string`.
 
-### Fixed
+**`edgar.core`**
+- In-memory TTL cache on `edgar-get`. JSON responses are cached keyed by URL: 5 minutes for metadata endpoints, 1 hour for `/api/xbrl/` endpoints. Cache is skipped when `:raw? true`. Evict with `(edgar.core/clear-cache!)`.
+- Exponential backoff retry on 429/5xx responses. `http-get-with-retry` retries up to 3 times with delays of 2s → 4s → 8s. Throws `ex-info` with `{:type ::http-error :status N :url "..."}` on exhaustion or non-retryable 4xx. Applied to both `edgar-get` and `edgar-get-bytes`.
 
-**`edgar.company`**
-- `search-companies` no longer passes `&forms=10-K` or `&dateRange=custom` to the EFTS query. Previously the function silently excluded companies that had never filed a 10-K (e.g. funds, small filers, foreign private issuers). The query now searches across all form types.
+**`edgar.filing`**
+- `filing-by-accession` — hydrates a complete filing map from an accession number string. Accepts dashed format (`0000320193-23-000106`) or undashed (`000032019323000106`). Extracts the CIK from the first 10 digits, fetches the filing index, and returns `{:cik :accessionNumber :form :primaryDocument :filingDate}` ready for all downstream functions. Throws `ex-info` with `{:type ::not-found}` if the accession does not exist.
 
 **`edgar.filings`**
-- `get-filings` now fetches all submission chunks for active filers with >1000 filings. Previously only read `[:filings :recent]` from the main submissions JSON, silently truncating filing history. Now checks `[:filings :files]` for additional chunk references (e.g. `CIK0000320193-submissions-001.json`) and concatenates them before filtering. Companies like AAPL now return their full history back to 1993.
+- `latest-effective-filing` — returns the most recent non-amended filing for a company and form type. If an amendment (e.g. `10-K/A`) exists with a newer `:filingDate` than the original, the amendment is returned instead.
 
-**`edgar.financials`**
-- `build-statement` docstring corrected: it returns a **long-format** dataset, not a wide dataset. Updated docstring notes that users compose `(e/pivot (e/income "AAPL"))` for wide format.
+**`edgar.xbrl`**
+- `get-concepts` — returns a `tech.ml.dataset` with columns `[:taxonomy :concept :label :description]`, one row per distinct XBRL concept available for a company. Useful for discovering what data is available before calling `get-facts-dataset`.
+- `:label` and `:description` columns added to all facts datasets. `flatten-facts` now preserves these fields from the XBRL taxonomy response. Affects `get-facts-dataset` and any downstream datasets built from it.
 
-**`edgar.extract`**
-- `extract-items` now returns full section body text, not just the heading node text. Detection algorithm rewritten: flattens the full hickory tree into a document-order node sequence, identifies item heading boundaries by matching `item-pattern` across `heading-tags`, deduplicates by keeping the last match per item-id (body heading wins over TOC entry), then extracts text from the node slice between consecutive boundaries.
-- Return shape changed from `{item-id "text"}` to `{item-id {:title "..." :text "..." :method ...}}`. **Breaking change:** callers that previously did `(get result "7")` and expected a string must now do `(get-in result ["7" :text])`.
-- `extract-item` return shape changed accordingly: returns `{:title "..." :text "..." :method ...}` or `nil` (previously a string or `nil`).
-- Plain-text fallback (`extract-items-text`) is now wired into the main `extract-items` dispatch path. Previously defined but never called.
-- `:method` key added to return maps: `:html-heading-boundaries` for modern HTML filings, `:plain-text-regex` for pre-2000 plain-text fallback.
-- Removed unused `hickory.zip` and `clojure.zip` requires.
+**`edgar.api`**
+- `e/filing-by-accession` — thin wrapper around `filing/filing-by-accession`.
+- `e/latest-effective-filing` — thin wrapper around `filings/latest-effective-filing`, defaulting `:form` to `"10-K"`.
+- `e/concepts` — thin wrapper around `xbrl/get-concepts`, accepting ticker or CIK.
+
+**`edgar.forms.form4`**
+- Form 4 parser (Statement of Changes in Beneficial Ownership / insider trades). Parses issuer, reporting owner, non-derivative and derivative transactions from XML. Registers `filing-obj "4"` via the standard multimethod. No new dependencies — uses only `clojure.xml` and `clojure.string`.
 
 ### Changed
 
-**`deps.edn`**
-- Moved five unused dependencies from core `:deps` to a new `:future` alias: `next.jdbc`, `honeysql`, `sqlite-jdbc`, `malli`, and `datajure`. None are referenced in any source file. Core install weight reduced by ~15 MB.
-
 **`edgar.filings`**
-- `get-filing` converted from positional `[ticker-or-cik form]` to keyword args `[ticker-or-cik & {:keys [form n] :or {n 0}}]`. Supports `:n` for nth-latest filing (0-indexed). Old call `(get-filing "AAPL" "10-K")` must be updated to `(get-filing "AAPL" :form "10-K")`.
+- `get-filings` now filters out amended filings (`10-K/A`, `10-Q/A`, etc.) by default. Pass `:include-amends? true` to include them. This is a behaviour change: callers who previously received amendment forms in results and relied on them will need to add `:include-amends? true`.
+- `get-filing` gains `:include-amends?` option (default `false`), threading through to `get-filings`.
+- `get-filing` converted from positional `[ticker-or-cik form]` to keyword args `[ticker-or-cik & {:keys [form n] :or {n 0}}]`. Old call `(get-filing "AAPL" "10-K")` must be updated to `(get-filing "AAPL" :form "10-K")`.
+
+**`edgar.api`**
+- `e/filings` gains `:include-amends?` option (default `false`).
+- `e/filing` gains `:include-amends?` option (default `false`).
+- `e/facts` simplified — delegates filtering to `xbrl/get-facts-dataset` directly.
+- `e/frame` updated to new `get-concept-frame` keyword-arg signature.
+- `e/panel` passes `:concept` directly to `multi-company-facts`.
+- `e/pivot` unwrapped — `pivot-wide` now returns a dataset directly.
+- `e/income`, `e/balance`, `e/cashflow`, `e/financials` simplified — no longer pre-resolve CIK before delegating to `edgar.financials`.
+- Removed unused `require` entries for `tech.v3.dataset` and `clojure.string`.
+- Removed private `coerce-concepts` helper (logic moved into `xbrl/get-facts-dataset`).
+
+**`edgar.download`**
+- `download-filings!` gains `:skip-existing?` option (default `false`). When `true`, checks whether the output file already exists before downloading; returns `{:status :skipped :accession-number "..."}` if so.
+- `download-batch!` `:parallelism` parameter is now honoured. Uses `(partition-all parallelism tickers)` + `pmap` per partition for bounded concurrency (previously ignored, used plain `pmap`).
+- `download-batch!` now passes `:download-all?` and `:skip-existing?` through to `download-filings!`.
+- All download functions (`download-filings!`, `download-batch!`, `download-index!`) now return structured result envelopes: `{:status :ok :path "..."}`, `{:status :skipped :accession-number "..."}`, or `{:status :error :accession-number "..." :type ... :message "..."}`. Previously returned bare strings or raw exception messages.
 
 **`edgar.xbrl`**
 - `get-facts-dataset` now accepts `& {:keys [concept form sort]}`. `:concept` accepts a string or collection; `:form` filters by form type; `:sort` defaults to `:desc` (uses `ds/reverse-rows`), pass `nil` to skip.
@@ -48,13 +66,24 @@ All notable changes to edgarjure are documented here.
 - `cross-sectional-dataset` updated to use new `get-concept-frame` keyword-arg signature.
 
 **`edgar.extract`**
-- `batch-extract!` arg order changed to `[filing-seq output-dir & opts]`. Old call `(batch-extract! raw-dir output-dir filing-seq ...)` must be updated to `(batch-extract! filing-seq output-dir ...)`.
+- `extract-items` now returns full section body text, not just the heading node text. Detection algorithm rewritten: flattens the full hickory tree into a document-order node sequence, identifies item heading boundaries by matching `item-pattern` across `heading-tags`, deduplicates by keeping the last match per item-id (body heading wins over TOC entry), then extracts text from the node slice between consecutive boundaries.
+- Return shape changed from `{item-id "text"}` to `{item-id {:title "..." :text "..." :method ...}}`. **Breaking change:** callers that previously did `(get result "7")` and expected a string must now do `(get-in result ["7" :text])`.
+- `extract-item` return shape changed accordingly: returns `{:title "..." :text "..." :method ...}` or `nil` (previously a string or `nil`).
+- Plain-text fallback (`extract-items-text`) is now wired into the main `extract-items` dispatch path. Previously defined but never called.
+- `:method` key added to return maps: `:html-heading-boundaries` for modern HTML filings, `:plain-text-regex` for pre-2000 plain-text fallback.
+- `batch-extract!` arg order changed to `[filing-seq output-dir & opts]`.
+- Removed unused `hickory.zip` and `clojure.zip` requires.
 
-**`edgar.api`**
-- `e/facts` simplified — delegates filtering to `xbrl/get-facts-dataset` directly.
-- `e/frame` updated to new `get-concept-frame` keyword-arg signature.
-- `e/panel` passes `:concept` directly to `multi-company-facts`.
-- `e/pivot` unwrapped — `pivot-wide` now returns a dataset directly.
-- `e/income`, `e/balance`, `e/cashflow`, `e/financials` simplified — no longer pre-resolve CIK before delegating to `edgar.financials`.
-- Removed unused `require` entries for `tech.v3.dataset` and `clojure.string`.
-- Removed private `coerce-concepts` helper (logic moved into `xbrl/get-facts-dataset`).
+**`deps.edn`**
+- Moved five unused dependencies from core `:deps` to a new `:future` alias: `next.jdbc`, `honeysql`, `sqlite-jdbc`, `malli`, and `datajure`. None are referenced in any source file. Core install weight reduced by ~15 MB.
+
+### Fixed
+
+**`edgar.company`**
+- `search-companies` no longer passes `&forms=10-K` to the EFTS query. Previously excluded companies that had never filed a 10-K.
+
+**`edgar.filings`**
+- `get-filings` now fetches all submission chunks for active filers with >1000 filings. Previously only read `[:filings :recent]`, silently truncating filing history for large filers such as AAPL.
+
+**`edgar.financials`**
+- `build-statement` docstring corrected: returns long-format dataset, not wide. Directs users to `(e/pivot (e/income "AAPL"))` for wide format.
