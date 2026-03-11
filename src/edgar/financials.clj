@@ -2,16 +2,21 @@
   "Financial statement extraction with normalization.
 
    Three output layers for each statement:
-     raw-*          — all matching observations, unprocessed
-     *-statement    — normalized, restatement-deduplicated, long-format
-     get-financials — all three statements, optionally wide-format
+     raw-*          ? all matching observations, unprocessed
+     *-statement    ? normalized, restatement-deduplicated, long-format
+     get-financials ? all three statements, optionally wide-format
 
    Concept fallback chains: each line item is a vector of concept names tried
    in order; the first one present in the facts data wins.
 
    Duration vs instant:
-     Income statement + cash flow → duration observations (:frame does NOT end in \"I\")
-     Balance sheet               → instant observations  (:frame ends in \"I\")"
+     Income statement + cash flow -> duration observations (:frame does NOT end in \"I\")
+     Balance sheet               -> instant observations  (:frame ends in \"I\")
+
+   Point-in-time / look-ahead-safe mode:
+     Pass :as-of \"YYYY-MM-DD\" to any public function to restrict to filings
+     where :filed <= as-of-date.  Without :as-of the latest restated value is
+     returned (as-reported / always-latest behaviour)."
   (:require [edgar.xbrl :as xbrl]
             [edgar.company :as company]
             [tech.v3.dataset :as ds]
@@ -19,13 +24,6 @@
 
 ;;; ---------------------------------------------------------------------------
 ;;; Concept fallback chains
-;;; Each entry is [label & concepts-in-priority-order].
-;;; label   — human-readable line item name added as a :line-item column
-;;; concepts — tried in order; first one present in the facts data is used
-;;;
-;;; These are public vars so callers can merge in company-specific overrides:
-;;;   (def my-income (assoc edgar.financials/income-statement-concepts
-;;;                    :revenue [["Revenue" "MyCustomRevenueConcept"]]))
 ;;; ---------------------------------------------------------------------------
 
 (def income-statement-concepts
@@ -155,62 +153,61 @@
 (defn- duration? [frame]
   (and (string? frame) (not (str/ends-with? frame "I")) (not (str/blank? frame))))
 
-(defn- concepts-in-data
-  "Return the set of concept strings present in a facts dataset."
-  [facts-ds]
+(defn- concepts-in-data [facts-ds]
   (set (ds/column facts-ds :concept)))
 
-(defn- resolve-fallback
-  "Given a fallback-chain entry [label concept1 concept2 ...] and the set of
-   concepts present in the data, return [label winning-concept] or nil."
-  [chain available-concepts]
+(defn- resolve-fallback [chain available-concepts]
   (let [label (first chain)
         candidates (rest chain)]
     (when-let [winner (first (filter available-concepts candidates))]
       [label winner])))
 
-(defn- resolve-all-chains
-  "Resolve all fallback chains against the available concepts.
-   Returns a seq of [label concept] pairs for concepts that were found."
-  [chains available-concepts]
+(defn- resolve-all-chains [chains available-concepts]
   (keep #(resolve-fallback % available-concepts) chains))
 
 (defn- dedup-restatements
-  "For each [concept end] pair, keep only the observation with the latest
-   :filed date (i.e., the most recently filed/restated value)."
+  "Keep the most recently filed observation per [concept end] pair."
   [rows]
   (->> rows
        (group-by (juxt :concept :end))
        (mapcat (fn [[_ group]]
                  [(apply max-key #(compare (:filed %) "") group)]))))
 
-(defn- filter-by-duration-type
-  "Filter rows to the appropriate duration type for a statement.
-   :instant — balance sheet (frame ends with \"I\")
-   :duration — income statement / cash flow (frame does NOT end with \"I\")
-   :any — no filter"
-  [rows duration-type]
+(defn- dedup-point-in-time
+  "Point-in-time (look-ahead-safe) restatement deduplication.
+
+   For each [concept end] pair, keeps the most recently filed observation
+   among those where :filed <= as-of-date. Observations filed after
+   as-of-date are excluded entirely ? they represent information the market
+   could not have had at that date.
+
+   as-of-date is an ISO date string (\"YYYY-MM-DD\") or nil (falls back to
+   dedup-restatements, i.e. always-latest / as-reported behaviour)."
+  [rows as-of-date]
+  (if (nil? as-of-date)
+    (dedup-restatements rows)
+    (->> rows
+         (filter #(not (pos? (compare (:filed %) as-of-date))))
+         (group-by (juxt :concept :end))
+         (mapcat (fn [[_ group]]
+                   [(apply max-key #(compare (:filed %) "") group)])))))
+
+(defn- filter-by-duration-type [rows duration-type]
   (case duration-type
-    :instant (filter #(instant? (:frame %)) rows)
+    :instant  (filter #(instant?  (:frame %)) rows)
     :duration (filter #(duration? (:frame %)) rows)
     :any rows))
 
-(defn- add-line-item-col
-  "Add a :line-item column using a concept→label lookup map."
-  [ds concept->label]
+(defn- add-line-item-col [ds concept->label]
   (ds/add-or-update-column
    ds :line-item
    (mapv #(get concept->label % %) (ds/column ds :concept))))
 
 ;;; ---------------------------------------------------------------------------
-;;; Raw statement (unfiltered, no normalization — backward compatible)
+;;; Raw statement (no normalization ? backward compatible)
 ;;; ---------------------------------------------------------------------------
 
-(defn- raw-statement
-  "Extract raw statement rows from a facts dataset.
-   Filters by concept set and form type only — no deduplication, no duration filter.
-   Backward-compatible with the old build-statement behaviour."
-  [facts-ds concepts form]
+(defn- raw-statement [facts-ds concepts form]
   (let [all-concepts (set (mapcat rest concepts))]
     (-> facts-ds
         (ds/filter-column :concept #(contains? all-concepts %))
@@ -224,15 +221,15 @@
   "Build a normalized long-format statement dataset.
 
    Steps:
-     1. Resolve fallback chains → pick winning concept per line item
+     1. Resolve fallback chains -> pick winning concept per line item
      2. Filter facts to winning concepts + form type
      3. Filter to the correct duration type (instant vs duration)
-     4. Deduplicate restatements: keep most-recently-filed per [concept end]
-     5. Add :line-item column using resolved label
-     6. Sort by :end descending, then :line-item
-
-   Returns a long-format tech.ml.dataset."
-  [facts-ds chains form duration-type]
+     4. Deduplicate via dedup-point-in-time:
+          as-of nil  => latest restated value (as-reported)
+          as-of date => point-in-time; excludes filings filed after as-of
+     5. Add :line-item column
+     6. Sort :end descending"
+  [facts-ds chains form duration-type as-of]
   (let [available (concepts-in-data facts-ds)
         resolved (resolve-all-chains chains available)
         winning-concepts (set (map second resolved))
@@ -244,7 +241,7 @@
                          (ds/filter-column :form #(= % form))
                          ds/rows)
             duration-filtered (filter-by-duration-type filtered duration-type)
-            deduped (dedup-restatements duration-filtered)
+            deduped (dedup-point-in-time duration-filtered as-of)
             result-ds (ds/->dataset (vec deduped))]
         (if (zero? (ds/row-count result-ds))
           result-ds
@@ -257,10 +254,7 @@
 ;;; Wide-format pivot
 ;;; ---------------------------------------------------------------------------
 
-(defn- to-wide
-  "Pivot a normalized long-format statement to wide format.
-   Rows = :end, columns = :line-item (human label), values = :val."
-  [ds]
+(defn- to-wide [ds]
   (if (zero? (ds/row-count ds))
     ds
     (let [deduped (ds/unique-by ds (fn [row] [(:end row) (:line-item row)]))]
@@ -278,64 +272,74 @@
 
 (defn income-statement
   "Return normalized income statement as a long-format dataset.
-   Applies concept fallback chains, duration filtering, and restatement
-   deduplication. Adds :line-item column with human-readable labels.
 
    Options:
-     :form       - \"10-K\" (default) or \"10-Q\"
-     :concepts   - override income-statement-concepts (vector of fallback chains)
-     :shape      - :long (default) or :wide"
-  [ticker-or-cik & {:keys [form concepts shape] :or {form "10-K" shape :long}}]
+     :form     - \"10-K\" (default) or \"10-Q\"
+     :concepts - override income-statement-concepts
+     :shape    - :long (default) or :wide
+     :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
+                 When set, excludes filings where :filed > as-of-date,
+                 giving point-in-time / look-ahead-safe results suitable
+                 for backtesting and event studies."
+  [ticker-or-cik & {:keys [form concepts shape as-of]
+                    :or {form "10-K" shape :long}}]
   (let [chains (or concepts income-statement-concepts)
         ds (xbrl/get-facts-dataset (company/company-cik ticker-or-cik))
-        result (normalized-statement ds chains form :duration)]
+        result (normalized-statement ds chains form :duration as-of)]
     (if (= shape :wide) (to-wide result) result)))
 
 (defn balance-sheet
   "Return normalized balance sheet as a long-format dataset.
-   Applies concept fallback chains, instant-observation filtering, and
-   restatement deduplication. Adds :line-item column with human-readable labels.
 
    Options:
-     :form       - \"10-K\" (default) or \"10-Q\"
-     :concepts   - override balance-sheet-concepts (vector of fallback chains)
-     :shape      - :long (default) or :wide"
-  [ticker-or-cik & {:keys [form concepts shape] :or {form "10-K" shape :long}}]
+     :form     - \"10-K\" (default) or \"10-Q\"
+     :concepts - override balance-sheet-concepts
+     :shape    - :long (default) or :wide
+     :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
+                 When set, excludes filings where :filed > as-of-date,
+                 giving point-in-time / look-ahead-safe results."
+  [ticker-or-cik & {:keys [form concepts shape as-of]
+                    :or {form "10-K" shape :long}}]
   (let [chains (or concepts balance-sheet-concepts)
         ds (xbrl/get-facts-dataset (company/company-cik ticker-or-cik))
-        result (normalized-statement ds chains form :instant)]
+        result (normalized-statement ds chains form :instant as-of)]
     (if (= shape :wide) (to-wide result) result)))
 
 (defn cash-flow
   "Return normalized cash flow statement as a long-format dataset.
-   Applies concept fallback chains, duration filtering, and restatement
-   deduplication. Adds :line-item column with human-readable labels.
 
    Options:
-     :form       - \"10-K\" (default) or \"10-Q\"
-     :concepts   - override cash-flow-concepts (vector of fallback chains)
-     :shape      - :long (default) or :wide"
-  [ticker-or-cik & {:keys [form concepts shape] :or {form "10-K" shape :long}}]
+     :form     - \"10-K\" (default) or \"10-Q\"
+     :concepts - override cash-flow-concepts
+     :shape    - :long (default) or :wide
+     :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
+                 When set, excludes filings where :filed > as-of-date,
+                 giving point-in-time / look-ahead-safe results."
+  [ticker-or-cik & {:keys [form concepts shape as-of]
+                    :or {form "10-K" shape :long}}]
   (let [chains (or concepts cash-flow-concepts)
         ds (xbrl/get-facts-dataset (company/company-cik ticker-or-cik))
-        result (normalized-statement ds chains form :duration)]
+        result (normalized-statement ds chains form :duration as-of)]
     (if (= shape :wide) (to-wide result) result)))
 
 (defn get-financials
-  "Return a map of all three normalized statements for a company.
+  "Return all three normalized statements for a company.
 
-   Returns:
-     {:income-statement ds :balance-sheet ds :cash-flow ds}
+   Returns {:income-statement ds :balance-sheet ds :cash-flow ds}
 
    Options:
      :form  - \"10-K\" (default) or \"10-Q\"
-     :shape - :long (default) or :wide"
-  [ticker-or-cik & {:keys [form shape] :or {form "10-K" shape :long}}]
+     :shape - :long (default) or :wide
+     :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
+               All three statements use point-in-time deduplication:
+               filings where :filed > as-of-date are excluded."
+  [ticker-or-cik & {:keys [form shape as-of]
+                    :or {form "10-K" shape :long}}]
   (let [cik (company/company-cik ticker-or-cik)
         facts-ds (xbrl/get-facts-dataset cik)]
-    {:income-statement (let [r (normalized-statement facts-ds income-statement-concepts form :duration)]
+    {:income-statement (let [r (normalized-statement facts-ds income-statement-concepts form :duration as-of)]
                          (if (= shape :wide) (to-wide r) r))
-     :balance-sheet (let [r (normalized-statement facts-ds balance-sheet-concepts form :instant)]
-                      (if (= shape :wide) (to-wide r) r))
-     :cash-flow (let [r (normalized-statement facts-ds cash-flow-concepts form :duration)]
-                  (if (= shape :wide) (to-wide r) r))}))
+     :balance-sheet    (let [r (normalized-statement facts-ds balance-sheet-concepts form :instant as-of)]
+                         (if (= shape :wide) (to-wide r) r))
+     :cash-flow        (let [r (normalized-statement facts-ds cash-flow-concepts form :duration as-of)]
+                         (if (= shape :wide) (to-wide r) r))}))
