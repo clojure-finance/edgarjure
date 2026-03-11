@@ -62,6 +62,61 @@
   [ticker-or-cik]
   (:name (get-company ticker-or-cik)))
 
+(defn- shape-address
+  "Extract a clean address map from a raw SEC address node."
+  [addr]
+  (when addr
+    {:street1 (:street1 addr)
+     :street2 (not-empty (str (:street2 addr)))
+     :city (:city addr)
+     :state (:stateOrCountry addr)
+     :state-description (:stateOrCountryDescription addr)
+     :zip (:zipCode addr)
+     :foreign? (= 1 (:isForeignLocation addr))}))
+
+(defn company-metadata
+  "Return a shaped metadata map for a company from the SEC submissions endpoint.
+   Accepts ticker or CIK. Extracts the most useful fields from the raw response.
+
+   Returns:
+     {:cik               \"0000320193\"
+      :name              \"Apple Inc.\"
+      :tickers           [\"AAPL\"]
+      :exchanges         [\"Nasdaq\"]
+      :sic               \"3571\"
+      :sic-description   \"Electronic Computers\"
+      :entity-type       \"operating\"
+      :category          \"Large accelerated filer\"
+      :state-of-inc      \"CA\"
+      :state-of-inc-description \"CA\"
+      :fiscal-year-end   \"0926\"   ; MMDD format as returned by SEC
+      :ein               \"942404110\"
+      :phone             \"(408) 996-1010\"
+      :website           \"\"
+      :addresses         {:business {...} :mailing {...}}
+      :former-names      [{:name \"...\" :date \"...\"}]}"
+  [ticker-or-cik]
+  (let [raw (get-company ticker-or-cik)]
+    {:cik (format "%010d" (Long/parseLong (str (:cik raw))))
+     :name (:name raw)
+     :tickers (:tickers raw)
+     :exchanges (:exchanges raw)
+     :sic (:sic raw)
+     :sic-description (:sicDescription raw)
+     :entity-type (:entityType raw)
+     :category (:category raw)
+     :state-of-inc (:stateOfIncorporation raw)
+     :state-of-inc-description (:stateOfIncorporationDescription raw)
+     :fiscal-year-end (:fiscalYearEnd raw)
+     :ein (:ein raw)
+     :phone (:phone raw)
+     :website (not-empty (:website raw))
+     :investor-website (not-empty (:investorWebsite raw))
+     :addresses {:business (shape-address (get-in raw [:addresses :business]))
+                 :mailing (shape-address (get-in raw [:addresses :mailing]))}
+     :former-names (mapv #(hash-map :name (:name %) :date (:date %))
+                         (:formerNames raw))}))
+
 (defn company-cik
   "Return the zero-padded 10-digit CIK for a ticker or CIK input."
   [ticker-or-cik]
