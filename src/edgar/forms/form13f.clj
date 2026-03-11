@@ -104,8 +104,7 @@
     {:period-of-report (tag-text summary :periodOfReport)
      :report-type (tag-text summary :reportType)
      :form13f-file-number (tag-text summary :form13FFileNumber)
-     :is-amendment? (= "RESTATEMENT" (str/upper-case
-                                      (or (tag-text summary :reportType) "")))
+     :is-amendment? false
      :other-managers-count (some-> (tag-text summary :otherManagersCount)
                                    parse-long)
      :table-entry-count (some-> (tag-text summary :tableEntryCount)
@@ -188,7 +187,8 @@
         :manager (parse-manager root)
         :holdings holdings-ds
         :total-value total-value}
-       summary))))
+       summary
+       {:is-amendment? (= "13F-HR/A" (:form filing))}))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Register filing-obj methods

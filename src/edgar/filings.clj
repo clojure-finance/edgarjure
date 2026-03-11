@@ -10,8 +10,9 @@
 (defn- parse-filings-recent
   "Convert the columnar :recent map from SEC submissions JSON into a seq of maps."
   [recent]
-  (let [ks (map keyword (keys recent))
-        cols (map #(get recent %) (keys recent))
+  (let [raw-ks (keys recent)
+        ks (map keyword raw-ks)
+        cols (map #(get recent %) raw-ks)
         rows (apply map vector cols)]
     (map #(zipmap ks %) rows)))
 

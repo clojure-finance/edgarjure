@@ -48,8 +48,9 @@
   "Return a vector of [text is-header?] pairs for all cells in a tr node.
    th cells are marked as headers."
   [tr-node]
-  (let [ths (map #(vector (cell-text %) true) (sel/select (sel/tag :th) tr-node))
-        tds (map #(vector (cell-text %) false) (sel/select (sel/tag :td) tr-node))]
+  (let [children (filter map? (:content tr-node))
+        ths (map #(vector (cell-text %) true) (filter #(= :th (:tag %)) children))
+        tds (map #(vector (cell-text %) false) (filter #(= :td (:tag %)) children))]
     (vec (concat ths tds))))
 
 (defn- row-texts

@@ -171,7 +171,7 @@
   (->> rows
        (group-by (juxt :concept :end))
        (mapcat (fn [[_ group]]
-                 [(apply max-key #(compare (:filed %) "") group)]))))
+                 [(reduce #(if (pos? (compare (:filed %1) (:filed %2))) %1 %2) group)]))))
 
 (defn- dedup-point-in-time
   "Point-in-time (look-ahead-safe) restatement deduplication.
@@ -190,11 +190,11 @@
          (filter #(not (pos? (compare (:filed %) as-of-date))))
          (group-by (juxt :concept :end))
          (mapcat (fn [[_ group]]
-                   [(apply max-key #(compare (:filed %) "") group)])))))
+                   [(reduce #(if (pos? (compare (:filed %1) (:filed %2))) %1 %2) group)])))))
 
 (defn- filter-by-duration-type [rows duration-type]
   (case duration-type
-    :instant  (filter #(instant?  (:frame %)) rows)
+    :instant (filter #(instant? (:frame %)) rows)
     :duration (filter #(duration? (:frame %)) rows)
     :any rows))
 
@@ -339,7 +339,7 @@
         facts-ds (xbrl/get-facts-dataset cik)]
     {:income-statement (let [r (normalized-statement facts-ds income-statement-concepts form :duration as-of)]
                          (if (= shape :wide) (to-wide r) r))
-     :balance-sheet    (let [r (normalized-statement facts-ds balance-sheet-concepts form :instant as-of)]
-                         (if (= shape :wide) (to-wide r) r))
-     :cash-flow        (let [r (normalized-statement facts-ds cash-flow-concepts form :duration as-of)]
-                         (if (= shape :wide) (to-wide r) r))}))
+     :balance-sheet (let [r (normalized-statement facts-ds balance-sheet-concepts form :instant as-of)]
+                      (if (= shape :wide) (to-wide r) r))
+     :cash-flow (let [r (normalized-statement facts-ds cash-flow-concepts form :duration as-of)]
+                  (if (= shape :wide) (to-wide r) r))}))

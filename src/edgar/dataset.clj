@@ -65,7 +65,7 @@
    Returns a dataset sorted by :val descending."
   [taxonomy concept unit frame]
   (-> (xbrl/get-concept-frame concept frame :taxonomy taxonomy :unit unit)
-      (ds/sort-by-column :val {:comparator compare :reverse? true})))
+      (ds/sort-by-column :val >)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Helpers for financial research workflows
