@@ -58,7 +58,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 (e/text f)                   ;=> plain text string
 (e/html f)                   ;=> raw HTML string
 
-;; Extract the MD&A section
+;; Extract the MD&A section (Item 7 in a 10-K)
 (e/item f "7")
 ;=> {:title "Management's Discussion..." :text "...20k chars..." :method :html-heading-boundaries}
 
@@ -182,35 +182,58 @@ filtering thousands of filers that way may take a few minutes at the SEC's
 (e/filings-dataset "AAPL" :form "10-K")
 ```
 
-### Filing Content
+### Filing Content and Section Extraction
+
+10-K and 10-Q filings are divided into numbered item sections (e.g., Item 7 = MD&A, Item 1A = Risk Factors). edgarjure extracts the full text of any section — not just the heading, but the entire body.
 
 ```clojure
 (def f (e/filing "AAPL" :form "10-K"))
 
-(e/html f)                                  ; raw HTML
-(e/text f)                                  ; plain text
-(e/item  f "7")                             ; single item section
-(e/items f :only #{"7" "1A"} :remove-tables? true)  ; multiple items
+;; Raw content
+(e/html f)                        ; full HTML of the primary document
+(e/text f)                        ; plain text (HTML stripped)
 
-;; 10-Q items use Roman-numeral IDs — matched automatically
-(e/items f :only #{"I-1" "II-1A"})
+;; Extract individual sections by item number
+;; Item 7 = "Management's Discussion and Analysis" (MD&A)
+(e/item f "7")
+;=> {:title "Management's Discussion..." :text "...20k chars..." :method :html-heading-boundaries}
 
-;; HTML tables → seq of tech.ml.dataset
+;; Extract multiple sections at once
+;; Item 7 = MD&A, Item 1A = Risk Factors; :remove-tables? strips numeric tables from the text
+(e/items f :only #{"7" "1A"} :remove-tables? true)
+;=> {"7"  {:title "Management's Discussion..." :text "..." :method ...}
+;    "1A" {:title "Risk Factors" :text "..." :method ...}}
+
+;; 10-Q filings use a two-part numbering scheme with Roman numerals:
+;; Part I (financial) and Part II (other disclosures), e.g.:
+;; "I-1" = Financial Statements, "I-2" = MD&A, "II-1A" = Risk Factors
+(def q (e/filing "AAPL" :form "10-Q"))
+(e/items q :only #{"I-2" "II-1A"})   ; MD&A and Risk Factors from a 10-Q
+
+;; Batch extraction across many filings — saves results to disk as JSON
+(require '[edgar.extract :as extract])
+(extract/batch-extract! (e/filings "AAPL" :form "10-K" :limit 10)
+                        "/data/extracted"
+                        :items #{"7" "1A"}
+                        :remove-tables? true
+                        :skip-existing? true)
+
+;; HTML tables → seq of tech.ml.dataset (with numeric type inference)
 (e/tables f)
-(e/tables f :min-rows 5 :min-cols 3)
-(e/tables f :nth 0)
+(e/tables f :min-rows 5 :min-cols 3)   ; filter small tables
+(e/tables f :nth 0)                    ; first table only
 
-;; Exhibits and XBRL documents
+;; Exhibits and XBRL linkbase documents
 (e/exhibits f)              ; seq of exhibit metadata maps
-(e/exhibit f "EX-21")       ; first match, or nil
-(e/xbrl-docs f)             ; XBRL linkbase documents
+(e/exhibit f "EX-21")       ; subsidiaries exhibit, or nil
+(e/xbrl-docs f)             ; XBRL instance, schema, and linkbase files
 
-;; Structured parse via multimethod dispatch on :form
+;; Structured parse via form-specific parser (e.g., Form 4 → insider trade map)
 (e/obj f)
 
-;; Save to disk
-(e/save! f "/data/filings")
-(e/save-all! f "/data/filings")
+;; Save filing to disk
+(e/save! f "/data/filings")      ; primary document only
+(e/save-all! f "/data/filings")  ; all attachments
 ```
 
 ### XBRL Facts and Concept Discovery
