@@ -6,6 +6,9 @@ All notable changes to edgarjure are documented here.
 
 ### Added
 
+**`edgar.financials` / `edgar.api` — Point-in-time `:as-of` option**
+- All four financial-statement functions (`income-statement`, `balance-sheet`, `cash-flow`, `get-financials` and their `e/` wrappers) now accept `:as-of "YYYY-MM-DD"`. When set, observations where `:filed > as-of-date` are excluded before restatement deduplication, giving look-ahead-safe point-in-time results. Default behaviour (no `:as-of`) is unchanged: latest restated value is returned. Implemented in new private function `edgar.financials/dedup-point-in-time`.
+
 **`edgar.forms.form13f`** (new file)
 - 13F-HR parser — institutional holdings (XML-era, post-2013Q2 only). Registers `filing-obj "13F-HR"` and `filing-obj "13F-HR/A"` methods. Returns `{:form :period-of-report :report-type :is-amendment? :form13f-file-number :table-entry-count :table-value-total :manager {:name :street :city :state :zip} :holdings <tech.ml.dataset> :total-value}`. Holdings dataset columns: `:name :cusip :title :value :shares :shares-type :put-call :investment-discretion :other-managers :voting-sole :voting-shared :voting-none`. `:value` and voting columns are `Long`; `:total-value` is the sum of the `:value` column (thousands of USD as SEC reports it). Uses only `clojure.xml` + `clojure.string`; no new dependencies.
 
