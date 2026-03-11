@@ -95,31 +95,31 @@ Every function accepts a ticker or CIK interchangeably. All arguments are keywor
     (ds/head 3))
 ```
 
-### Example: Gross Margin — Apple vs. Industry Peers
+### Example: Gross Margin — Apple vs. Peers
 
-Use the cross-sectional `e/frame` function to pull a single XBRL line item for every filer in a given period, then compare:
+Compare gross margins across a peer group using the panel function:
 
 ```clojure
-;; Pull FY2023 Revenue and Gross Profit across ALL filers — two API calls
-(def revenue     (e/frame "Revenues" "CY2023"))
-(def gross-prof  (e/frame "GrossProfit" "CY2023"))
+(def peers ["AAPL" "MSFT" "GOOG" "AMZN" "META" "HPQ" "DELL"])
 
-;; Join on CIK, compute gross margin
-(def margins
-  (let [rev (-> revenue     (ds/rename-columns {:val :revenue :entityName :name}))
-        gp  (-> gross-prof  (ds/rename-columns {:val :gross-profit}))]
-    (-> (ds/inner-join :cik rev (ds/select-columns gp [:cik :gross-profit]))
-        (ds/map-columns :gross-margin [:gross-profit :revenue]
-                        (fn [gp rev] (when (pos? rev) (double (/ gp rev))))))))
+;; Pull Revenue and Gross Profit for all peers — one API call per ticker
+(def revenue (e/panel peers :concept "Revenues" :form "10-K"))
+(def gp      (e/panel peers :concept "GrossProfit" :form "10-K"))
 
-;; Filter to Apple's SIC industry peers (SIC 3571 = Electronic Computers)
-;; and show the top 10 by gross margin
-(-> margins
-    (ds/filter-column :cik
-      (fn [cik] (= "3571" (:sic (e/company-metadata (str cik))))))
-    (ds/sort-by-column :gross-margin >)
-    (ds/select-columns [:name :revenue :gross-profit :gross-margin])
-    (ds/head 10))
+;; Each panel is a long-format dataset with :ticker :end :val columns.
+;; Take the latest fiscal year for each, join, and compute margin:
+(let [latest  (fn [ds] (-> ds (ds/group-by-column :ticker)
+                             vals
+                             (->> (map #(ds/head % 1))
+                                  (apply ds/concat))))
+      rev-row (latest revenue)
+      gp-row  (latest gp)]
+  (-> (ds/inner-join [:ticker :end] rev-row gp-row)
+      (ds/rename-columns {:val "Revenue" :right.val "Gross Profit"})
+      (ds/map-columns :gross-margin ["Gross Profit" "Revenue"]
+                      (fn [gp rev] (when (pos? rev) (double (/ gp rev)))))
+      (ds/sort-by-column :gross-margin >)
+      (ds/select-columns [:ticker :end "Revenue" "Gross Profit" :gross-margin])))
 ```
 
 ## The `edgar.api` Namespace
