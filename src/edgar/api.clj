@@ -15,7 +15,8 @@
             [edgar.extract :as extract]
             [edgar.xbrl :as xbrl]
             [edgar.financials :as financials]
-            [edgar.dataset :as dataset]))
+            [edgar.dataset :as dataset]
+            [edgar.tables :as tables-ns]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Identity
@@ -48,6 +49,26 @@
   "Return the company name string for a ticker or CIK."
   [ticker-or-cik]
   (company/company-name ticker-or-cik))
+
+(defn company-metadata
+  "Return a shaped metadata map for a company. Richer than (e/company ...).
+   Extracts SIC, exchanges, addresses, fiscal year end, EIN, phone, website,
+   former names, and more from the SEC submissions endpoint.
+   Accepts ticker or CIK.
+
+   Example:
+     (e/company-metadata \"AAPL\")
+     ;=> {:cik \"0000320193\" :name \"Apple Inc.\" :tickers [\"AAPL\"]
+     ;    :exchanges [\"Nasdaq\"] :sic \"3571\"
+     ;    :sic-description \"Electronic Computers\"
+     ;    :entity-type \"operating\" :category \"Large accelerated filer\"
+     ;    :state-of-inc \"CA\" :fiscal-year-end \"0926\"
+     ;    :ein \"942404110\" :phone \"(408) 996-1010\"
+     ;    :addresses {:business {:street1 ... :city ... :state ... :zip ...}
+     ;                :mailing  {:street1 ... :city ... :state ... :zip ...}}
+     ;    :former-names []}"
+  [ticker-or-cik]
+  (company/company-metadata ticker-or-cik))
 
 (defn search
   "Search EDGAR for companies matching a name query.
@@ -114,6 +135,42 @@
                           :end-date end-date
                           :limit limit))
 
+(defn daily-filings
+  "Return a lazy seq of all filings submitted on a given date.
+
+   date — a java.time.LocalDate or a \"YYYY-MM-DD\" string.
+   Options:
+     :form      — filter by form type e.g. \"10-K\" \"8-K\" \"4\"
+     :filter-fn — arbitrary predicate applied to each result map
+
+   Lazily pages through the EFTS search-index (100 per page).
+   Typical trading day: ~1,000–2,000 filings; busy days up to ~6,000.
+
+   Each result map has:
+     :accessionNumber  — dashed accession number (use with e/filing-by-accession)
+     :form             — form type string
+     :filingDate       — \"YYYY-MM-DD\"
+     :cik              — zero-padded 10-digit CIK (first filer)
+     :companyName      — display name (may include ticker in parens)
+     :periodOfReport   — \"YYYY-MM-DD\" or nil
+     :items            — vector of 8-K item strings (or empty)
+
+   Examples:
+     ;; All filings on a date
+     (e/daily-filings \"2026-03-10\")
+
+     ;; Only 8-Ks
+     (e/daily-filings \"2026-03-10\" :form \"8-K\")
+
+     ;; 10-Ks filed by large-cap tech (filter by known CIKs)
+     (e/daily-filings \"2026-03-10\" :form \"10-K\"
+                      :filter-fn #(= (:cik %) \"0000320193\"))
+
+     ;; Works with java.time.LocalDate too
+     (e/daily-filings (java.time.LocalDate/of 2026 3 10))"
+  [date & {:keys [form filter-fn]}]
+  (filings/get-daily-filings date :form form :filter-fn filter-fn))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Filing content
 ;;; ---------------------------------------------------------------------------
@@ -158,6 +215,33 @@
    (require '[edgar.forms.form4])"
   [filing-map]
   (filing/filing-obj filing-map))
+
+(defn tables
+  "Extract HTML tables from a filing as a seq of tech.ml.dataset objects.
+
+   Options:
+     :nth      — return only the nth table (0-indexed); returns a single dataset or nil
+     :min-rows — only include tables with at least this many data rows (default 2)
+     :min-cols — only include tables with at least this many columns (default 2)
+
+   Layout and navigation tables (single-column, <2 data rows) are filtered out.
+   Column names come from the first substantive row; duplicates are suffixed _1, _2, etc.
+   Numeric columns are auto-detected: commas stripped, parentheses → negative.
+
+   Examples:
+     (def f (e/filing \"AAPL\" :form \"10-K\"))
+
+     ;; All data tables
+     (e/tables f)
+
+     ;; Only substantial tables
+     (e/tables f :min-rows 5)
+
+     ;; Specific table by index
+     (e/tables f :nth 0)
+     (e/tables f :nth 2)"
+  [filing-map & {:keys [nth min-rows min-cols] :or {min-rows 2 min-cols 2}}]
+  (tables-ns/extract-tables filing-map :nth nth :min-rows min-rows :min-cols min-cols))
 
 (defn save!
   "Download a filing's primary document to a directory.

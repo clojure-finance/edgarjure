@@ -161,3 +161,75 @@
     (->> (get-in resp [:hits :hits])
          (take limit)
          (map :_source))))
+
+;;; ---------------------------------------------------------------------------
+;;; Daily filing index
+;;; Uses EFTS search-index with date range = single day + from= pagination.
+;;; Each page returns up to 100 hits; we lazily fetch until exhausted.
+;;;
+;;; Each result map has keys:
+;;;   :accessionNumber  — dashed accession number
+;;;   :form             — form type string
+;;;   :filingDate       — "YYYY-MM-DD"
+;;;   :cik              — first CIK (string, zero-padded)
+;;;   :companyName      — display name (may include ticker)
+;;;   :periodOfReport   — "YYYY-MM-DD" or nil
+;;;   :items            — vector of 8-K item numbers (or empty)
+;;; ---------------------------------------------------------------------------
+
+(defn- daily-index-url
+  "Build an EFTS search-index URL for a single date with optional form filter."
+  [date form from]
+  (let [date-str (str date)]
+    (cond-> (str core/efts-url
+                 "?q=%22%22"
+                 "&dateRange=custom"
+                 "&startdt=" date-str
+                 "&enddt=" date-str
+                 "&from=" from)
+      form (str "&forms=" (java.net.URLEncoder/encode form "UTF-8")))))
+
+(defn- shape-daily-hit
+  "Shape a raw EFTS _source map into a filing-like map."
+  [src]
+  {:accessionNumber (accession->str (:adsh src))
+   :form (:form src)
+   :filingDate (:file_date src)
+   :cik (some-> (first (:ciks src))
+                (as-> c (format "%010d" (Long/parseLong c))))
+   :companyName (first (:display_names src))
+   :periodOfReport (not-empty (str (:period_ending src)))
+   :items (or (:items src) [])})
+
+(defn get-daily-filings
+  "Return a lazy seq of all filings submitted on a given date.
+
+   date      — a java.time.LocalDate, or a \"YYYY-MM-DD\" string
+   Options:
+     :form      — filter by form type string e.g. \"10-K\" \"8-K\"
+     :filter-fn — an arbitrary predicate applied to each result map
+
+   Lazily fetches pages of 100 from the EFTS search-index endpoint.
+   Typical trading day: ~1,000–2,000 filings; busy days up to ~6,000.
+
+   Each result map has:
+     :accessionNumber  — dashed accession number
+     :form             — form type string
+     :filingDate       — \"YYYY-MM-DD\"
+     :cik              — zero-padded 10-digit CIK string (first filer)
+     :companyName      — display name (may include ticker in parens)
+     :periodOfReport   — \"YYYY-MM-DD\" or nil
+     :items            — vector of 8-K item strings (or empty)"
+  [date & {:keys [form filter-fn]}]
+  (let [date-str (str date)]
+    (letfn [(fetch-page [from]
+              (lazy-seq
+               (let [resp (core/edgar-get (daily-index-url date-str form from))
+                     hits (get-in resp [:hits :hits])
+                     total (get-in resp [:hits :total :value] 0)
+                     shaped (map (comp shape-daily-hit :_source) hits)]
+                 (if (or (empty? hits) (>= (+ from (count hits)) total))
+                   shaped
+                   (concat shaped (fetch-page (+ from (count hits))))))))]
+      (cond->> (fetch-page 0)
+        filter-fn (filter filter-fn)))))
