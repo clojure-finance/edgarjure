@@ -269,10 +269,10 @@ Income statement, balance sheet, and cash flow — with automatic line-item reso
 (e/financials "AAPL" :shape :wide)
 ```
 
-Line-item resolution mappings are public vars — override for non-standard filers:
+The library decides which XBRL tags map to "Revenue", "Net Income", etc. by looking up each label in a list of candidate tags (trying the most common one first, then falling back to alternatives). These lists are exposed as public vars, so you can inspect them or swap in your own if a company uses non-standard tags:
 
 ```clojure
-edgar.financials/income-statement-concepts   ; vector of [label primary fallback1 ...]
+edgar.financials/income-statement-concepts   ; e.g. ["Revenue" "RevenueFromContract..." "Revenues" "SalesRevenueNet"]
 edgar.financials/balance-sheet-concepts
 edgar.financials/cash-flow-concepts
 ```
