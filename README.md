@@ -2,19 +2,19 @@
 
 A Clojure library for accessing and analysing SEC EDGAR filings. Talks directly to SEC's public JSON/HTTP APIs — no API keys, no paid services.
 
-The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-downloader`, and `edgar-crawler`, combined into a single coherent stack built on `tech.ml.dataset` and Datajure.
+The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-downloader`, and `edgar-crawler`, combined into a single coherent stack built on `tech.ml.dataset`.
 
 ## Features
 
 - **Company & CIK lookup** — ticker↔CIK resolution, company search
-- **Filing index queries** — by company, date range, form type; lazy seqs
+- **Filing index queries** — by company, date range, form type; full pagination for large filers (>1000 filings)
 - **Filing content access** — HTML, plain text, individual attachments
 - **Bulk download** — single company or batch (pmap-based), quarterly index
 - **XBRL / company-facts** → `tech.ml.dataset` integration
 - **Financial statements** — income statement, balance sheet, cash flow (long-format datasets)
-- **NLP item-section extraction** — 10-K, 10-Q, 8-K items; strip numeric tables; batch mode
+- **NLP item-section extraction** — 10-K, 10-Q, 8-K items with full section bodies; strip numeric tables; batch mode
 - **Form 4 parsing** — insider trades: issuer, reporting owner, non-derivative and derivative transactions
-- **Dataset utilities** — panel datasets, cross-sectional snapshots, pivot (Datajure-compatible)
+- **Dataset utilities** — panel datasets, cross-sectional snapshots, pivot
 
 ## Requirements
 
@@ -77,9 +77,22 @@ For exploratory work the `edgar.api` namespace wraps everything with consistent 
 (require '[edgar.api :as e])
 (e/init! "Your Name your@email.com")
 
+;; Company
+(e/cik "AAPL")                ; => "0000320193"
+(e/company "AAPL")            ; full SEC submissions map
+(e/company-name "AAPL")
+(e/search "apple" :limit 5)
+
 ;; Filings
 (e/filing "AAPL" :form "10-K")        ; latest
 (e/filing "AAPL" :form "10-K" :n 2)   ; 3rd latest (0-indexed)
+
+;; Filing content
+(def f (e/filing "AAPL" :form "10-K"))
+(e/html f)
+(e/text f)
+(e/item  f "7")                        ; {:title "MD&A..." :text "...20k chars..." :method ...}
+(e/items f :only #{"7" "1A"} :remove-tables? true)
 
 ;; XBRL facts — :concept accepts string or collection
 (e/facts "AAPL" :concept "Assets")
@@ -88,6 +101,12 @@ For exploratory work the `edgar.api` namespace wraps everything with consistent 
 ;; Cross-sectional frame — defaults: taxonomy=us-gaap, unit=USD
 (e/frame "Assets" "CY2023Q4I")
 (e/frame "SharesOutstanding" "CY2023Q4I" :unit "shares")
+
+;; Financial statements
+(e/income   "AAPL")
+(e/balance  "AAPL" :form "10-Q")
+(e/cashflow "AAPL")
+(e/financials "AAPL")   ; => {:income ds :balance ds :cashflow ds}
 
 ;; Panel — :concept accepts string or collection
 (e/panel ["AAPL" "MSFT" "GOOG"] :concept ["Assets" "NetIncomeLoss"])
@@ -119,7 +138,7 @@ For exploratory work the `edgar.api` namespace wraps everything with consistent 
 | `edgar.core` | HTTP client, Bucket4j rate limiter (10 req/s), SEC base URLs |
 | `edgar.api` | unified power-user entry point (wraps all namespaces below) |
 | `edgar.company` | ticker↔CIK resolution, company metadata, search |
-| `edgar.filings` | filing index queries, quarterly full-index, EFTS full-text search |
+| `edgar.filings` | filing index queries, full pagination, quarterly full-index, EFTS search |
 | `edgar.filing` | individual filing content, save to disk, `filing-obj` multimethod |
 | `edgar.download` | bulk downloader — single company + batch |
 | `edgar.xbrl` | XBRL company-facts → `tech.ml.dataset`; cross-sectional frames |
@@ -134,10 +153,18 @@ For exploratory work the `edgar.api` namespace wraps everything with consistent 
 - **Ticker or CIK interchangeably** — all functions resolve via `company/company-cik`
 - **`:concept` accepts string or collection** — coerced to a set internally
 - **Datasets always return `tech.ml.dataset`** — never seq-of-maps
+- **Item extraction returns full section bodies** — `{item-id {:title "..." :text "..." :method ...}}`
 
 ## SEC Rate Limits
 
 SEC enforces a `User-Agent` header on all requests and a rate limit of ~10 requests/second. `edgarjure` handles both automatically via `edgar.core/set-identity!` and a Bucket4j token-bucket rate limiter.
+
+## Known Limitations
+
+- No HTTP caching — every `edgar-get` call hits the SEC API
+- `download-batch!` `:parallelism` parameter is accepted but ignored (uses plain `pmap`)
+- No retry logic on 429/5xx responses
+- No restatement deduplication — amended filings (10-K/A etc.) are not filtered by default
 
 ## Development
 
