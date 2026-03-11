@@ -72,6 +72,29 @@ Everything flows through keyword args, returns immutable data, and composes natu
 
 Every function accepts a ticker or CIK interchangeably. All arguments are keyword-based — no positional `form` or `type` parameters anywhere.
 
+### Example: Apple's Net Income from the Last Three 10-Ks
+
+```clojure
+(require '[edgar.api :as e]
+         '[tech.v3.dataset :as ds])
+
+(e/init! "Your Name your@email.com")
+
+;; Pull net income from XBRL — one line
+(-> (e/facts "AAPL" :concept "NetIncomeLoss" :form "10-K")
+    (ds/select-columns [:end :val :filed])
+    (ds/head 3))
+;=> :end        | :val          | :filed
+;   2024-09-28  | 93736000000   | 2024-11-01
+;   2023-09-30  | 96995000000   | 2023-11-03
+;   2022-10-01  | 99803000000   | 2022-10-28
+
+;; Or use the normalized income statement (handles concept fallbacks + restatement dedup)
+(-> (e/income "AAPL" :shape :wide)
+    (ds/select-columns [:end "Net Income"])
+    (ds/head 3))
+```
+
 ## The `edgar.api` Namespace
 
 `edgar.api` is the recommended entry point. Require it as `[edgar.api :as e]` and you have access to everything. All functions validate their arguments with Malli at entry — bad inputs throw informative `ex-info` errors.
