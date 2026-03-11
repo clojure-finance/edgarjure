@@ -45,15 +45,20 @@
                   (parse-filings-recent (:recent chunk))))
               extra-files))))
 
+(defn- amended? [filing]
+  (str/ends-with? (str (:form filing)) "/A"))
+
 (defn get-filings
   "Return a lazy seq of filing metadata maps for a company.
    ticker-or-cik : ticker string or CIK integer/string
    Options:
-     :form        - filter by form type string e.g. \"10-K\" \"10-Q\" \"8-K\"
-     :start-date  - filter to filings on/after this date string \"YYYY-MM-DD\"
-     :end-date    - filter to filings on/before this date string \"YYYY-MM-DD\"
-     :limit       - max number of results (default all)"
-  [ticker-or-cik & {:keys [form start-date end-date limit]}]
+     :form            - filter by form type string e.g. \"10-K\" \"10-Q\" \"8-K\"
+     :start-date      - filter to filings on/after this date string \"YYYY-MM-DD\"
+     :end-date        - filter to filings on/before this date string \"YYYY-MM-DD\"
+     :limit           - max number of results (default all)
+     :include-amends? - include amended filings e.g. 10-K/A, 10-Q/A (default false)"
+  [ticker-or-cik & {:keys [form start-date end-date limit include-amends?]
+                    :or {include-amends? false}}]
   (let [cik (company/company-cik ticker-or-cik)
         company (core/edgar-get (core/cik-url cik))
         main-filings (parse-filings-recent (get-in company [:filings :recent]))
@@ -61,6 +66,7 @@
         filings (->> (concat main-filings extra-filings)
                      (map #(enrich-filing cik %)))]
     (cond->> filings
+      (not include-amends?) (remove amended?)
       form (filter #(= form (:form %)))
       start-date (filter #(>= (compare (:filingDate %) start-date) 0))
       end-date (filter #(<= (compare (:filingDate %) end-date) 0))
@@ -74,10 +80,29 @@
 (defn get-filing
   "Return the nth latest filing for a company.
    Options:
-     :form - form type string e.g. \"10-K\" \"10-Q\" \"4\"
-     :n    - 0-indexed position in results (default 0 = latest)"
-  [ticker-or-cik & {:keys [form n] :or {n 0}}]
-  (nth (get-filings ticker-or-cik :form form) n nil))
+     :form            - form type string e.g. \"10-K\" \"10-Q\" \"4\"
+     :n               - 0-indexed position in results (default 0 = latest)
+     :include-amends? - include amended filings (default false)"
+  [ticker-or-cik & {:keys [form n include-amends?] :or {n 0 include-amends? false}}]
+  (nth (get-filings ticker-or-cik :form form :include-amends? include-amends?) n nil))
+
+(defn latest-effective-filing
+  "Return the most recent effective (non-amended) filing for a company and form type.
+   If an amendment exists that is newer than the original, returns the amendment instead.
+   Options:
+     :form - form type string e.g. \"10-K\""
+  [ticker-or-cik & {:keys [form]}]
+  (let [all (get-filings ticker-or-cik :form form :include-amends? true)
+        base-form form
+        amend-form (when form (str form "/A"))
+        non-amended (filter #(= base-form (:form %)) all)
+        latest-original (first non-amended)
+        latest-amendment (first (filter #(= amend-form (:form %)) all))]
+    (if (and latest-amendment latest-original
+             (pos? (compare (:filingDate latest-amendment)
+                            (:filingDate latest-original))))
+      latest-amendment
+      (or latest-original latest-amendment))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Full-index quarterly (for bulk / historical crawling)

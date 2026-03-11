@@ -63,24 +63,36 @@
 (defn filings
   "Return a lazy seq of filing metadata maps for a company.
    Options:
-     :form       - form type string e.g. \"10-K\" \"10-Q\" \"8-K\" \"4\"
-     :start-date - \"YYYY-MM-DD\"
-     :end-date   - \"YYYY-MM-DD\"
-     :limit      - max results"
-  [ticker-or-cik & {:keys [form start-date end-date limit]}]
+     :form            - form type string e.g. \"10-K\" \"10-Q\" \"8-K\" \"4\"
+     :start-date      - \"YYYY-MM-DD\"
+     :end-date        - \"YYYY-MM-DD\"
+     :limit           - max results
+     :include-amends? - include amended filings e.g. 10-K/A (default false)"
+  [ticker-or-cik & {:keys [form start-date end-date limit include-amends?]
+                    :or {include-amends? false}}]
   (filings/get-filings ticker-or-cik
                        :form form
                        :start-date start-date
                        :end-date end-date
-                       :limit limit))
+                       :limit limit
+                       :include-amends? include-amends?))
 
 (defn filing
   "Return the latest filing of a given form type for a company.
    Options:
-     :form - form type string (default \"10-K\")
-     :n    - return the nth latest (0-indexed, default 0)"
-  [ticker-or-cik & {:keys [form n] :or {form "10-K" n 0}}]
-  (nth (filings/get-filings ticker-or-cik :form form) n nil))
+     :form            - form type string (default \"10-K\")
+     :n               - return the nth latest (0-indexed, default 0)
+     :include-amends? - include amended filings (default false)"
+  [ticker-or-cik & {:keys [form n include-amends?] :or {form "10-K" n 0 include-amends? false}}]
+  (nth (filings/get-filings ticker-or-cik :form form :include-amends? include-amends?) n nil))
+
+(defn latest-effective-filing
+  "Return the most recent effective filing for a company and form type.
+   If an amendment (e.g. 10-K/A) is newer than the original, it is returned instead.
+   Options:
+     :form - form type string (default \"10-K\")"
+  [ticker-or-cik & {:keys [form] :or {form "10-K"}}]
+  (filings/latest-effective-filing ticker-or-cik :form form))
 
 (defn filings-dataset
   "Return a filing index for a company as a tech.ml.dataset.
@@ -105,6 +117,14 @@
 ;;; ---------------------------------------------------------------------------
 ;;; Filing content
 ;;; ---------------------------------------------------------------------------
+
+(defn filing-by-accession
+  "Hydrate a filing map from an accession number string.
+   Accepts dashed format: \"XXXXXXXXXX-YY-ZZZZZZ\"
+   Returns a filing map ready for e/html, e/text, e/items, e/obj, etc.
+   Example: (e/filing-by-accession \"0000320193-23-000106\")"
+  [accession-number]
+  (filing/filing-by-accession accession-number))
 
 (defn html
   "Fetch the primary HTML document of a filing as a string."
@@ -187,6 +207,14 @@
 ;;; ---------------------------------------------------------------------------
 ;;; Financial statements
 ;;; ---------------------------------------------------------------------------
+
+(defn concepts
+  "Return a dataset of all XBRL concepts available for a company.
+   Columns: :taxonomy :concept :label :description
+   Each row is one distinct concept — use this to discover what data is available.
+   Example: (e/concepts \"AAPL\")"
+  [ticker-or-cik]
+  (xbrl/get-concepts (company/company-cik ticker-or-cik)))
 
 (defn income
   "Return income statement as a long-format tech.ml.dataset.

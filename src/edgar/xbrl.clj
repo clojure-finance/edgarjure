@@ -31,7 +31,7 @@
 
 (defn- flatten-facts
   "Flatten the nested facts structure into a seq of maps.
-   Each map has :taxonomy :concept :unit :end :val :accn :fy :fp :form :filed :frame."
+   Each map has :taxonomy :concept :label :description :unit :end :val :accn :fy :fp :form :filed :frame."
   [facts]
   (for [[taxonomy concepts] facts
         [concept details] concepts
@@ -40,6 +40,8 @@
     (assoc obs
            :taxonomy (name taxonomy)
            :concept (name concept)
+           :label (get details :label "")
+           :description (get details :description "")
            :unit (name unit))))
 
 (defn facts->dataset
@@ -75,6 +77,20 @@
 ;;; Concept frames — cross-sectional data for a given concept + period
 ;;; https://data.sec.gov/api/xbrl/frames/us-gaap/{concept}/{unit}/CY{year}Q{q}I.json
 ;;; ---------------------------------------------------------------------------
+
+(defn get-concepts
+  "Return a dataset of all XBRL concepts available for a CIK.
+   Columns: :taxonomy :concept :label :description
+   Each row is a distinct concept (one row per concept, not per observation)."
+  [cik]
+  (let [facts-map (get-company-facts cik)
+        rows (for [[taxonomy concepts] (:facts facts-map)
+                   [concept details] concepts]
+               {:taxonomy (name taxonomy)
+                :concept (name concept)
+                :label (get details :label "")
+                :description (get details :description "")})]
+    (ds/->dataset rows {:dataset-name (str (:entityName facts-map) " concepts")})))
 
 (defn concept-frame-url
   "Build the frames endpoint URL for a cross-sectional concept fetch."
