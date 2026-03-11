@@ -102,24 +102,47 @@ Compare gross margins across a peer group using the panel function:
 ```clojure
 (def peers ["AAPL" "MSFT" "GOOG" "AMZN" "META" "HPQ" "DELL"])
 
-;; Pull Revenue and Gross Profit for all peers — one API call per ticker
+;; Step 1: Pull Revenue and Gross Profit for all peers (one API call per ticker)
 (def revenue (e/panel peers :concept "Revenues" :form "10-K"))
 (def gp      (e/panel peers :concept "GrossProfit" :form "10-K"))
 
-;; Each panel is a long-format dataset with :ticker :end :val columns.
-;; Take the latest fiscal year for each, join, and compute margin:
-(let [latest  (fn [ds] (-> ds (ds/group-by-column :ticker)
-                             vals
-                             (->> (map #(ds/head % 1))
-                                  (apply ds/concat))))
-      rev-row (latest revenue)
-      gp-row  (latest gp)]
-  (-> (ds/inner-join [:ticker :end] rev-row gp-row)
+;; Step 2: Keep only the most recent fiscal year per ticker
+(defn latest-per-ticker [ds]
+  (->> (ds/group-by-column ds :ticker)
+       vals
+       (map #(ds/head % 1))
+       (apply ds/concat)))
+
+(def latest-rev (latest-per-ticker revenue))
+(def latest-gp  (latest-per-ticker gp))
+
+;; Step 3: Join Revenue and Gross Profit, compute margin
+(def result
+  (-> (ds/inner-join [:ticker :end] latest-rev latest-gp)
       (ds/rename-columns {:val "Revenue" :right.val "Gross Profit"})
       (ds/map-columns :gross-margin ["Gross Profit" "Revenue"]
                       (fn [gp rev] (when (pos? rev) (double (/ gp rev)))))
       (ds/sort-by-column :gross-margin >)
       (ds/select-columns [:ticker :end "Revenue" "Gross Profit" :gross-margin])))
+
+result
+;=> | :ticker | :end       | Revenue        | Gross Profit   | :gross-margin |
+;   | MSFT    | 2024-06-30 | 245122000000   | 171008000000   | 0.698         |
+;   | AAPL    | 2024-09-28 | 391035000000   | 180683000000   | 0.462         |
+;   | ...
+```
+
+To do the same comparison across **all SEC filers** instead of a hand-picked peer list, use `e/frame` — it pulls a single XBRL line item for every company in one API call:
+
+```clojure
+;; Cross-sectional: Revenue and Gross Profit for ALL filers in FY2023
+(def all-revenue (e/frame "Revenues" "CY2023"))
+(def all-gp      (e/frame "GrossProfit" "CY2023"))
+;; Then join and compute margins the same way as above.
+;; Note: each frame returns thousands of companies. The API calls are fast
+;; (one request each), but downstream filtering (e.g., by SIC code via
+;; e/company-metadata) requires per-company lookups and may take a few
+;; minutes due to SEC rate limits.
 ```
 
 ## The `edgar.api` Namespace
