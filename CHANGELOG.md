@@ -9,6 +9,9 @@ All notable changes to edgarjure are documented here.
 
 ### Fixed
 
+**`edgar.company`**
+- `search-companies` no longer passes `&forms=10-K` or `&dateRange=custom` to the EFTS query. Previously the function silently excluded companies that had never filed a 10-K (e.g. funds, small filers, foreign private issuers). The query now searches across all form types.
+
 **`edgar.filings`**
 - `get-filings` now fetches all submission chunks for active filers with >1000 filings. Previously only read `[:filings :recent]` from the main submissions JSON, silently truncating filing history. Now checks `[:filings :files]` for additional chunk references (e.g. `CIK0000320193-submissions-001.json`) and concatenates them before filtering. Companies like AAPL now return their full history back to 1993.
 
