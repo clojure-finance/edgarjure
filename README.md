@@ -1,28 +1,28 @@
 # edgarjure
 
-**SEC EDGAR as a composable Clojure data system.**
+**A Clojure library for SEC EDGAR — filings, financials, and XBRL data, ready for research.**
 
-Public companies file thousands of pages of financial data with the SEC every day — earnings reports, insider trades, institutional holdings, risk disclosures. Getting at this data programmatically means wrestling with inconsistent HTML, paginated JSON APIs, XBRL taxonomies, and rate limits. In Python you'd cobble together `edgartools`, `sec-edgar-downloader`, `secedgar`, and `edgar-crawler`. edgarjure replaces all four with a single coherent library built on `tech.ml.dataset`.
+Every public company in the U.S. files its financials, insider trades, institutional holdings, and risk disclosures with the SEC. That's decades of structured data covering thousands of firms — but getting at it programmatically means dealing with paginated APIs, inconsistent HTML, XBRL taxonomies, and rate limits. In Python you'd piece together four or five different libraries. edgarjure gives you one coherent stack, built on `tech.ml.dataset`, that handles all of it.
 
-Everything flows through keyword args, returns immutable data, and composes naturally in the REPL. Filings are plain maps. Facts are columnar datasets. Financial statements come with concept fallback chains, restatement deduplication, and point-in-time filtering for look-ahead-safe backtesting. No API keys, no paid services — just SEC's public endpoints.
+Pull a company's income statement in two lines. Screen an XBRL concept across every filer in a single call. Extract the full text of a 10-K's MD&A section. Download a decade of filings for a universe of tickers overnight. Financial statements come with concept fallback chains (so revenue resolves correctly whether a company adopted ASC 606 or not), automatic restatement deduplication, and a point-in-time mode that gives you exactly the data available on any historical date — no look-ahead bias. No API keys, no paid services — just SEC's public endpoints.
 
 ## What You Can Do
 
-**Look up any public company** and get structured metadata — SIC codes, addresses, fiscal year end, state of incorporation.
+**Look up any public company** — ticker or CIK, with structured metadata including SIC codes, fiscal year end, state of incorporation, and mailing addresses.
 
-**Query filing history** with full pagination (even for filers with 10,000+ filings), date filtering, and automatic amendment handling. Access any filing by its accession number for reproducible research.
+**Query filing history** — filter by form type, date range, or full-text search. Pagination is automatic, even for filers with 10,000+ filings. Amendments are handled transparently.
 
-**Read filings** as HTML, plain text, or structured data. Extract specific item sections (MD&A, Risk Factors) with full section bodies — not just headings. Parse HTML tables into datasets. Pull exhibits and XBRL linkbase documents.
+**Read filings** — as HTML, plain text, or structured data. Extract specific sections (MD&A, Risk Factors, any 10-K/10-Q item) with full section bodies. Parse HTML tables into datasets. Pull exhibits and XBRL linkbase documents.
 
-**Work with XBRL data** as `tech.ml.dataset` columns. Get company facts with human-readable labels and descriptions. Discover what concepts exist before querying. Build cross-sectional snapshots across all filers for a given period.
+**Get XBRL financials as datasets** — company facts come as columnar datasets with human-readable labels. Discover available concepts before querying. Build cross-sectional snapshots across all filers for a given period.
 
-**Build normalized financial statements** — income, balance sheet, cash flow — with concept fallback chains (e.g., three different revenue concepts tried in priority order), duration/instant filtering, and restatement deduplication. Output in long or wide format.
+**Build normalized financial statements** — income statement, balance sheet, cash flow — with concept fallback chains, restatement deduplication, and long or wide output. Override the concept mappings for non-standard filers.
 
-**Run look-ahead-safe backtests** with the `:as-of` option. Every financial statement function and panel query accepts a date cutoff that excludes filings submitted after that date — giving you exactly the data a market participant had available, no more.
+**Backtest without look-ahead bias** — the `:as-of` option on every financial statement function and panel query restricts data to what was filed on or before a given date. Essential for event studies, strategy backtests, and panel regressions.
 
-**Parse structured forms** — Form 4 insider trades and 13F-HR institutional holdings come back as typed maps and datasets, ready for analysis.
+**Parse insider trades and institutional holdings** — Form 4 and 13F-HR come back as structured maps and datasets, ready for ownership analysis.
 
-**Download filings in bulk** — single company or batch, with bounded parallelism, skip-existing, exponential backoff, and structured result envelopes.
+**Download in bulk** — single company or batch, with bounded parallelism, skip-existing, and structured result envelopes reporting success, skip, or error per filing.
 
 ## Requirements
 
