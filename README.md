@@ -19,6 +19,7 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 - **Form parsers** — Form 4 (insider trades), 13F-HR (institutional holdings); central `edgar.forms` loader
 - **HTML table extraction** — `(e/tables filing)` → seq of `tech.ml.dataset`; infers numeric types, deduplicates column names
 - **Dataset utilities** — panel datasets, cross-sectional snapshots, pivot
+- **Malli input validation** — all `edgar.api` public functions validated at entry; informative error messages on bad args
 
 ## Requirements
 
@@ -28,7 +29,7 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 ## Quick Start
 
 ```clojure
-;; deps.edn ? add as a git dependency (replace SHA)
+;; deps.edn — add as a git dependency (replace SHA)
 {:deps {com.github.clojure-finance/edgarjure
         {:git/url "https://github.com/clojure-finance/edgarjure"
          :git/sha "LATEST_SHA"}}}
@@ -43,10 +44,10 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
          '[edgar.financials :as financials]
          '[edgar.extract    :as extract])
 
-;; SEC requires a User-Agent header ? call this once at startup
+;; SEC requires a User-Agent header — call this once at startup
 (core/set-identity! "Your Name your@email.com")
 
-;; Resolve ticker ? CIK
+;; Resolve ticker → CIK
 (company/ticker->cik "AAPL")   ;=> "0000320193"
 
 ;; Get the latest 10-K (keyword args throughout)
@@ -59,6 +60,9 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 ;; Returns {:title "..." :text "...20k chars..." :method :html-heading-boundaries}
 (extract/extract-item f "7")
 
+;; Extract 10-Q items — Roman-numeral IDs are supported ("I-1", "II-1A", etc.)
+(extract/extract-items f :items #{"I-1" "II-1A"})
+
 ;; XBRL facts as a dataset (~24k rows for AAPL), sorted :end descending
 ;; Columns: :taxonomy :concept :label :description :unit :end :val :accn :fy :fp :form :filed :frame
 (def facts (xbrl/get-facts-dataset "0000320193"))
@@ -70,7 +74,7 @@ The Clojure ecosystem's equivalent of Python's `edgartools`, `sec-edgar-download
 (xbrl/get-concepts "0000320193")
 ;=> dataset [:taxonomy :concept :label :description]
 
-;; Income statement ? accepts ticker or CIK; concept fallback chains + restatement dedup
+;; Income statement — accepts ticker or CIK; concept fallback chains + restatement dedup
 (financials/income-statement "AAPL")
 (financials/income-statement "AAPL" :shape :wide)   ; pivoted, one column per line item
 
@@ -95,19 +99,19 @@ For exploratory work the `edgar.api` namespace wraps everything with consistent 
 (e/company-metadata "AAPL")   ; shaped map: :sic :state-of-inc :fiscal-year-end :addresses ...
 (e/search "apple" :limit 5)
 
-;; Filings ? amendments excluded by default
+;; Filings — amendments excluded by default
 (e/filing "AAPL" :form "10-K")                        ; latest non-amended
 (e/filing "AAPL" :form "10-K" :n 2)                   ; 3rd latest (0-indexed)
 (e/filings "AAPL" :form "10-K" :include-amends? true) ; include 10-K/A
 (e/latest-effective-filing "AAPL" :form "10-K")        ; original or amendment, whichever is newer
 
-;; Daily filing index ? lazy seq of all filings submitted on a date
+;; Daily filing index — lazy seq of all filings submitted on a date
 (e/daily-filings "2026-03-10")
 (e/daily-filings "2026-03-10" :form "8-K")
 (e/daily-filings "2026-03-10" :filter-fn #(seq (:items %)))
 (e/daily-filings (java.time.LocalDate/of 2026 3 10) :form "10-K")
 
-;; Accession number direct lookup ? for research reproducibility
+;; Accession number direct lookup — for research reproducibility
 (def f (e/filing-by-accession "0000320193-23-000106"))
 (e/text f)
 (e/items f :only #{"7" "1A"})
@@ -119,23 +123,23 @@ For exploratory work the `edgar.api` namespace wraps everything with consistent 
 (e/item  f "7")                        ; {:title "MD&A..." :text "...20k chars..." :method ...}
 (e/items f :only #{"7" "1A"} :remove-tables? true)
 
-;; HTML table extraction ? returns seq of tech.ml.dataset
+;; HTML table extraction — returns seq of tech.ml.dataset
 (e/tables f)
 (e/tables f :min-rows 5 :min-cols 3)
 (e/tables f :nth 0)                    ; first table only
 
-;; XBRL facts ? columns include :label and :description
+;; XBRL facts — columns include :label and :description
 (e/facts "AAPL" :concept "Assets")
 (e/facts "AAPL" :concept ["Assets" "NetIncomeLoss"] :form "10-K")
 
 ;; Concept discovery
 (e/concepts "AAPL")   ; => dataset [:taxonomy :concept :label :description]
 
-;; Cross-sectional frame ? defaults: taxonomy=us-gaap, unit=USD
+;; Cross-sectional frame — defaults: taxonomy=us-gaap, unit=USD
 (e/frame "Assets" "CY2023Q4I")
 (e/frame "SharesOutstanding" "CY2023Q4I" :unit "shares")
 
-;; Financial statements ? concept fallback chains, restatement dedup, long or wide output
+;; Financial statements — concept fallback chains, restatement dedup, long or wide output
 (e/income   "AAPL")
 (e/income   "AAPL" :shape :wide)
 (e/balance  "AAPL" :form "10-Q")
@@ -143,10 +147,10 @@ For exploratory work the `edgar.api` namespace wraps everything with consistent 
 (e/financials "AAPL")              ; => {:income ds :balance ds :cashflow ds}
 (e/financials "AAPL" :shape :wide)
 
-;; Panel ? :concept accepts string or collection
+;; Panel — :concept accepts string or collection
 (e/panel ["AAPL" "MSFT" "GOOG"] :concept ["Assets" "NetIncomeLoss"])
 
-;; Pivot long ? wide, returns tech.ml.dataset directly
+;; Pivot long → wide, returns tech.ml.dataset directly
 (e/pivot some-facts-ds)
 ```
 
@@ -211,15 +215,15 @@ For exploratory work the `edgar.api` namespace wraps everything with consistent 
 ### Financial Statement Normalization
 
 ```clojure
-;; Long format (default) ? one row per concept+period
+;; Long format (default) — one row per concept+period
 (e/income "AAPL")
 ;=> dataset columns: :concept :label :unit :end :val :accn :fy :fp :form :filed :line-item
 
-;; Wide format ? one row per period, one column per line item
+;; Wide format — one row per period, one column per line item
 (e/income "AAPL" :shape :wide)
 ;=> dataset columns: :end | Revenue | Cost of Revenue | Gross Profit | ...
 
-;; Concept vectors are public vars ? override for non-standard filers
+;; Concept vectors are public vars — override for non-standard filers
 edgar.financials/income-statement-concepts    ; vector of [label concept fallback1 fallback2 ...]
 edgar.financials/balance-sheet-concepts
 edgar.financials/cash-flow-concepts
@@ -239,7 +243,7 @@ By default all financial-statement functions return the **latest restated value*
 ;; FY2021 revenue = original 10-K value, not a later restatement
 (e/income "AAPL" :as-of "2022-01-01")
 
-;; Backtesting panel ? each observation uses only data available at rebalance date
+;; Backtesting panel — each observation uses only data available at rebalance date
 (for [date ["2019-01-15" "2020-01-15" "2021-01-15" "2022-01-15"]
       ticker ["AAPL" "MSFT" "GOOG"]]
   {:date date :ticker ticker
@@ -248,7 +252,7 @@ By default all financial-statement functions return the **latest restated value*
 
 **Caveats:**
 - Accounting standard changes (e.g. ASC 606 in 2018) restate prior periods within the same filing. `:as-of` correctly excludes these for earlier dates, but the pre-adoption figures use the old accounting basis — inconsistent with post-adoption data. Restrict your panel or model the break explicitly.
-- Raw `e/facts` / `e/balance-sheet` datasets are unfiltered. Filter manually on `:filed` if needed.
+- Raw `e/facts` datasets are unfiltered. Filter manually on `:filed` if needed.
 - `:filed` is the SEC submission date, not the earnings announcement date. Add a few days buffer for tight event windows.
 
 ## Namespace Overview
@@ -256,6 +260,7 @@ By default all financial-statement functions return the **latest restated value*
 | Namespace | Role |
 |---|---|
 | `edgar.core` | HTTP client, TTL cache, exponential backoff retry, Bucket4j rate limiter (10 req/s), SEC base URLs |
+| `edgar.schema` | Malli schemas + `validate!` helper for all public `edgar.api` functions |
 | `edgar.api` | unified power-user entry point (wraps all namespaces below) |
 | `edgar.company` | ticker↔CIK resolution, company metadata, rich shaped metadata |
 | `edgar.filings` | filing index queries, pagination, amendment handling, quarterly/daily full-index, EFTS search |
@@ -263,7 +268,7 @@ By default all financial-statement functions return the **latest restated value*
 | `edgar.download` | bulk downloader — single company + batch, structured result envelopes |
 | `edgar.xbrl` | XBRL company-facts — `tech.ml.dataset` (with labels); concept discovery; cross-sectional frames |
 | `edgar.financials` | income statement, balance sheet, cash flow; concept fallback chains; restatement dedup; wide/long output |
-| `edgar.extract` | NLP item-section extraction (10-K/10-Q/8-K); batch mode |
+| `edgar.extract` | NLP item-section extraction (10-K/10-Q/8-K); 10-Q Roman-numeral item IDs supported; batch mode |
 | `edgar.dataset` | panel datasets, cross-sectional snapshots, pivot helpers |
 | `edgar.tables` | HTML table extraction — seq of `tech.ml.dataset` |
 | `edgar.forms` | central loader — `(require '[edgar.forms])` activates all built-in parsers |
@@ -278,8 +283,10 @@ By default all financial-statement functions return the **latest restated value*
 - **Datasets always return `tech.ml.dataset`** — never seq-of-maps
 - **Amendments excluded by default** — pass `:include-amends? true` to `e/filings` / `e/filing` to include `10-K/A` etc.
 - **Item extraction returns full section bodies** — `{item-id {:title "..." :text "..." :method ...}}`
+- **10-Q item IDs use Roman-numeral prefix** — `"I-1"`, `"I-2"`, `"II-1A"`, etc.; matched and normalized automatically
 - **Download results are structured envelopes** — `{:status :ok/:skipped/:error ...}`
 - **Form parsers must be required to activate** — use `(require '[edgar.forms])` to load all at once
+- **All public API functions Malli-validated** — bad args throw `ex-info` with `:type ::edgar.schema/invalid-args`
 
 ## SEC Rate Limits
 
@@ -291,7 +298,7 @@ SEC enforces a `User-Agent` header on all requests and a rate limit of ~10 reque
 # Start REPL on port 7888
 clj -M:nrepl
 
-# Run tests (48 tests, 198 assertions)
+# Run tests
 clj -M:test
 
 # In the REPL

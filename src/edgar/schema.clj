@@ -73,8 +73,8 @@
   [:map
    [:ticker-or-cik TickerOrCIK]
    [:form FormType]
-   [:n PositiveInt]
-   [:include-amends? :boolean]])
+   [:n {:optional true} PositiveInt]
+   [:include-amends? {:optional true} :boolean]])
 
 (def FactsArgs
   [:map

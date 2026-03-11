@@ -35,6 +35,8 @@
 (defn multi-company-facts
   "Fetch XBRL facts for multiple tickers/CIKs and combine into a single dataset.
    Returns a long-format dataset with an additional :ticker column.
+   If a ticker fails (HTTP error, unknown CIK, etc.) it is skipped silently.
+   If all tickers fail or tickers is empty, returns an empty dataset.
    Options:
      :concept   - string or collection of concept strings to keep (default all)
      :form      - \"10-K\" | \"10-Q\" (default \"10-K\")
@@ -43,14 +45,20 @@
   [tickers & {:keys [concept form as-of] :or {form "10-K"}}]
   (let [concept-set (when concept
                       (if (string? concept) #{concept} (set concept)))
-        rows (for [ticker tickers
-                   :let [cik (company/company-cik ticker)
-                         ds (xbrl/get-facts-dataset cik
-                                                    :form form
-                                                    :concept concept-set
-                                                    :sort nil)]]
-               (ds/add-column ds :ticker (repeat (ds/row-count ds) ticker)))
-        combined (apply ds/concat rows)]
+        rows (keep identity
+                   (for [ticker tickers]
+                     (try
+                       (let [cik (company/company-cik ticker)
+                             d (xbrl/get-facts-dataset cik
+                                                       :form form
+                                                       :concept concept-set
+                                                       :sort nil)]
+                         (ds/add-column d (ds/new-column :ticker (repeat (ds/row-count d) ticker))))
+                       (catch Exception _
+                         nil))))
+        combined (if (seq rows)
+                   (apply ds/concat rows)
+                   (ds/->dataset []))]
     (if (nil? as-of)
       combined
       (let [filtered (ds/filter-column combined :filed #(not (pos? (compare % as-of))))
