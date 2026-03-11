@@ -11,6 +11,35 @@ All notable changes to edgarjure are documented here.
 
 ---
 
+## [Unreleased — Phase 4: Additional Infrastructure]
+
+### Added
+
+**Fixture-based offline tests**
+- `test/edgar/tables_test.clj` — fixture HTML string (`fixture-tables-html`) embedded in the test namespace; fixture-driven tests cover `extract-tables` end-to-end (`:nth`, `:min-rows`, dedup column names), `cell-text`, `row-cells` (direct-child-only extraction), `extract-table`, `matrix->dataset` column deduplication, `parse-number`, `infer-column`, and `layout-table?`. No network access required.
+- `test/edgar/forms/form4_test.clj` — fixture XML string; covers `parse-issuer`, `parse-owner`, `parse-non-derivative`.
+- `test/edgar/forms/form13f_test.clj` — fixture XML string; covers `parse-report-summary`, `parse-holding`, `is-amendment?`.
+- All fixture tests are offline (no HTTP calls) and run under `clj -M:test`.
+
+**Exhibit and XBRL document API (`edgar.filing` / `edgar.api`)**
+- `filing/filing-exhibits` — filters the filing index for entries whose `:type` starts with `"EX-"`. Returns a seq of maps `{:name :type :document :description :sequence}`.
+- `filing/filing-exhibit` — returns the first index entry matching a given exhibit type string (e.g. `"EX-21"`), or `nil`. Fetch its content with `(filing/filing-document filing (:name exhibit))`.
+- `filing/filing-xbrl-docs` — returns index entries whose `:type` starts with `"EX-101"` or whose `:name` ends with `".xsd"`. Covers instance, schema, calculation, label, presentation, and definition linkbases.
+- Exposed via `edgar.api` as `e/exhibits`, `e/exhibit`, and `e/xbrl-docs`.
+
+**`:as-of` on `e/panel` / `edgar.dataset/multi-company-facts`**
+- `dataset/multi-company-facts` now accepts `:as-of "YYYY-MM-DD"`. When set, observations where `:filed > as-of-date` are excluded, then deduplication keeps the most recently filed survivor per `[ticker concept end]` key — identical look-ahead-safe semantics to `edgar.financials/dedup-point-in-time`.
+- Exposed via `(e/panel [...] :as-of "2022-01-01")`. The `:as-of` key is now part of `schema/PanelArgs` and Malli-validated.
+
+**Malli input validation (`edgar.schema` / `edgar.api`)**
+- New namespace `src/edgar/schema.clj` — defines Malli map schemas for every public `edgar.api` function argument and a shared `validate!` helper. Invalid args throw `ex-info` with `{:type ::edgar.schema/invalid-args :args {...} :errors {...}}`.
+- Schemas: `InitArgs`, `FilingsArgs`, `FilingArgs`, `FactsArgs`, `StatementArgs`, `FrameArgs`, `PanelArgs`, `SearchArgs`, `SearchFilingsArgs`, `TablesArgs`, `FilingByAccessionArgs`.
+- Primitive schemas: `NonBlankString`, `TickerOrCIK`, `ISODate`, `FormType`, `ShapeKw`, `ConceptArg`, `AccessionNumber`, `PositiveInt`, `TaxonomyStr`, `FrameStr`.
+- All public functions in `edgar.api` call `schema/validate!` at entry. Inner namespaces (`edgar.filings`, `edgar.xbrl`, etc.) do not validate — validation is centralised in the facade.
+- `metosin/malli` 0.16.4 promoted from `:future` alias to main `deps.edn` deps.
+
+---
+
 ## [Unreleased — previous batch]
 
 ### Added

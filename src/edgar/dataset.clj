@@ -37,8 +37,10 @@
    Returns a long-format dataset with an additional :ticker column.
    Options:
      :concept   - string or collection of concept strings to keep (default all)
-     :form      - \"10-K\" | \"10-Q\" (default \"10-K\")"
-  [tickers & {:keys [concept form] :or {form "10-K"}}]
+     :form      - \"10-K\" | \"10-Q\" (default \"10-K\")
+     :as-of     - \"YYYY-MM-DD\" string; exclude filings submitted after this date
+                  and keep only the most recently filed observation per [ticker concept end]"
+  [tickers & {:keys [concept form as-of] :or {form "10-K"}}]
   (let [concept-set (when concept
                       (if (string? concept) #{concept} (set concept)))
         rows (for [ticker tickers
@@ -47,8 +49,20 @@
                                                     :form form
                                                     :concept concept-set
                                                     :sort nil)]]
-               (ds/add-column ds :ticker (repeat (ds/row-count ds) ticker)))]
-    (apply ds/concat rows)))
+               (ds/add-column ds :ticker (repeat (ds/row-count ds) ticker)))
+        combined (apply ds/concat rows)]
+    (if (nil? as-of)
+      combined
+      (let [filtered (ds/filter-column combined :filed #(not (pos? (compare % as-of))))
+            deduped (reduce (fn [acc row]
+                              (let [k [(:ticker row) (:concept row) (:end row)]]
+                                (if (or (not (contains? acc k))
+                                        (pos? (compare (:filed row) (:filed (get acc k)))))
+                                  (assoc acc k row)
+                                  acc)))
+                            {}
+                            (ds/rows filtered))]
+        (ds/->dataset (vals deduped))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Cross-sectional frame dataset
