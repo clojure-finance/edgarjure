@@ -108,6 +108,39 @@
          (str out-file))))))
 
 ;;; ---------------------------------------------------------------------------
+;;; Exhibit and XBRL document access
+;;; ---------------------------------------------------------------------------
+
+(defn filing-exhibits
+  "Return all exhibit entries from a filing's index as a seq of maps.
+   Each map has :name :type :document :description :sequence.
+   Exhibits have :type values beginning with \"EX-\" (e.g. \"EX-21\", \"EX-31.1\")."
+  [filing]
+  (let [idx (filing-index filing)]
+    (->> (:files idx)
+         (filter #(some-> (:type %) (str/starts-with? "EX-"))))))
+
+(defn filing-exhibit
+  "Return the first exhibit entry matching exhibit-type (e.g. \"EX-21\").
+   Returns nil if no matching exhibit is found.
+   Fetch its content with (filing-document filing (:name exhibit))."
+  [filing exhibit-type]
+  (let [idx (filing-index filing)]
+    (->> (:files idx)
+         (filter #(= exhibit-type (:type %)))
+         first)))
+
+(defn filing-xbrl-docs
+  "Return all XBRL-related document entries from a filing's index as a seq of maps.
+   Covers EX-101.* linkbases (instance, schema, calculation, label,
+   presentation, definition) and .xsd schema files."
+  [filing]
+  (let [idx (filing-index filing)]
+    (->> (:files idx)
+         (filter #(or (some-> (:type %) (str/starts-with? "EX-101"))
+                      (some-> (:name %) (str/ends-with? ".xsd")))))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Form-type dispatch — edgar.filing/obj
 ;;; Parsers for specific form types live in edgar.forms.*
 ;;; This multimethod is the extension point.

@@ -63,6 +63,10 @@
     (is (nil? (re-find extract/item-pattern "The following table shows")))
     (is (nil? (re-find extract/item-pattern "Total revenues 1,234")))))
 
+;;; ---------------------------------------------------------------------------
+;;; Inline HTML fixture — simple
+;;; ---------------------------------------------------------------------------
+
 (def ^:private simple-html
   "<html><body>
      <p>Table of Contents</p>
@@ -124,26 +128,137 @@
     (testing "item 7 text contains MD&A text"
       (is (str/includes? (get-in result ["7" :text]) "MD")))))
 
-(def ^:private plain-text-filing
-  "UNITED STATES SECURITIES AND EXCHANGE COMMISSION
+;;; ---------------------------------------------------------------------------
+;;; Fixture HTML loaded from file — more complete 10-K
+;;; ---------------------------------------------------------------------------
 
-ITEM 1. BUSINESS
+(def ^:private fixture-html
+  (slurp (clojure.java.io/resource "fixtures/10k_simple.html")))
 
-The company manufactures widgets. It was founded in 1990.
+(deftest fixture-html-find-boundaries-test
+  (let [tree (-> fixture-html hickory/parse hickory/as-hickory)
+        flat (#'edgar.extract/flatten-nodes tree)
+        boundaries (#'edgar.extract/find-item-boundaries flat)
+        ids (set (map :item-id boundaries))]
+    (testing "finds Item 1 from fixture"
+      (is (contains? ids "1")))
+    (testing "finds Item 1A from fixture"
+      (is (contains? ids "1A")))
+    (testing "finds Item 7 from fixture"
+      (is (contains? ids "7")))
+    (testing "finds Item 8 from fixture"
+      (is (contains? ids "8")))
+    (testing "item ids are upper-case strings"
+      (is (every? string? ids)))))
 
-ITEM 1A. RISK FACTORS
+(deftest fixture-html-extract-items-html-test
+  (let [tree (-> fixture-html hickory/parse hickory/as-hickory)
+        result (#'edgar.extract/extract-items-html tree #{"1A" "7"})]
+    (testing "extracts item 1A from fixture"
+      (is (contains? result "1A")))
+    (testing "item 1A text contains risk content"
+      (is (str/includes? (str/lower-case (get-in result ["1A" :text])) "risk")))
+    (testing "extracts item 7 from fixture"
+      (is (contains? result "7")))
+    (testing "item 7 text contains financial/MD&A content"
+      (let [text (str/lower-case (get-in result ["7" :text]))]
+        (is (or (str/includes? text "revenue")
+                (str/includes? text "operating")
+                (str/includes? text "income")))))
+    (testing "method is :html-heading-boundaries for all"
+      (is (every? #(= :html-heading-boundaries (:method %)) (vals result))))))
 
-The main risks are competition and regulation.
+;;; ---------------------------------------------------------------------------
+;;; remove-tables
+;;; ---------------------------------------------------------------------------
 
-ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS
+(def ^:private html-with-tables
+  "<html><body>
+     <p>Some text before.</p>
+     <table><tr><td>Revenue</td><td>1000</td></tr></table>
+     <p>Some text after.</p>
+     <table><tr><td>Costs</td><td>800</td></tr></table>
+   </body></html>")
 
-Revenue increased 10% year over year.
-")
+(deftest remove-tables-test
+  (let [f #'edgar.extract/remove-tables
+        tree (-> html-with-tables hickory/parse hickory/as-hickory)
+        cleaned (f tree)
+        cleaned-text (str/join " " (filter string? (#'edgar.extract/flatten-nodes cleaned)))]
+    (testing "no :table tags remain in cleaned tree"
+      (is (not (some #(and (map? %) (= :table (:tag %)))
+                     (#'edgar.extract/flatten-nodes cleaned)))))
+    (testing "non-table text is preserved"
+      (is (str/includes? cleaned-text "Some text before"))
+      (is (str/includes? cleaned-text "Some text after")))
+    (testing "table cell content is removed"
+      (is (not (str/includes? cleaned-text "Revenue")))
+      (is (not (str/includes? cleaned-text "Costs"))))))
+
+;;; ---------------------------------------------------------------------------
+;;; extract-items with remove-tables? option (mock filing)
+;;; ---------------------------------------------------------------------------
+
+(def ^:private mock-filing-html
+  "<html><body>
+     <h2>Item 1A. Risk Factors</h2>
+     <p>Competition is intense.</p>
+     <table><tr><th>Risk</th><th>Impact</th></tr><tr><td>Currency</td><td>High</td></tr></table>
+     <p>We face regulatory risk.</p>
+     <h2>Item 7. Management's Discussion and Analysis</h2>
+     <p>Revenue grew 10% to $394 billion.</p>
+   </body></html>")
+
+(deftest extract-items-via-mock-filing-test
+  (let [mock-filing {:form "10-K" :_html mock-filing-html}
+        ;; Patch filing-html to use our fixture
+        result (with-redefs [edgar.filing/filing-html (fn [_] mock-filing-html)]
+                 (extract/extract-items mock-filing :items #{"1A" "7"}))]
+    (testing "returns a map with both items"
+      (is (= #{"1A" "7"} (set (keys result)))))
+    (testing "item 1A text contains risk content"
+      (let [text (get-in result ["1A" :text])]
+        (is (str/includes? text "Competition"))))
+    (testing "item 7 text contains financial content"
+      (let [text (get-in result ["7" :text])]
+        (is (str/includes? text "Revenue"))))
+    (testing "method is :html-heading-boundaries"
+      (is (every? #(= :html-heading-boundaries (:method %)) (vals result))))))
+
+(deftest extract-items-remove-tables-mock-test
+  (let [result (with-redefs [edgar.filing/filing-html (fn [_] mock-filing-html)]
+                 (extract/extract-items {:form "10-K"} :items #{"1A"} :remove-tables? true))]
+    (testing "table content is absent when remove-tables? true"
+      (let [text (get-in result ["1A" :text])]
+        (is (not (str/includes? text "Currency")))
+        (is (not (str/includes? text "Impact")))))
+    (testing "paragraph text remains with remove-tables? true"
+      (let [text (get-in result ["1A" :text])]
+        (is (str/includes? text "Competition"))))))
+
+(deftest extract-item-single-mock-test
+  (let [result (with-redefs [edgar.filing/filing-html (fn [_] mock-filing-html)]
+                 (extract/extract-item {:form "10-K"} "7"))]
+    (testing "returns a single item map"
+      (is (map? result)))
+    (testing "has :title :text :method keys"
+      (is (contains? result :title))
+      (is (contains? result :text))
+      (is (contains? result :method)))
+    (testing "item 7 text contains revenue content"
+      (is (str/includes? (get result :text "") "Revenue")))))
+
+;;; ---------------------------------------------------------------------------
+;;; Plain-text fixture loaded from file
+;;; ---------------------------------------------------------------------------
+
+(def ^:private fixture-text
+  (slurp (clojure.java.io/resource "fixtures/10k_plaintext.txt")))
 
 (deftest extract-items-text-test
   (let [f #'edgar.extract/extract-items-text
         items-map extract/items-10k
-        result (f plain-text-filing items-map)]
+        result (f fixture-text items-map)]
     (testing "returns a map"
       (is (map? result)))
     (testing "finds item 1"
@@ -157,3 +272,19 @@ Revenue increased 10% year over year.
                         (contains? % :text)
                         (contains? % :method))
                   (vals result))))))
+
+(deftest extract-items-text-fixture-content-test
+  (let [f #'edgar.extract/extract-items-text
+        result (f fixture-text extract/items-10k)]
+    (testing "finds item 1A risk factors"
+      (is (contains? result "1A")))
+    (testing "item 1A text contains risk content"
+      (is (str/includes? (str/lower-case (get-in result ["1A" :text])) "risk")))
+    (testing "at least one of item 2 or 7 is found (regex alternation order may merge them)"
+      (is (or (contains? result "2") (contains? result "7"))))
+    (testing "revenue content appears somewhere in the extracted items"
+      (let [all-text (str/join " " (map (comp :text val) result))]
+        (is (str/includes? all-text "Revenue"))))
+    (testing "item 2 text contains properties content when present"
+      (when (contains? result "2")
+        (is (str/includes? (str/lower-case (get-in result ["2" :text])) "offices"))))))

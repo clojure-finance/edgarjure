@@ -1,0 +1,33 @@
+UNITED STATES SECURITIES AND EXCHANGE COMMISSION
+Washington, D.C. 20549
+
+FORM 10-K
+
+ITEM 1. BUSINESS
+
+The company manufactures widgets and has done so since 1990.
+It operates in 50 countries with 100,000 employees.
+
+ITEM 1A. RISK FACTORS
+
+Competition risk: The widget market is highly competitive.
+Regulatory risk: New regulations may affect operations.
+Currency risk: We operate in multiple currencies.
+
+ITEM 2. PROPERTIES
+
+The company owns offices in New York and San Francisco.
+
+ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS
+
+Revenue for fiscal year 2023 was $10 billion, up 15% year-over-year.
+Operating expenses increased by 8% due to higher labor costs.
+Net income was $2 billion, representing a 20% net margin.
+
+ITEM 7A. QUANTITATIVE AND QUALITATIVE DISCLOSURES ABOUT MARKET RISK
+
+The company is exposed to interest rate and currency risks.
+
+ITEM 8. FINANCIAL STATEMENTS AND SUPPLEMENTARY DATA
+
+See the attached financial statements.

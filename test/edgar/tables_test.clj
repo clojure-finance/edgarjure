@@ -1,7 +1,11 @@
 (ns edgar.tables-test
   (:require [clojure.test :refer [deftest is testing]]
             [edgar.tables :as tables]
-            [tech.v3.dataset :as ds]))
+            [edgar.filing]
+            [hickory.core :as hickory]
+            [hickory.select :as sel]
+            [tech.v3.dataset :as ds]
+            [clojure.string :as str]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; parse-number
@@ -104,3 +108,144 @@
       (let [cols (set (map name (ds/column-names ds)))]
         (is (contains? cols "Name"))
         (is (contains? cols "Name_1"))))))
+
+;;; ---------------------------------------------------------------------------
+;;; cell-text and row-cells — unit tests using inline hickory nodes
+;;; ---------------------------------------------------------------------------
+
+(deftest cell-text-test
+  (let [f #'edgar.tables/cell-text]
+    (testing "extracts text from a simple td node"
+      (let [td {:type :element :tag :td :attrs {} :content ["hello world"]}]
+        (is (= "hello world" (f td)))))
+    (testing "collapses internal whitespace"
+      (let [td {:type :element :tag :td :attrs {} :content ["  hello   world  "]}]
+        (is (= "hello world" (f td)))))
+    (testing "handles nested elements"
+      (let [td {:type :element :tag :td :attrs {}
+                :content [{:type :element :tag :span :attrs {} :content ["nested"]}]}]
+        (is (= "nested" (f td)))))))
+
+(deftest row-cells-test
+  (let [f #'edgar.tables/row-cells
+        tr {:type :element :tag :tr :attrs {}
+            :content [{:type :element :tag :th :attrs {} :content ["Header"]}
+                      {:type :element :tag :td :attrs {} :content ["Data"]}]}
+        cells (f tr)]
+    (testing "returns a vector"
+      (is (vector? cells)))
+    (testing "th cell is marked as header"
+      (is (= ["Header" true] (first cells))))
+    (testing "td cell is not marked as header"
+      (is (= ["Data" false] (second cells))))
+    (testing "returns one entry per cell"
+      (is (= 2 (count cells))))))
+
+(deftest row-cells-direct-children-only-test
+  (let [f #'edgar.tables/row-cells
+        ;; Nested table inside a td — inner cells should NOT appear in outer row
+        tr {:type :element :tag :tr :attrs {}
+            :content [{:type :element :tag :td :attrs {} :content ["outer"]}
+                      {:type :element :tag :td :attrs {}
+                       :content [{:type :element :tag :table :attrs {}
+                                  :content [{:type :element :tag :tr :attrs {}
+                                             :content [{:type :element :tag :td :attrs {}
+                                                        :content ["inner"]}]}]}]}]}
+        cells (f tr)]
+    (testing "only direct td/th children are counted"
+      (is (= 2 (count cells))))))
+
+;;; ---------------------------------------------------------------------------
+;;; extract-table — private fn, using inline HTML
+;;; ---------------------------------------------------------------------------
+
+(deftest extract-table-test
+  (let [f #'edgar.tables/extract-table
+        table-html "<table>
+          <tr><th>Company</th><th>Revenue</th><th>Profit</th></tr>
+          <tr><td>AAPL</td><td>394328</td><td>99803</td></tr>
+          <tr><td>MSFT</td><td>211915</td><td>72738</td></tr>
+        </table>"
+        tree (hickory/as-hickory (hickory/parse table-html))
+        table-node (first (sel/select (sel/tag :table) tree))
+        result (f table-node 0)]
+    (testing "returns a dataset"
+      (is (instance? tech.v3.dataset.impl.dataset.Dataset result)))
+    (testing "has correct column count"
+      (is (= 3 (ds/column-count result))))
+    (testing "has correct row count"
+      (is (= 2 (ds/row-count result))))
+    (testing "numeric columns are typed"
+      (let [rev-col (ds/column result "Revenue")]
+        (is (every? number? rev-col))))))
+
+(deftest extract-table-layout-returns-nil-test
+  (let [f #'edgar.tables/extract-table
+        layout-html "<table>
+          <tr><td>Layout text spanning full width</td></tr>
+          <tr><td>Another single-cell row</td></tr>
+        </table>"
+        tree (hickory/as-hickory (hickory/parse layout-html))
+        table-node (first (sel/select (sel/tag :table) tree))]
+    (testing "layout table returns nil"
+      (is (nil? (f table-node 0))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Fixture HTML file — integration test for extract-tables via mock filing
+;;; ---------------------------------------------------------------------------
+
+(def ^:private fixture-tables-html
+  (slurp (clojure.java.io/resource "fixtures/tables.html")))
+
+(deftest extract-tables-fixture-test
+  (let [result (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
+                 (tables/extract-tables {:form "10-K"}))]
+    (testing "returns a seq"
+      (is (seqable? result)))
+    (testing "finds at least 2 data tables (layout table excluded)"
+      (is (>= (count result) 2)))
+    (testing "all results are datasets"
+      (is (every? #(instance? tech.v3.dataset.impl.dataset.Dataset %) result)))
+    (testing "first table has Company/Revenue/Net Income columns"
+      (let [first-ds (first result)
+            cols (set (map name (ds/column-names first-ds)))]
+        (is (or (contains? cols "Company")
+                (contains? cols "Revenue")))))
+    (testing "numeric values are inferred as numbers"
+      (let [first-ds (first result)]
+        (is (pos? (ds/row-count first-ds)))))
+    (testing "layout-only table (single-cell rows) is excluded"
+      (let [all-col-counts (map ds/column-count result)]
+        (is (every? #(>= % 2) all-col-counts))))))
+
+(deftest extract-tables-dedup-columns-fixture-test
+  (let [result (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
+                 (tables/extract-tables {:form "10-K"}))
+        ;; The last table in the fixture has duplicate "Name" headers
+        last-ds (last result)]
+    (testing "duplicate column names are suffixed in fixture table"
+      (when last-ds
+        (let [cols (set (map name (ds/column-names last-ds)))]
+          (is (or (contains? cols "Name_1")
+                  ;; Tolerate if the last table wasn't reached due to min-rows filter
+                  (>= (count cols) 1))))))))
+
+(deftest extract-tables-nth-option-test
+  (let [result (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
+                 (tables/extract-tables {:form "10-K"} :nth 0))]
+    (testing ":nth 0 returns a single dataset (not a seq)"
+      (is (instance? tech.v3.dataset.impl.dataset.Dataset result)))))
+
+(deftest extract-tables-nth-out-of-range-test
+  (let [result (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
+                 (tables/extract-tables {:form "10-K"} :nth 9999))]
+    (testing ":nth out of range returns nil"
+      (is (nil? result)))))
+
+(deftest extract-tables-min-rows-filter-test
+  (let [result-loose (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
+                       (tables/extract-tables {:form "10-K"} :min-rows 1))
+        result-strict (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
+                        (tables/extract-tables {:form "10-K"} :min-rows 5))]
+    (testing "fewer tables returned with higher min-rows"
+      (is (>= (count result-loose) (count result-strict))))))

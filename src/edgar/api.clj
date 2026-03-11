@@ -16,7 +16,8 @@
             [edgar.xbrl :as xbrl]
             [edgar.financials :as financials]
             [edgar.dataset :as dataset]
-            [edgar.tables :as tables-ns]))
+            [edgar.tables :as tables-ns]
+            [edgar.schema :as schema]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Identity
@@ -27,6 +28,7 @@
    Must be called once before any other function.
    Example: (e/init! \"Your Name your@email.com\")"
   [name-and-email]
+  (schema/validate! schema/InitArgs {:name-and-email name-and-email})
   (core/set-identity! name-and-email))
 
 ;;; ---------------------------------------------------------------------------
@@ -75,6 +77,7 @@
    Options:
      :limit - max results (default 10)"
   [query & {:keys [limit] :or {limit 10}}]
+  (schema/validate! schema/SearchArgs {:query query :limit limit})
   (company/search-companies query :limit limit))
 
 ;;; ---------------------------------------------------------------------------
@@ -91,6 +94,12 @@
      :include-amends? - include amended filings e.g. 10-K/A (default false)"
   [ticker-or-cik & {:keys [form start-date end-date limit include-amends?]
                     :or {include-amends? false}}]
+  (schema/validate! schema/FilingsArgs {:ticker-or-cik ticker-or-cik
+                                        :form form
+                                        :start-date start-date
+                                        :end-date end-date
+                                        :limit limit
+                                        :include-amends? include-amends?})
   (filings/get-filings ticker-or-cik
                        :form form
                        :start-date start-date
@@ -105,6 +114,10 @@
      :n               - return the nth latest (0-indexed, default 0)
      :include-amends? - include amended filings (default false)"
   [ticker-or-cik & {:keys [form n include-amends?] :or {form "10-K" n 0 include-amends? false}}]
+  (schema/validate! schema/FilingArgs {:ticker-or-cik ticker-or-cik
+                                       :form form
+                                       :n n
+                                       :include-amends? include-amends?})
   (nth (filings/get-filings ticker-or-cik :form form :include-amends? include-amends?) n nil))
 
 (defn latest-effective-filing
@@ -129,6 +142,11 @@
      :end-date   - \"YYYY-MM-DD\"
      :limit      - max results (default 10)"
   [query & {:keys [forms start-date end-date limit] :or {limit 10}}]
+  (schema/validate! schema/SearchFilingsArgs {:query query
+                                              :forms forms
+                                              :start-date start-date
+                                              :end-date end-date
+                                              :limit limit})
   (filings/search-filings query
                           :forms forms
                           :start-date start-date
@@ -181,6 +199,7 @@
    Returns a filing map ready for e/html, e/text, e/items, e/obj, etc.
    Example: (e/filing-by-accession \"0000320193-23-000106\")"
   [accession-number]
+  (schema/validate! schema/FilingByAccessionArgs {:accession-number accession-number})
   (filing/filing-by-accession accession-number))
 
 (defn html
@@ -255,6 +274,53 @@
   [filing-map dir]
   (filing/filing-save-all! filing-map dir))
 
+(defn exhibits
+  "Return all exhibit entries from a filing's index as a seq of maps.
+   Each map has :name :type :document :description :sequence.
+   Exhibits have :type values beginning with \"EX-\" (e.g. \"EX-21\", \"EX-31.1\").
+
+   Example:
+     (def f (e/filing \"AAPL\" :form \"10-K\"))
+     (e/exhibits f)
+     ;=> ({:type \"EX-21\" :name \"aapl-20230930_g2.htm\" :description \"Subsidiaries\" ...} ...)
+
+   Fetch an exhibit's content:
+     (let [ex (e/exhibit f \"EX-21\")]
+       (e/filing-document f (:name ex)))"
+  [filing-map]
+  (filing/filing-exhibits filing-map))
+
+(defn exhibit
+  "Return the first exhibit matching exhibit-type (e.g. \"EX-21\").
+   Returns nil if no matching exhibit is found.
+
+   Common exhibit types:
+     \"EX-21\"   — subsidiaries list
+     \"EX-23\"   — auditor consent
+     \"EX-31.1\" — CEO Sarbanes-Oxley certification
+     \"EX-31.2\" — CFO Sarbanes-Oxley certification
+     \"EX-32\"   — Section 906 certifications
+
+   Example:
+     (def f (e/filing \"AAPL\" :form \"10-K\"))
+     (def ex (e/exhibit f \"EX-21\"))
+     (e/filing-document f (:name ex))"
+  [filing-map exhibit-type]
+  (filing/filing-exhibit filing-map exhibit-type))
+
+(defn xbrl-docs
+  "Return all XBRL-related document entries from a filing's index as a seq of maps.
+   Covers EX-101.* linkbases: instance (.xml), schema (.xsd), calculation,
+   label, presentation, and definition linkbases.
+
+   Example:
+     (def f (e/filing \"AAPL\" :form \"10-K\"))
+     (e/xbrl-docs f)
+     ;=> ({:type \"EX-101.SCH\" :name \"aapl-20230930.xsd\" ...}
+     ;    {:type \"EX-101.CAL\" :name \"aapl-20230930_cal.xml\" ...} ...)"
+  [filing-map]
+  (filing/filing-xbrl-docs filing-map))
+
 ;;; ---------------------------------------------------------------------------
 ;;; XBRL / company facts
 ;;; ---------------------------------------------------------------------------
@@ -269,6 +335,7 @@
      (e/facts \"AAPL\" :concept \"Assets\")
      (e/facts \"AAPL\" :concept [\"Assets\" \"NetIncomeLoss\"] :form \"10-K\")"
   [ticker-or-cik & {:keys [concept form]}]
+  (schema/validate! schema/FactsArgs {:ticker-or-cik ticker-or-cik :concept concept :form form})
   (xbrl/get-facts-dataset (company/company-cik ticker-or-cik)
                           :concept concept
                           :form form))
@@ -286,6 +353,7 @@
      (e/frame \"Assets\" \"CY2023Q4I\")
      (e/frame \"SharesOutstanding\" \"CY2023Q4I\" :unit \"shares\")"
   [concept period & {:keys [taxonomy unit] :or {taxonomy "us-gaap" unit "USD"}}]
+  (schema/validate! schema/FrameArgs {:concept concept :period period :taxonomy taxonomy :unit unit})
   (xbrl/get-concept-frame concept period :taxonomy taxonomy :unit unit))
 
 ;;; ---------------------------------------------------------------------------
@@ -309,6 +377,7 @@
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode)."
   [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
+  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape :as-of as-of})
   (financials/income-statement ticker-or-cik :form form :shape shape :as-of as-of))
 
 (defn balance
@@ -320,6 +389,7 @@
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode)."
   [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
+  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape :as-of as-of})
   (financials/balance-sheet ticker-or-cik :form form :shape shape :as-of as-of))
 
 (defn cashflow
@@ -331,6 +401,7 @@
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode)."
   [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
+  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape :as-of as-of})
   (financials/cash-flow ticker-or-cik :form form :shape shape :as-of as-of))
 
 (defn financials
@@ -342,6 +413,7 @@
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                All three statements use point-in-time deduplication."
   [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
+  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape :as-of as-of})
   (let [stmts (financials/get-financials ticker-or-cik :form form :shape shape :as-of as-of)]
     {:income (:income-statement stmts)
      :balance (:balance-sheet stmts)
@@ -357,10 +429,15 @@
    Options:
      :concept - string or collection of strings (default all concepts)
      :form    - \"10-K\" (default) or \"10-Q\"
+     :as-of   - \"YYYY-MM-DD\" string; point-in-time filter — excludes filings submitted
+                after this date and deduplicates per [ticker concept end] keeping the
+                most recently filed observation available at that date
    Example:
-     (e/panel [\"AAPL\" \"MSFT\" \"GOOG\"] :concept [\"Assets\" \"NetIncomeLoss\"])"
-  [tickers & {:keys [concept form] :or {form "10-K"}}]
-  (dataset/multi-company-facts tickers :concept concept :form form))
+     (e/panel [\"AAPL\" \"MSFT\" \"GOOG\"] :concept [\"Assets\" \"NetIncomeLoss\"])
+     (e/panel [\"AAPL\" \"MSFT\"] :concept \"Assets\" :as-of \"2022-01-01\")"
+  [tickers & {:keys [concept form as-of] :or {form "10-K"}}]
+  (schema/validate! schema/PanelArgs {:tickers tickers :concept concept :form form :as-of as-of})
+  (dataset/multi-company-facts tickers :concept concept :form form :as-of as-of))
 
 (defn pivot
   "Pivot a long-format facts dataset to wide format.
