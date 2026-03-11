@@ -64,8 +64,9 @@
 
 (defn- build-statement
   "Extract a financial statement from a facts dataset.
-   Filters to the given concepts, annual filings, deduplicates by :end + :concept.
-   Returns a wide dataset: rows are periods, columns are concepts."
+   Filters to the given concepts and form type, deduplicates by :end + :concept.
+   Returns a long-format dataset. Use (e/pivot ...) or (dataset/pivot-wide ...)
+   to reshape to wide format: (e/pivot (e/income \"AAPL\"))."
   [facts-ds concepts & {:keys [form] :or {form "10-K"}}]
   (let [filtered (-> facts-ds
                      (ds/filter-column :concept #(contains? (set concepts) %))

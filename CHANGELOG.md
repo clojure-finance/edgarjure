@@ -7,7 +7,20 @@ All notable changes to edgarjure are documented here.
 ### Added
 - `edgar.forms.form4` — Form 4 parser (Statement of Changes in Beneficial Ownership / insider trades). Parses issuer, reporting owner, non-derivative and derivative transactions from XML. Registers `filing-obj "4"` via the standard multimethod. No new dependencies — uses only `clojure.xml` and `clojure.string`.
 
+### Fixed
+
+**`edgar.filings`**
+- `get-filings` now fetches all submission chunks for active filers with >1000 filings. Previously only read `[:filings :recent]` from the main submissions JSON, silently truncating filing history. Now checks `[:filings :files]` for additional chunk references (e.g. `CIK0000320193-submissions-001.json`) and concatenates them before filtering. Companies like AAPL now return their full history back to 1993.
+
+**`edgar.financials`**
+- `build-statement` docstring corrected: it returns a **long-format** dataset, not a wide dataset. Updated docstring notes that users compose `(e/pivot (e/income "AAPL"))` for wide format.
+
 ### Changed
+
+**`deps.edn`**
+- Moved five unused dependencies from core `:deps` to a new `:future` alias: `next.jdbc`, `honeysql`, `sqlite-jdbc`, `malli`, and `datajure`. None are referenced in any source file. Core install weight reduced by ~15 MB. Activate with `clj -M:future` when those namespaces are implemented.
+
+### Changed (prior)
 
 **`edgar.filings`**
 - `get-filing` converted from positional `[ticker-or-cik form]` to keyword args `[ticker-or-cik & {:keys [form n] :or {n 0}}]`. Supports `:n` for nth-latest filing (0-indexed). Old call `(get-filing "AAPL" "10-K")` must be updated to `(get-filing "AAPL" :form "10-K")`.

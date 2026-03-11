@@ -33,6 +33,18 @@
 ;;; Get filings for a company
 ;;; ---------------------------------------------------------------------------
 
+(defn- fetch-extra-filings
+  "Fetch additional submission chunks listed in [:filings :files] and return
+   a seq of raw (un-enriched) filing maps."
+  [company]
+  (let [extra-files (get-in company [:filings :files])]
+    (when (seq extra-files)
+      (mapcat (fn [file-entry]
+                (let [url (str core/submissions-url "/" (:name file-entry))
+                      chunk (core/edgar-get url)]
+                  (parse-filings-recent (:recent chunk))))
+              extra-files))))
+
 (defn get-filings
   "Return a lazy seq of filing metadata maps for a company.
    ticker-or-cik : ticker string or CIK integer/string
@@ -44,8 +56,9 @@
   [ticker-or-cik & {:keys [form start-date end-date limit]}]
   (let [cik (company/company-cik ticker-or-cik)
         company (core/edgar-get (core/cik-url cik))
-        recent (get-in company [:filings :recent])
-        filings (->> (parse-filings-recent recent)
+        main-filings (parse-filings-recent (get-in company [:filings :recent]))
+        extra-filings (fetch-extra-filings company)
+        filings (->> (concat main-filings extra-filings)
                      (map #(enrich-filing cik %)))]
     (cond->> filings
       form (filter #(= form (:form %)))
