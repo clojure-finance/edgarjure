@@ -1,5 +1,9 @@
 # edgarjure
 
+[![Clojars Project](https://img.shields.io/clojars/v/com.github.clojure-finance/edgarjure.svg)](https://clojars.org/com.github.clojure-finance/edgarjure)
+[![cljdoc](https://cljdoc.org/badge/com.github.clojure-finance/edgarjure)](https://cljdoc.org/d/com.github.clojure-finance/edgarjure)
+[![CI](https://github.com/clojure-finance/edgarjure/actions/workflows/release.yml/badge.svg)](https://github.com/clojure-finance/edgarjure/actions/workflows/release.yml)
+
 **A Clojure library for SEC EDGAR — filings, financials, and XBRL data, ready for research.**
 
 Every public company in the U.S. files its financials, insider trades, institutional holdings, and risk disclosures with the SEC. That's decades of structured data covering thousands of firms — but getting at it programmatically means dealing with paginated APIs, inconsistent HTML, XBRL taxonomies, and rate limits. The Python ecosystem has several good libraries for different parts of this problem. edgarjure brings all of that functionality into a single Clojure stack built on `tech.ml.dataset`.
@@ -32,10 +36,8 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 ## Installation
 
 ```clojure
-;; deps.edn — add as a git dependency (replace SHA with latest)
-{:deps {com.github.clojure-finance/edgarjure
-        {:git/url "https://github.com/clojure-finance/edgarjure"
-         :git/sha "LATEST_SHA"}}}
+;; deps.edn
+{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.1.0"}}}
 ```
 
 ## Getting Started
