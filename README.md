@@ -1,7 +1,7 @@
 # edgarjure
 
 [![Clojars Project](https://img.shields.io/clojars/v/com.github.clojure-finance/edgarjure.svg)](https://clojars.org/com.github.clojure-finance/edgarjure)
-[![CI](https://github.com/clojure-finance/edgarjure/actions/workflows/release.yml/badge.svg?label=CI)](https://github.com/clojure-finance/edgarjure/actions/workflows/release.yml)
+[![CI](https://github.com/clojure-finance/edgarjure/actions/workflows/ci.yml/badge.svg)](https://github.com/clojure-finance/edgarjure/actions/workflows/ci.yml)
 [![cljdoc](https://cljdoc.org/badge/com.github.clojure-finance/edgarjure)](https://cljdoc.org/d/com.github.clojure-finance/edgarjure)
 
 **A Clojure library for SEC EDGAR — filings, financials, and XBRL data, ready for research.**
