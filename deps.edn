@@ -31,12 +31,9 @@
    :main-opts   ["-m" "edgar.test-runner"]}
 
   :build
-  {:deps    {io.github.clojure/tools.build {:mvn/version "0.10.5"}}
+  {:deps       {io.github.clojure/tools.build {:mvn/version "0.10.5"}
+                slipset/deps-deploy           {:mvn/version "0.2.2"}}
    :ns-default build}
-
-  :deploy
-  {:deps    {slipset/deps-deploy {:mvn/version "0.2.2"}}
-   :ns-default deps-deploy.deploy}
 
   :future
   {:extra-deps {;; Persistence (edgar.db ? not yet implemented)

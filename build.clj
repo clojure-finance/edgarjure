@@ -1,5 +1,6 @@
 (ns build
-  (:require [clojure.tools.build.api :as b]))
+  (:require [clojure.tools.build.api :as b]
+            [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'com.github.clojure-finance/edgarjure)
 (def version "0.1.0")
@@ -42,3 +43,10 @@
               :version   version
               :jar-file  jar-file
               :class-dir class-dir}))
+
+(defn deploy [_]
+  (jar nil)
+  (dd/deploy {:installer :remote
+              :artifact  jar-file
+              :pom-file  (b/pom-path {:lib       lib
+                                      :class-dir class-dir})}))
