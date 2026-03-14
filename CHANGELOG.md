@@ -2,6 +2,26 @@
 
 All notable changes to edgarjure are documented here.
 
+## [Unreleased — filing index HTML migration + integration tests]
+
+### Fixed
+
+**`edgar.filing/filing-index-url` and `doc-url` — CIK zero-padding in archives path**
+- Both functions were passing the zero-padded 10-digit CIK (e.g. `"0000320193"`) directly into the SEC archives URL path, producing `edgar/data/0000320193/...`. The SEC archives endpoint requires the unpadded numeric CIK (`edgar/data/320193/...`). Fixed by stripping leading zeros via `(str (Long/parseLong cik))` before constructing the URL in both functions.
+
+**`edgar.filing/parse-filing-index-html` — switched from defunct JSON index to HTML index**
+- The SEC no longer serves a structured JSON filing index at the `{accession}-index.json` URL for recent filings. `filing-index-url` now builds the `{accession}-index.html` URL instead. `parse-filing-index-html` was rewritten to parse the HTML index page using hickory. A new private helper `cell-text` recursively extracts all text content from a hickory node, correctly handling filenames wrapped in `<a>` tags (e.g. the iXBRL primary document). The returned `{:files [...] :formType "..."}` shape is unchanged.
+
+### Added
+
+**Integration test suite (`:test-integration` alias)**
+- New `test-integration/edgar/integration_test.clj` — 15 tests covering the full live SEC API round-trip: company lookup (`cik`, `company-name`, `company-metadata`), filings query and amendment flag, `filing-by-accession` with a pinned accession number, filing content (`text`, `items`, `exhibits`), XBRL (`facts`, `concepts`), financial statements (`income`, `balance`, `cashflow`) including `:shape :wide` and `:as-of`, panel with `:ticker` column, and rate limiter burst. Uses hardcoded `"Test User test@example.com"` identity — never runs in CI.
+- New `test-integration/edgar/integration_test_runner.clj` — entry point mirroring the offline runner.
+- New `:test-integration` alias in `deps.edn` pointing at `test-integration/` source path.
+- Run manually before releases with `clj -M:test-integration`.
+
+---
+
 ## [Unreleased — bug fixes batch 2]
 
 ### Fixed

@@ -9,11 +9,11 @@
 
 (deftest filing-index-url-test
   (testing "builds correct index URL for dashed accession number"
-    (is (= "https://www.sec.gov/Archives/edgar/data/320193/000032019323000064/0000320193-23-000064-index.json"
+    (is (= "https://www.sec.gov/Archives/edgar/data/320193/000032019323000064/0000320193-23-000064-index.html"
            (filing/filing-index-url
             {:cik "320193"
              :accessionNumber "0000320193-23-000064"}))))
-  (testing "CIK in URL is not zero-padded (uses raw :cik value)"
+  (testing "CIK in URL is not zero-padded"
     (let [url (filing/filing-index-url {:cik "320193"
                                         :accessionNumber "0000320193-23-000064"})]
       (is (str/includes? url "/320193/"))))
@@ -21,10 +21,10 @@
     (let [url (filing/filing-index-url {:cik "320193"
                                         :accessionNumber "0000320193-23-000064"})]
       (is (str/includes? url "/000032019323000064/"))))
-  (testing "index filename in URL retains dashes"
+  (testing "index filename ends with -index.html"
     (let [url (filing/filing-index-url {:cik "320193"
                                         :accessionNumber "0000320193-23-000064"})]
-      (is (str/ends-with? url "-index.json")))))
+      (is (str/ends-with? url "-index.html")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; filing-by-accession — pure normalization inside the function

@@ -13,16 +13,52 @@
 ;;; ---------------------------------------------------------------------------
 
 (defn filing-index-url
-  "Build the submission index URL for a filing."
+  "Build the HTML submission index URL for a filing."
   [{:keys [cik accessionNumber]}]
-  (let [acc-clean (str/replace accessionNumber "-" "")]
-    (str core/archives-url "/" cik "/" acc-clean "/" accessionNumber "-index.json")))
+  (let [acc-clean (str/replace accessionNumber "-" "")
+        cik-numeric (str (Long/parseLong cik))]
+    (str core/archives-url "/" cik-numeric "/" acc-clean "/" accessionNumber "-index.html")))
+
+(defn- cell-text
+  "Recursively extract all text from a hickory node."
+  [node]
+  (cond
+    (string? node) node
+    (map? node) (str/join "" (map cell-text (:content node)))
+    :else ""))
+
+(defn- parse-filing-index-html
+  "Parse an HTML filing index page into {:files [...] :formType \"...\"}."
+  [html]
+  (let [tree (hickory/as-hickory (hickory/parse html))
+        form-type (some->> (sel/select (sel/tag :strong) tree)
+                           (map #(str/trim (cell-text %)))
+                           (some #(second (re-matches #"Form\s+(\S+).*" %))))
+        rows (sel/select (sel/descendant (sel/tag :table) (sel/tag :tr)) tree)
+        files (->> rows
+                   (map (fn [row]
+                          (let [cells (sel/select (sel/child (sel/tag :td)) row)
+                                texts (mapv #(str/trim (cell-text %)) cells)]
+                            (when (= 5 (count texts))
+                              {:sequence (nth texts 0)
+                               :description (nth texts 1)
+                               :name (some-> (sel/select (sel/descendant (sel/tag :td) (sel/tag :a)) row)
+                                             first
+                                             (get-in [:content 0]))
+                               :type (nth texts 3)
+                               :size (nth texts 4)}))))
+                   (remove nil?)
+                   (remove #(= "Seq" (:sequence %)))
+                   (remove #(str/blank? (:name %))))]
+    {:files files :formType form-type}))
 
 (defn filing-index
   "Fetch the filing index — list of all documents/attachments in a filing.
-   Returns a map with :files (seq of {:name :type :document :description :size})."
+   Returns a map with :files (seq of {:sequence :name :type :description :size})
+   and :formType (the SEC form type string)."
   [filing]
-  (core/edgar-get (filing-index-url filing)))
+  (parse-filing-index-html
+   (core/edgar-get (filing-index-url filing) :raw? true)))
 
 (defn primary-doc
   "Return the primary document entry from a filing index."
@@ -38,8 +74,9 @@
 (defn- doc-url
   "Build the URL for a specific document within a filing."
   [{:keys [cik accessionNumber]} doc-name]
-  (let [acc-clean (str/replace accessionNumber "-" "")]
-    (str core/archives-url "/" cik "/" acc-clean "/" doc-name)))
+  (let [acc-clean (str/replace accessionNumber "-" "")
+        cik-numeric (str (Long/parseLong cik))]
+    (str core/archives-url "/" cik-numeric "/" acc-clean "/" doc-name)))
 
 (defn filing-html
   "Fetch the primary HTML document of a filing as a string."
