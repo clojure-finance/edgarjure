@@ -2,7 +2,7 @@
 
 All notable changes to edgarjure are documented here.
 
-## [Unreleased — filing index HTML migration + integration tests]
+## [0.1.1] — 2026-03-14
 
 ### Fixed
 
@@ -22,7 +22,7 @@ All notable changes to edgarjure are documented here.
 
 ---
 
-## [Unreleased — bug fixes batch 2]
+## [0.1.0] — 2026-03-14
 
 ### Fixed
 
@@ -41,6 +41,30 @@ All notable changes to edgarjure are documented here.
 **`edgar.extract/item-pattern` — regex could not match 10-Q Roman-numeral item IDs**
 - The `item-pattern` regex only matched `\d{1,2}[AB]?` for the item number, making it impossible to match 10-Q item headings like `"Item I-1. Financial Statements"` or `"Item II-1A. Risk Factors"`. As a result, `extract-items` on 10-Q filings always returned `{}`. Fixed by extending the regex with an optional `(?:[IVXivx]+\s*[-\s]\s*)?` prefix before the digit group. ID normalization (`str/replace #"\s*[-\s]\s*(?=\d)" "-"` + `str/upper-case`) is applied in both `find-item-boundaries` (to produce correctly cased boundary IDs) and in `extract-items` (to normalize user-supplied `:items` to match `items-10q` map keys). Tested in `item-pattern-test`, `find-item-boundaries-10q-test`, and `extract-items-10q-normalized-ids-test`.
 
+**`edgar.filings/parse-filings-recent` — double `(keys recent)` call**
+- `(keys recent)` was called twice: once to build the keyword key sequence and once to get the column values. Although Clojure maps have stable iteration order within a single JVM session, calling `keys` twice is fragile. Bound the result once to `raw-ks` and reused it for both `ks` (keywordised) and `cols` (value extraction). Eliminates any theoretical risk of column/key misalignment.
+
+**`edgar.company` — `search-companies` hardcoded form filter**
+- `search-companies` no longer passes `&forms=10-K` to the EFTS query. Previously excluded companies that had never filed a 10-K.
+
+**`edgar.filings` — silent truncation for large filers**
+- `get-filings` now fetches all submission chunks for active filers with >1000 filings. Previously only read `[:filings :recent]`, silently truncating filing history for large filers such as AAPL.
+
+**`edgar.financials` — `build-statement` docstring mismatch**
+- `build-statement` docstring corrected: returns long-format dataset, not wide. Directs users to `(e/pivot (e/income "AAPL"))` for wide format.
+
+**`edgar.financials/dedup-restatements` and `dedup-point-in-time` — bad `max-key` comparator**
+- Both functions previously used `(apply max-key #(compare (:filed %) "") group)`. `max-key` expects a key function returning a comparable value, not a comparator; using `compare` against `""` returned `-1/0/1` integers, which accidentally selected the lexicographically largest `:filed` string for non-empty values but would silently return a wrong entry for `nil` or empty `:filed`. Replaced with `reduce` + `(pos? (compare (:filed %1) (:filed %2)))`, which is semantically correct in all cases.
+
+**`edgar.extract/remove-tables` — nil nodes in `:content` causing NPE**
+- `clojure.walk/postwalk` replaced `<table>` nodes with `nil`, leaving `nil` entries in parent `:content` vectors. Downstream `node-text` and `flatten-nodes` did not guard against `nil` content entries, causing NullPointerExceptions when extracting items from filings with tables near item boundaries. Fixed by additionally filtering `nil` from each node's `:content` during postwalk.
+
+**`edgar.tables/row-cells` — recursive subtree selection double-counting nested cells**
+- Previously used `(sel/select (sel/tag :th) tr-node)` and `(sel/select (sel/tag :td) tr-node)`, which select all matching elements in the entire subtree including nested tables. For filings with nested tables this double-counted cells and produced misaligned columns. Fixed by filtering direct `<th>` and `<td>` children from `:content` of each `<tr>` node.
+
+**`edgar.forms.form13f/is-amendment?`**
+- Previously checked the XML `reportType` field for the string `"RESTATEMENT"`, which is never present (the field contains values like `"13F HOLDINGS REPORT"`). This caused `:is-amendment?` to always be `false`. Fixed by overriding the value in the `merge` call inside `parse-form13f` using `(= "13F-HR/A" (:form filing))` — the `:form` key of the filing map is the correct source.
+
 ### Added
 
 **`test/edgar/schema_test.clj`** (new file)
@@ -48,21 +72,6 @@ All notable changes to edgarjure are documented here.
 
 **`test/edgar/dataset_test.clj`** (new file)
 - Offline tests for `multi-company-facts` robustness using `with-redefs`: empty tickers vector returns empty dataset; all tickers failing returns empty dataset; partial failure returns only the rows from the succeeding ticker. Added to `test_runner.clj`.
-
----
-
-## [Unreleased]
-
-### Fixed
-
-**`edgar.filings/parse-filings-recent` — double `(keys recent)` call**
-- `(keys recent)` was called twice: once to build the keyword key sequence and once to get the column values. Although Clojure maps have stable iteration order within a single JVM session, calling `keys` twice is fragile. Bound the result once to `raw-ks` and reused it for both `ks` (keywordised) and `cols` (value extraction). Eliminates any theoretical risk of column/key misalignment.
-
----
-
-## [Unreleased — Phase 4: Additional Infrastructure]
-
-### Added
 
 **Fixture-based offline tests**
 - `test/edgar/tables_test.clj` — fixture HTML string (`fixture-tables-html`) embedded in the test namespace; fixture-driven tests cover `extract-tables` end-to-end (`:nth`, `:min-rows`, dedup column names), `cell-text`, `row-cells` (direct-child-only extraction), `extract-table`, `matrix->dataset` column deduplication, `parse-number`, `infer-column`, and `layout-table?`. No network access required.
@@ -86,12 +95,6 @@ All notable changes to edgarjure are documented here.
 - Primitive schemas: `NonBlankString`, `TickerOrCIK`, `ISODate`, `FormType`, `ShapeKw`, `ConceptArg`, `AccessionNumber`, `PositiveInt`, `TaxonomyStr`, `FrameStr`.
 - All public functions in `edgar.api` call `schema/validate!` at entry. Inner namespaces (`edgar.filings`, `edgar.xbrl`, etc.) do not validate — validation is centralised in the facade.
 - `metosin/malli` 0.16.4 promoted from `:future` alias to main `deps.edn` deps.
-
----
-
-## [Unreleased — previous batch]
-
-### Added
 
 **`edgar.financials` / `edgar.api` — Point-in-time `:as-of` option**
 - All four financial-statement functions (`income-statement`, `balance-sheet`, `cash-flow`, `get-financials` and their `e/` wrappers) now accept `:as-of "YYYY-MM-DD"`. When set, observations where `:filed > as-of-date` are excluded before restatement deduplication, giving look-ahead-safe point-in-time results. Default behaviour (no `:as-of`) is unchanged: latest restated value is returned. Implemented in new private function `edgar.financials/dedup-point-in-time`.
@@ -119,32 +122,6 @@ All notable changes to edgarjure are documented here.
 **`edgar.filings`**
 - `get-daily-filings` — lazy seq of all SEC filings submitted on a given date. Accepts an ISO date string (`"2026-03-10"`) or `java.time.LocalDate`. Optional `:form` filter and `:filter-fn` predicate. Implemented via EFTS search-index with `dateRange=custom` and lazy `from=` pagination (100 results per page).
 
-**`edgar.api`**
-- `e/company-metadata` — thin wrapper around `company/company-metadata`.
-- `e/daily-filings` — thin wrapper around `filings/get-daily-filings`.
-- `e/tables` — thin wrapper around `tables/extract-tables`.
-- `e/income`, `e/balance`, `e/cashflow`, `e/financials` — all now accept `:shape :wide` option.
-
-### Fixed
-
-**`edgar.forms.form13f/is-amendment?`**
-- Previously checked the XML `reportType` field for the string `"RESTATEMENT"`, which is never present (the field contains values like `"13F HOLDINGS REPORT"`). This caused `:is-amendment?` to always be `false`. Fixed by overriding the value in the `merge` call inside `parse-form13f` using `(= "13F-HR/A" (:form filing))` — the `:form` key of the filing map is the correct source.
-
-**`edgar.financials/dedup-restatements` and `dedup-point-in-time` — bad `max-key` comparator**
-- Both functions previously used `(apply max-key #(compare (:filed %) "") group)`. `max-key` expects a key function returning a comparable value, not a comparator; using `compare` against `""` returned `-1/0/1` integers, which accidentally selected the lexicographically largest `:filed` string for non-empty values but would silently return a wrong entry for `nil` or empty `:filed`. Replaced with `reduce` + `(pos? (compare (:filed %1) (:filed %2)))`, which is semantically correct in all cases.
-
-**`edgar.extract/remove-tables` — nil nodes in `:content` causing NPE**
-- `clojure.walk/postwalk` replaced `<table>` nodes with `nil`, leaving `nil` entries in parent `:content` vectors. Downstream `node-text` and `flatten-nodes` did not guard against `nil` content entries, causing NullPointerExceptions when extracting items from filings with tables near item boundaries. Fixed by additionally filtering `nil` from each node's `:content` during postwalk.
-
-**`edgar.tables/row-cells` — recursive subtree selection double-counting nested cells**
-- Previously used `(sel/select (sel/tag :th) tr-node)` and `(sel/select (sel/tag :td) tr-node)`, which select all matching elements in the entire subtree including nested tables. For filings with nested tables this double-counted cells and produced misaligned columns. Fixed by filtering direct `<th>` and `<td>` children from `:content` of each `<tr>` node.
-
----
-
-## [Unreleased — earlier batch]
-
-### Added
-
 **`edgar.core`**
 - In-memory TTL cache on `edgar-get`. JSON responses are cached keyed by URL: 5 minutes for metadata endpoints, 1 hour for `/api/xbrl/` endpoints. Cache is skipped when `:raw? true`. Evict with `(edgar.core/clear-cache!)`.
 - Exponential backoff retry on 429/5xx responses. `http-get-with-retry` retries up to 3 times with delays of 2s → 4s → 8s. Throws `ex-info` with `{:type ::http-error :status N :url "..."}` on exhaustion or non-retryable 4xx. Applied to both `edgar-get` and `edgar-get-bytes`.
@@ -159,13 +136,12 @@ All notable changes to edgarjure are documented here.
 - `get-concepts` — returns a `tech.ml.dataset` with columns `[:taxonomy :concept :label :description]`, one row per distinct XBRL concept available for a company. Useful for discovering what data is available before calling `get-facts-dataset`.
 - `:label` and `:description` columns added to all facts datasets. `flatten-facts` now preserves these fields from the XBRL taxonomy response. Affects `get-facts-dataset` and any downstream datasets built from it.
 
-**`edgar.api`**
-- `e/filing-by-accession` — thin wrapper around `filing/filing-by-accession`.
-- `e/latest-effective-filing` — thin wrapper around `filings/latest-effective-filing`, defaulting `:form` to `"10-K"`.
-- `e/concepts` — thin wrapper around `xbrl/get-concepts`, accepting ticker or CIK.
-
 **`edgar.forms.form4`**
 - Form 4 parser (Statement of Changes in Beneficial Ownership / insider trades). Parses issuer, reporting owner, non-derivative and derivative transactions from XML. Registers `filing-obj "4"` via the standard multimethod. No new dependencies — uses only `clojure.xml` and `clojure.string`.
+
+**`edgar.api`**
+- `e/company-metadata`, `e/daily-filings`, `e/tables`, `e/filing-by-accession`, `e/latest-effective-filing`, `e/concepts`, `e/exhibits`, `e/exhibit`, `e/xbrl-docs` — new wrapper functions.
+- `e/income`, `e/balance`, `e/cashflow`, `e/financials` — all now accept `:shape :wide` option.
 
 ### Changed
 
@@ -175,8 +151,7 @@ All notable changes to edgarjure are documented here.
 - `get-filing` converted from positional `[ticker-or-cik form]` to keyword args `[ticker-or-cik & {:keys [form n] :or {n 0}}]`. Old call `(get-filing "AAPL" "10-K")` must be updated to `(get-filing "AAPL" :form "10-K")`.
 
 **`edgar.api`**
-- `e/filings` gains `:include-amends?` option (default `false`).
-- `e/filing` gains `:include-amends?` option (default `false`).
+- `e/filings` and `e/filing` gain `:include-amends?` option (default `false`).
 - `e/facts` simplified — delegates filtering to `xbrl/get-facts-dataset` directly.
 - `e/frame` updated to new `get-concept-frame` keyword-arg signature.
 - `e/panel` passes `:concept` directly to `multi-company-facts`.
@@ -214,15 +189,4 @@ All notable changes to edgarjure are documented here.
 - Removed unused `hickory.zip` and `clojure.zip` requires.
 
 **`deps.edn`**
-- Moved five unused dependencies from core `:deps` to a new `:future` alias: `next.jdbc`, `honeysql`, `sqlite-jdbc`, `malli`, and `datajure`. None are referenced in any source file. Core install weight reduced by ~15 MB.
-
-### Fixed
-
-**`edgar.company`**
-- `search-companies` no longer passes `&forms=10-K` to the EFTS query. Previously excluded companies that had never filed a 10-K.
-
-**`edgar.filings`**
-- `get-filings` now fetches all submission chunks for active filers with >1000 filings. Previously only read `[:filings :recent]`, silently truncating filing history for large filers such as AAPL.
-
-**`edgar.financials`**
-- `build-statement` docstring corrected: returns long-format dataset, not wide. Directs users to `(e/pivot (e/income "AAPL"))` for wide format.
+- Moved five unused dependencies from core `:deps` to a new `:future` alias: `next.jdbc`, `honeysql`, `sqlite-jdbc`, and `datajure`. None are referenced in any source file.
