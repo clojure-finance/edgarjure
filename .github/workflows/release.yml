@@ -22,11 +22,8 @@ jobs:
         with:
           cli: latest
 
-      - name: Build jar
-        run: clojure -T:build jar
-
       - name: Deploy to Clojars
         env:
           CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
           CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}
-        run: clojure -M:deploy deploy com.github.clojure-finance/edgarjure target/edgarjure-0.1.0.jar target/classes/META-INF/maven/com.github.clojure-finance/edgarjure/pom.xml
+        run: clojure -T:build deploy
