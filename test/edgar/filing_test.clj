@@ -34,10 +34,17 @@
   "Minimal Form 4 filing index HTML fixture.
    Mirrors the SEC's actual structure: two sequence-1 rows — a phantom .html
    entry whose size cell is a non-breaking space (&#160; / \\u00A0), and the
-   real .xml entry with an actual byte count."
+   real .xml entry with an actual byte count. Also includes the formGrouping
+   header divs that carry Filing Date, so :filingDate extraction can be tested."
   "<html><body>
      <div id=\"formHeader\">
        <div id=\"formName\"><strong>Form 4</strong></div>
+     </div>
+     <div class=\"formGrouping\">
+       <div class=\"infoHead\">Filing Date</div>
+       <div class=\"info\">2026-03-06</div>
+       <div class=\"infoHead\">Accepted</div>
+       <div class=\"info\">2026-03-06 22:43:01</div>
      </div>
      <table class=\"tableFile\" summary=\"Document Format Files\">
        <tr>
@@ -115,6 +122,12 @@
   (testing "form type is parsed from <strong> tag"
     (is (= "4" (:formType (#'filing/parse-filing-index-html form4-index-html))))
     (is (= "10-K" (:formType (#'filing/parse-filing-index-html form10k-index-html)))))
+
+  (testing ":filingDate is extracted from the Filing Date infoHead/info pair"
+    (is (= "2026-03-06" (:filingDate (#'filing/parse-filing-index-html form4-index-html)))))
+
+  (testing ":filingDate is nil when no infoHead divs are present"
+    (is (nil? (:filingDate (#'filing/parse-filing-index-html form10k-index-html)))))
 
   (testing "iXBRL viewer href does not corrupt the filename"
     (let [idx (#'filing/parse-filing-index-html form10k-index-html)

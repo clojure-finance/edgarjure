@@ -29,12 +29,18 @@
     :else ""))
 
 (defn- parse-filing-index-html
-  "Parse an HTML filing index page into {:files [...] :formType \"...\"}."
+  "Parse an HTML filing index page into
+   {:files [...] :formType \"...\" :filingDate \"YYYY-MM-DD\"}."
   [html]
   (let [tree (hickory/as-hickory (hickory/parse html))
+        node-str (fn [n] (str/trim (apply str (filter string? (tree-seq map? :content n)))))
         form-type (some->> (sel/select (sel/tag :strong) tree)
                            (map #(str/trim (cell-text %)))
                            (some #(second (re-matches #"Form\s+(\S+).*" %))))
+        filing-date (some->> (map vector
+                                  (map node-str (sel/select (sel/class "infoHead") tree))
+                                  (map node-str (sel/select (sel/class "info") tree)))
+                             (some (fn [[k v]] (when (= k "Filing Date") (not-empty v)))))
         rows (sel/select (sel/descendant (sel/tag :table) (sel/tag :tr)) tree)
         files (->> rows
                    (map (fn [row]
@@ -52,7 +58,7 @@
                    (remove #(= "Seq" (:sequence %)))
                    (remove #(str/blank? (:name %)))
                    (remove #(str/blank? (:size %))))]
-    {:files files :formType form-type}))
+    {:files files :formType form-type :filingDate filing-date}))
 
 (defn filing-index
   "Fetch the filing index — list of all documents/attachments in a filing.
