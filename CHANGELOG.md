@@ -10,6 +10,17 @@ All notable changes to edgarjure are documented here.
 - The SEC filing index HTML for Form 4 and Form 144 filings contains two entries with sequence `"1"`: a phantom `.html` entry (e.g. `ownership.html`) with a non-breaking space (`\u00A0`) as the size, and the real `.xml` file (e.g. `ownership.xml`) with a proper byte count. `cell-text` was returning `\u00A0` verbatim, so `str/trim` left it non-blank and `str/blank?` returned `false`. As a result `primary-doc` picked the phantom `.html` entry, which does not exist on SEC's servers, producing a 404 on every subsequent `filing-html`, `filing-text`, or `e/items` call.
 - Fixed by normalising `\u00A0` → `" "` in `cell-text`, and adding a `(remove #(str/blank? (:size %)))` filter in `parse-filing-index-html` so phantom zero-size entries never enter the `:files` list.
 
+**`edgar.tables/node-text` — non-breaking spaces not normalised**
+- `node-text` was returning `\u00A0` verbatim. `clean-text`'s `\s+` regex and `parse-number`'s `[$,%\s]` strip both use Java's `\s`, which does not match `\u00A0`. Financial table cells with non-breaking space separators (e.g. `"1\u00A0234"`) were not parsed as numbers — `parse-number` returned `nil`, treating the cell as a string instead of a numeric column. Fixed by normalising `\u00A0` → `" "` at the `node-text` level, consistent with the fix in `edgar.filing/cell-text`.
+
+**`edgar.filing/filing-by-accession` — duplicated `primary-doc` logic**
+- The function contained an inline `(->> (:files idx) (filter #(= "1" (str (:sequence %)))) first)` that duplicated `primary-doc` without benefiting from its filter chain. Replaced with a direct call to `(primary-doc idx)`.
+
+### Added
+
+**`edgar.filing-test` — fixture-based offline tests for `parse-filing-index-html`**
+- Two HTML fixtures (`form4-index-html`, `form10k-index-html`) covering the phantom-entry case, `primary-doc` selection, form-type parsing, iXBRL viewer href handling, and standard field extraction. Tests run offline with no HTTP calls.
+
 ## [0.1.1] — 2026-03-14
 
 ### Fixed

@@ -206,9 +206,7 @@
                                 {:type ::not-found
                                  :accession-number accession-number}
                                 e))))
-        primary (->> (:files idx)
-                     (filter #(= "1" (str (:sequence %))))
-                     first)]
+        primary (primary-doc idx)]
     (let [form-type (or (:formType idx)
                         (throw (ex-info "Could not determine form type from filing index"
                                         {:type ::not-found
