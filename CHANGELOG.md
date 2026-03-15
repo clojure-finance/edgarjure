@@ -2,7 +2,7 @@
 
 All notable changes to edgarjure are documented here.
 
-## [0.1.2] — 2026-03-15
+## [0.1.3] — 2026-03-15
 
 ### Fixed
 
