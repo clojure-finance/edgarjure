@@ -274,6 +274,22 @@
   [filing-map dir]
   (filing/filing-save-all! filing-map dir))
 
+(defn doc-url
+  "Build the SEC archives URL for a specific document within a filing.
+   doc-name is the filename as it appears in the filing index.
+
+   Use (e/filing-index f) to see all available document names and types.
+
+   Examples:
+     ;; URL for a named exhibit
+     (let [ex (e/exhibit f \"EX-21\")]
+       (e/doc-url f (:name ex)))
+
+     ;; URL for a known attachment
+     (e/doc-url f \"R2.htm\")"
+  [filing-map doc-name]
+  (filing/filing-doc-url filing-map doc-name))
+
 (defn exhibits
   "Return all exhibit entries from a filing's index as a seq of maps.
    Each map has :name :type :document :description :sequence.

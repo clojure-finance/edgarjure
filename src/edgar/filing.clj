@@ -79,8 +79,10 @@
 ;;; Filing content access
 ;;; ---------------------------------------------------------------------------
 
-(defn- doc-url
-  "Build the URL for a specific document within a filing."
+(defn filing-doc-url
+  "Build the SEC archives URL for a specific document within a filing.
+   doc-name is the filename as it appears in the filing index (e.g. \"goog-20260304.htm\", \"R2.htm\").
+   Use (filing-index filing) to discover available document names."
   [{:keys [cik accessionNumber]} doc-name]
   (let [acc-clean (str/replace accessionNumber "-" "")
         cik-numeric (str (Long/parseLong cik))]
@@ -92,7 +94,7 @@
   (let [idx (filing-index filing)
         primary (primary-doc idx)]
     (when primary
-      (core/edgar-get (doc-url filing (:name primary)) :raw? true))))
+      (core/edgar-get (filing-doc-url filing (:name primary)) :raw? true))))
 
 (defn filing-text
   "Fetch the primary document of a filing as plain text (HTML stripped).
@@ -114,7 +116,7 @@
 (defn filing-document
   "Fetch a specific named document from a filing as a string."
   [filing doc-name & {:keys [raw?] :or {raw? true}}]
-  (core/edgar-get (doc-url filing doc-name) :raw? raw?))
+  (core/edgar-get (filing-doc-url filing doc-name) :raw? raw?))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Filing save to disk (sec-edgar-downloader analog)
@@ -135,7 +137,7 @@
             out-file (fs/path out-dir (:name primary))]
         (fs/create-dirs out-dir)
         (spit (str out-file)
-              (core/edgar-get (doc-url filing (:name primary)) :raw? true))
+              (core/edgar-get (filing-doc-url filing (:name primary)) :raw? true))
         (str out-file)))))
 
 (defn filing-save-all!
@@ -153,7 +155,7 @@
            :when (:name doc)]
        (let [out-file (fs/path out-dir (:name doc))]
          (spit (str out-file)
-               (core/edgar-get (doc-url filing (:name doc)) :raw? true))
+               (core/edgar-get (filing-doc-url filing (:name doc)) :raw? true))
          (str out-file))))))
 
 ;;; ---------------------------------------------------------------------------
@@ -221,10 +223,12 @@
                         (throw (ex-info "Could not determine form type from filing index"
                                         {:type ::not-found
                                          :accession-number accession-number})))]
-      (assoc stub
-             :form form-type
-             :primaryDocument (:name primary)
-             :filingDate (:filingDate idx)))))
+      (let [m (assoc stub
+                     :form form-type
+                     :primaryDocument (:name primary)
+                     :filingDate (:filingDate idx))]
+        (assoc m :url (when (:primaryDocument m)
+                        (filing-doc-url m (:primaryDocument m))))))))
 
 (defmulti filing-obj
   "Parse a filing into a structured form-specific map.
