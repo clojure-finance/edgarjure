@@ -114,6 +114,20 @@
     (testing "form is preserved"
       (is (= "8-K" (:form (first result)))))))
 
+(deftest enrich-filing-url-test
+  (let [enrich #'edgar.filings/enrich-filing
+        cik "0000320193"
+        filing {:accessionNumber "000032019323000106"
+                :form "10-K"
+                :primaryDocument "aapl-20230930.htm"}
+        result (enrich cik filing)]
+    (testing ":url is computed from cik, accessionNumber and primaryDocument"
+      (is (= "https://www.sec.gov/Archives/edgar/data/320193/000032019323000106/aapl-20230930.htm"
+             (:url result))))
+    (testing ":url is nil when primaryDocument is absent"
+      (let [r (enrich cik (dissoc filing :primaryDocument))]
+        (is (nil? (:url r)))))))
+
 (deftest latest-effective-filing-date-comparison-test
   (testing "amendment newer than original → compare positive"
     (is (pos? (compare "2023-12-15" "2023-11-03"))))
