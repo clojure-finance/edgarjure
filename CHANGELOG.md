@@ -31,7 +31,11 @@ All notable changes to edgarjure are documented here.
 ### Added
 
 **`:url` field on all filing maps**
-- `enrich-filing` in `edgar.filings` now computes and asserts a `:url` key on every filing map returned by `get-filings`, `get-filing`, `latest-effective-filing`, and related functions. The value is the direct HTTPS URL to the primary document (e.g. `https://www.sec.gov/Archives/edgar/data/1652044/.../goog-20260304.htm`). `nil` only when `:primaryDocument` is absent.
+- `enrich-filing` in `edgar.filings` now computes and asserts a `:url` key on every filing map returned by `get-filings`, `get-filing`, `latest-effective-filing`, and related functions. `filing-by-accession` also now includes `:url`. The value is the direct HTTPS URL to the primary document. `nil` only when `:primaryDocument` is absent.
+
+**`edgar.filing/filing-doc-url` and `edgar.api/doc-url` — public URL construction**
+- `doc-url` (previously private) is now public as `filing-doc-url` in `edgar.filing` and exposed as `e/doc-url` in `edgar.api`. Builds the SEC archives URL for any named document within a filing map — useful for constructing URLs for exhibits, attachments, and XBRL linkbase files without fetching the document.
+- `(e/doc-url f "R2.htm")` or `(e/doc-url f (:name (e/exhibit f "EX-21")))`
 
 **`edgar.filing-test` — fixture-based offline tests for `parse-filing-index-html`**
 - Two HTML fixtures (`form4-index-html`, `form10k-index-html`) covering phantom-entry exclusion, `primary-doc` selection, form-type parsing, iXBRL viewer href handling, and standard field extraction.
