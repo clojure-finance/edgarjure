@@ -26,9 +26,16 @@
 (defn- enrich-filing
   "Add derived keys to a raw filing map."
   [cik filing]
-  (-> filing
-      (assoc :cik cik)
-      (update :accessionNumber accession->str)))
+  (let [acc (accession->str (:accessionNumber filing))
+        acc-clean (clojure.string/replace acc "-" "")
+        cik-numeric (str (Long/parseLong cik))
+        primary (:primaryDocument filing)
+        url (when primary
+              (str core/archives-url "/" cik-numeric "/" acc-clean "/" primary))]
+    (-> filing
+        (assoc :cik cik
+               :accessionNumber acc
+               :url url))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Get filings for a company
