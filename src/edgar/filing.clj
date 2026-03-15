@@ -20,10 +20,11 @@
     (str core/archives-url "/" cik-numeric "/" acc-clean "/" accessionNumber "-index.html")))
 
 (defn- cell-text
-  "Recursively extract all text from a hickory node."
+  "Recursively extract all text from a hickory node.
+   Normalizes non-breaking spaces (\\u00A0) to regular spaces."
   [node]
   (cond
-    (string? node) node
+    (string? node) (str/replace node "\u00A0" " ")
     (map? node) (str/join "" (map cell-text (:content node)))
     :else ""))
 
@@ -49,7 +50,8 @@
                                :size (nth texts 4)}))))
                    (remove nil?)
                    (remove #(= "Seq" (:sequence %)))
-                   (remove #(str/blank? (:name %))))]
+                   (remove #(str/blank? (:name %)))
+                   (remove #(str/blank? (:size %))))]
     {:files files :formType form-type}))
 
 (defn filing-index

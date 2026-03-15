@@ -2,6 +2,14 @@
 
 All notable changes to edgarjure are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+**`edgar.filing/cell-text` and `parse-filing-index-html` — phantom `.html` entries in Form 4 / Form 144 filing indexes cause 404**
+- The SEC filing index HTML for Form 4 and Form 144 filings contains two entries with sequence `"1"`: a phantom `.html` entry (e.g. `ownership.html`) with a non-breaking space (`\u00A0`) as the size, and the real `.xml` file (e.g. `ownership.xml`) with a proper byte count. `cell-text` was returning `\u00A0` verbatim, so `str/trim` left it non-blank and `str/blank?` returned `false`. As a result `primary-doc` picked the phantom `.html` entry, which does not exist on SEC's servers, producing a 404 on every subsequent `filing-html`, `filing-text`, or `e/items` call.
+- Fixed by normalising `\u00A0` → `" "` in `cell-text`, and adding a `(remove #(str/blank? (:size %)))` filter in `parse-filing-index-html` so phantom zero-size entries never enter the `:files` list.
+
 ## [0.1.1] — 2026-03-14
 
 ### Fixed
