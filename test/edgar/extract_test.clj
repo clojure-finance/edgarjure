@@ -111,7 +111,20 @@
     (testing "finds item 1A"
       (is (some #(= "1A" (:item-id %)) boundaries)))
     (testing "finds item 7"
-      (is (some #(= "7" (:item-id %)) boundaries)))))
+      (is (some #(= "7" (:item-id %)) boundaries))))
+
+  (testing "u00A0 between Item and number is normalised — heading is found"
+    (let [f #'edgar.extract/find-item-boundaries
+          flat-fn #'edgar.extract/flatten-nodes
+          nbsp-html (str "<html><body>"
+                         "<p>Item\u00A07. Management\u2019s Discussion</p>"
+                         "<p>Some MD&A content here.</p>"
+                         "</body></html>")
+          tree (-> nbsp-html hickory/parse hickory/as-hickory)
+          flat (flat-fn tree)
+          boundaries (f flat)]
+      (is (some #(= "7" (:item-id %)) boundaries)
+          "Item 7 heading with nbsp must be detected"))))
 
 (deftest find-item-boundaries-10q-test
   (let [f #'edgar.extract/find-item-boundaries

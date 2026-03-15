@@ -89,13 +89,16 @@
       (core/edgar-get (doc-url filing (:name primary)) :raw? true))))
 
 (defn filing-text
-  "Fetch the primary document of a filing as plain text (HTML stripped)."
+  "Fetch the primary document of a filing as plain text (HTML stripped).
+   Script and style elements are excluded."
   [filing]
   (when-let [html (filing-html filing)]
     (-> html
         hickory/parse
         hickory/as-hickory
-        (#(sel/select sel/any %))
+        (#(sel/select (sel/and sel/any
+                               (sel/not (sel/tag :script))
+                               (sel/not (sel/tag :style))) %))
         (->> (map :content)
              flatten
              (filter string?)
@@ -114,19 +117,20 @@
 (defn filing-save!
   "Download a filing's primary document to a directory.
    Creates subdirectory structure: dir/{form}/{cik}/{accession-no}/{filename}
-   Returns the saved file path."
+   Returns the saved file path, or nil if the filing has no primary document."
   [filing dir]
   (let [idx (filing-index filing)
-        primary (primary-doc idx)
-        form (:form filing)
-        cik (:cik filing)
-        acc (:accessionNumber filing)
-        out-dir (fs/path dir form cik acc)
-        out-file (fs/path out-dir (:name primary))]
-    (fs/create-dirs out-dir)
-    (spit (str out-file)
-          (core/edgar-get (doc-url filing (:name primary)) :raw? true))
-    (str out-file)))
+        primary (primary-doc idx)]
+    (when primary
+      (let [form (:form filing)
+            cik (:cik filing)
+            acc (:accessionNumber filing)
+            out-dir (fs/path dir form cik acc)
+            out-file (fs/path out-dir (:name primary))]
+        (fs/create-dirs out-dir)
+        (spit (str out-file)
+              (core/edgar-get (doc-url filing (:name primary)) :raw? true))
+        (str out-file)))))
 
 (defn filing-save-all!
   "Download all documents in a filing to a directory.

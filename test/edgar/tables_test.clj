@@ -34,7 +34,9 @@
     (testing "non-numeric string returns nil"
       (is (nil? (f "n/a"))))
     (testing "dash-only returns nil"
-      (is (nil? (f "—"))))))
+      (is (nil? (f "—"))))
+    (testing "regular space as thousand separator is parsed (u00A0 normalised upstream by cell-text)"
+      (is (= 1234 (f "1 234"))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; infer-column
@@ -124,7 +126,13 @@
     (testing "handles nested elements"
       (let [td {:type :element :tag :td :attrs {}
                 :content [{:type :element :tag :span :attrs {} :content ["nested"]}]}]
-        (is (= "nested" (f td)))))))
+        (is (= "nested" (f td)))))
+    (testing "non-breaking space is normalised to regular space"
+      (let [td {:type :element :tag :td :attrs {} :content [(str "1" \u00A0 "234")]}]
+        (is (= "1 234" (f td)))))
+    (testing "cell with only nbsp returns blank after normalisation"
+      (let [td {:type :element :tag :td :attrs {} :content ["\u00A0"]}]
+        (is (str/blank? (f td)))))))
 
 (deftest row-cells-test
   (let [f #'edgar.tables/row-cells

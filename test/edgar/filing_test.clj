@@ -138,8 +138,34 @@
       (is (= "ex311.htm" (:name ex311))))))
 
 ;;; ---------------------------------------------------------------------------
-;;; filing-by-accession — pure normalization inside the function
-;;; We test the accession-normalisation logic directly without HTTP.
+;;; filing-text — script/style exclusion
+;;; ---------------------------------------------------------------------------
+
+(deftest filing-text-excludes-script-style-test
+  (let [html "<html><head>
+                <style>body { color: red; }</style>
+                <script>alert(1);</script>
+              </head>
+              <body><p>Hello world</p></body></html>"]
+    (with-redefs [edgar.filing/filing-html (fn [_] html)]
+      (let [result (filing/filing-text {})]
+        (testing "plain text is included"
+          (is (str/includes? result "Hello world")))
+        (testing "CSS content is excluded"
+          (is (not (str/includes? result "color"))))
+        (testing "JavaScript content is excluded"
+          (is (not (str/includes? result "alert"))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; filing-save! — nil primary-doc guard
+;;; ---------------------------------------------------------------------------
+
+(deftest filing-save-nil-primary-doc-test
+  (testing "filing-save! returns nil when filing has no primary document"
+    (with-redefs [edgar.filing/filing-index (fn [_] {:files [] :formType "4"})
+                  edgar.filing/primary-doc (fn [_] nil)]
+      (is (nil? (filing/filing-save! {} "/tmp"))))))
+
 ;;; ---------------------------------------------------------------------------
 
 (deftest accession-format-normalization
