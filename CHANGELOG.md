@@ -10,16 +10,35 @@ All notable changes to edgarjure are documented here.
 - The SEC filing index HTML for Form 4 and Form 144 filings contains two entries with sequence `"1"`: a phantom `.html` entry (e.g. `ownership.html`) with a non-breaking space (`\u00A0`) as the size, and the real `.xml` file (e.g. `ownership.xml`) with a proper byte count. `cell-text` was returning `\u00A0` verbatim, so `str/trim` left it non-blank and `str/blank?` returned `false`. As a result `primary-doc` picked the phantom `.html` entry, which does not exist on SEC's servers, producing a 404 on every subsequent `filing-html`, `filing-text`, or `e/items` call.
 - Fixed by normalising `\u00A0` → `" "` in `cell-text`, and adding a `(remove #(str/blank? (:size %)))` filter in `parse-filing-index-html` so phantom zero-size entries never enter the `:files` list.
 
+**`edgar.extract/node-text` — non-breaking spaces not normalised, causing silent item-extraction failures**
+- `node-text` was returning `\u00A0` verbatim. The `item-pattern` regex uses `\s`, which does not match `\u00A0` in Java. Headings like `"Item\u00A07"` (non-breaking space between "Item" and the number — present in some SEC filings) silently produced no boundary match, so those items were absent from `e/items` output with no error. Fixed by normalising `\u00A0` → `" "` at the `node-text` level, consistent with the same fix in `edgar.filing/cell-text` and `edgar.tables/node-text`.
+
 **`edgar.tables/node-text` — non-breaking spaces not normalised**
-- `node-text` was returning `\u00A0` verbatim. `clean-text`'s `\s+` regex and `parse-number`'s `[$,%\s]` strip both use Java's `\s`, which does not match `\u00A0`. Financial table cells with non-breaking space separators (e.g. `"1\u00A0234"`) were not parsed as numbers — `parse-number` returned `nil`, treating the cell as a string instead of a numeric column. Fixed by normalising `\u00A0` → `" "` at the `node-text` level, consistent with the fix in `edgar.filing/cell-text`.
+- `node-text` was returning `\u00A0` verbatim. `clean-text`'s `\s+` regex and `parse-number`'s `[$,%\s]` strip both use Java's `\s`, which does not match `\u00A0`. Financial table cells with non-breaking space separators (e.g. `"1\u00A0234"`) were not parsed as numbers — `parse-number` returned `nil`, treating the cell as a string column instead of numeric. Fixed by normalising `\u00A0` → `" "` at the `node-text` level.
+
+**`edgar.filing/filing-text` — included CSS and JavaScript content**
+- `filing-text` used `sel/any` which selects all nodes including `:script` and `:style`, causing CSS rules and JS code to appear in the plain-text output of `(e/text filing)`. Fixed by excluding `:script` and `:style` nodes via `(sel/not (sel/tag :script/style))` before collecting text strings.
+
+**`edgar.filing/filing-save!` — NPE when primary document is absent**
+- If a filing's index has no sequence-`"1"` document, `primary-doc` returns `nil`. The old code called `(:name nil)` → `nil`, building a URL ending in `"/null"` and throwing on HTTP. Fixed with a `when primary` guard; the function now returns `nil` when no primary document exists, consistent with `filing-html`.
 
 **`edgar.filing/filing-by-accession` — duplicated `primary-doc` logic**
-- The function contained an inline `(->> (:files idx) (filter #(= "1" (str (:sequence %)))) first)` that duplicated `primary-doc` without benefiting from its filter chain. Replaced with a direct call to `(primary-doc idx)`.
+- The function contained an inline `(->> (:files idx) (filter #(= "1" ...)) first)` that duplicated `primary-doc` without benefiting from its filter chain. Replaced with a direct call to `(primary-doc idx)`.
 
 ### Added
 
 **`edgar.filing-test` — fixture-based offline tests for `parse-filing-index-html`**
-- Two HTML fixtures (`form4-index-html`, `form10k-index-html`) covering the phantom-entry case, `primary-doc` selection, form-type parsing, iXBRL viewer href handling, and standard field extraction. Tests run offline with no HTTP calls.
+- Two HTML fixtures (`form4-index-html`, `form10k-index-html`) covering phantom-entry exclusion, `primary-doc` selection, form-type parsing, iXBRL viewer href handling, and standard field extraction.
+
+**`edgar.filing-test` — `filing-text` script/style exclusion and `filing-save!` nil-guard tests**
+- `filing-text-excludes-script-style-test`: verifies CSS and JS are stripped from plain-text output.
+- `filing-save-nil-primary-doc-test`: verifies `filing-save!` returns `nil` rather than throwing when the filing index has no primary document.
+
+**`edgar.extract-test` — `\u00A0` normalisation test in `find-item-boundaries`**
+- Inline HTML fixture with `"Item\u00A07"` heading verifies that non-breaking space between "Item" and the item number does not prevent boundary detection.
+
+**`edgar.tables-test` — `\u00A0` normalisation tests in `cell-text`**
+- Two new cases in `cell-text-test`: nbsp in a number cell is normalised to regular space; nbsp-only cell is blank after normalisation.
 
 ## [0.1.1] — 2026-03-14
 
