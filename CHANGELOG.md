@@ -22,6 +22,9 @@ All notable changes to edgarjure are documented here.
 **`edgar.filing/filing-save!` — NPE when primary document is absent**
 - If a filing's index has no sequence-`"1"` document, `primary-doc` returns `nil`. The old code called `(:name nil)` → `nil`, building a URL ending in `"/null"` and throwing on HTTP. Fixed with a `when primary` guard; the function now returns `nil` when no primary document exists, consistent with `filing-html`.
 
+**`edgar.filing/parse-filing-index-html` — `:filingDate` always nil in `filing-by-accession`**
+- `parse-filing-index-html` was only extracting `:files` and `:formType` from the index HTML, leaving `:filingDate nil` in every map returned by `filing-by-accession`. The filing date is present in the index page inside `.infoHead` / `.info` div pairs. Fixed by zipping those pairs and extracting the value for the `"Filing Date"` label. `filing-by-accession` already passed `(:filingDate idx)` through; it now receives a real `"YYYY-MM-DD"` string instead of `nil`.
+
 **`edgar.filing/filing-by-accession` — duplicated `primary-doc` logic**
 - The function contained an inline `(->> (:files idx) (filter #(= "1" ...)) first)` that duplicated `primary-doc` without benefiting from its filter chain. Replaced with a direct call to `(primary-doc idx)`.
 
