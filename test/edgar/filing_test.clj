@@ -27,6 +27,117 @@
       (is (str/ends-with? url "-index.html")))))
 
 ;;; ---------------------------------------------------------------------------
+;;; parse-filing-index-html — offline HTML fixture tests
+;;; ---------------------------------------------------------------------------
+
+(def ^:private form4-index-html
+  "Minimal Form 4 filing index HTML fixture.
+   Mirrors the SEC's actual structure: two sequence-1 rows — a phantom .html
+   entry whose size cell is a non-breaking space (&#160; / \\u00A0), and the
+   real .xml entry with an actual byte count."
+  "<html><body>
+     <div id=\"formHeader\">
+       <div id=\"formName\"><strong>Form 4</strong></div>
+     </div>
+     <table class=\"tableFile\" summary=\"Document Format Files\">
+       <tr>
+         <th scope=\"col\">Seq</th>
+         <th scope=\"col\">Description</th>
+         <th scope=\"col\">Document</th>
+         <th scope=\"col\">Type</th>
+         <th scope=\"col\">Size</th>
+       </tr>
+       <tr>
+         <td>1</td><td>4</td>
+         <td><a href=\"/Archives/edgar/data/1/000001-26-001/ownership.html\">ownership.html</a></td>
+         <td>4</td><td>&#160;</td>
+       </tr>
+       <tr>
+         <td>1</td><td>4</td>
+         <td><a href=\"/Archives/edgar/data/1/000001-26-001/ownership.xml\">ownership.xml</a></td>
+         <td>4</td><td>14442</td>
+       </tr>
+       <tr>
+         <td>&nbsp;</td><td>Complete submission text file</td>
+         <td><a href=\"/Archives/edgar/data/1/000001-26-001/000001-26-001.txt\">000001-26-001.txt</a></td>
+         <td>&nbsp;</td><td>15874</td>
+       </tr>
+     </table>
+   </body></html>")
+
+(def ^:private form10k-index-html
+  "Minimal 10-K filing index HTML fixture — single sequence-1 primary document."
+  "<html><body>
+     <div id=\"formHeader\">
+       <div id=\"formName\"><strong>Form 10-K</strong></div>
+     </div>
+     <table class=\"tableFile\" summary=\"Document Format Files\">
+       <tr>
+         <th scope=\"col\">Seq</th>
+         <th scope=\"col\">Description</th>
+         <th scope=\"col\">Document</th>
+         <th scope=\"col\">Type</th>
+         <th scope=\"col\">Size</th>
+       </tr>
+       <tr>
+         <td>1</td><td>Annual Report</td>
+         <td><a href=\"/ix?doc=/Archives/edgar/data/2/000002-24-001/report.htm\">report.htm</a></td>
+         <td>10-K</td><td>987654</td>
+       </tr>
+       <tr>
+         <td>2</td><td>Exhibit 31.1</td>
+         <td><a href=\"/Archives/edgar/data/2/000002-24-001/ex311.htm\">ex311.htm</a></td>
+         <td>EX-31.1</td><td>12345</td>
+       </tr>
+     </table>
+   </body></html>")
+
+(deftest parse-filing-index-html-phantom-entries-test
+  (testing "phantom .html entry (nbsp size) is excluded; real .xml entry is kept"
+    (let [idx (#'filing/parse-filing-index-html form4-index-html)
+          files (:files idx)
+          names (map :name files)]
+      (is (not (some #{"ownership.html"} names))
+          "phantom ownership.html must be excluded")
+      (is (some #{"ownership.xml"} names)
+          "real ownership.xml must be present")))
+
+  (testing "primary-doc returns the real xml, not the phantom html"
+    (let [idx (#'filing/parse-filing-index-html form4-index-html)
+          primary (filing/primary-doc idx)]
+      (is (= "ownership.xml" (:name primary)))))
+
+  (testing "complete-submission-text-file row is included (has a real size)"
+    (let [idx (#'filing/parse-filing-index-html form4-index-html)
+          names (map :name (:files idx))]
+      (is (some #{"000001-26-001.txt"} names))))
+
+  (testing "form type is parsed from <strong> tag"
+    (is (= "4" (:formType (#'filing/parse-filing-index-html form4-index-html))))
+    (is (= "10-K" (:formType (#'filing/parse-filing-index-html form10k-index-html)))))
+
+  (testing "iXBRL viewer href does not corrupt the filename"
+    (let [idx (#'filing/parse-filing-index-html form10k-index-html)
+          primary (filing/primary-doc idx)]
+      (is (= "report.htm" (:name primary)))
+      (is (not (str/starts-with? (:name primary) "/ix?"))))))
+
+(deftest parse-filing-index-html-standard-test
+  (testing "sequence, description, type, size are parsed correctly"
+    (let [idx (#'filing/parse-filing-index-html form10k-index-html)
+          primary (filing/primary-doc idx)]
+      (is (= "1" (:sequence primary)))
+      (is (= "Annual Report" (:description primary)))
+      (is (= "10-K" (:type primary)))
+      (is (= "987654" (:size primary)))))
+
+  (testing "exhibit entries are present"
+    (let [idx (#'filing/parse-filing-index-html form10k-index-html)
+          ex311 (->> (:files idx) (filter #(= "EX-31.1" (:type %))) first)]
+      (is (some? ex311))
+      (is (= "ex311.htm" (:name ex311))))))
+
+;;; ---------------------------------------------------------------------------
 ;;; filing-by-accession — pure normalization inside the function
 ;;; We test the accession-normalisation logic directly without HTTP.
 ;;; ---------------------------------------------------------------------------

@@ -21,10 +21,11 @@
 ;;; ---------------------------------------------------------------------------
 
 (defn- node-text
-  "Recursively extract all text content from a hickory node."
+  "Recursively extract all text content from a hickory node.
+   Normalizes non-breaking spaces (\\u00A0) to regular spaces."
   [node]
   (cond
-    (string? node) node
+    (string? node) (str/replace node "\u00A0" " ")
     (map? node) (apply str (map node-text (:content node)))
     :else ""))
 
