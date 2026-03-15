@@ -211,3 +211,13 @@
   (testing ":formType key is returned when present"
     (let [idx {:formType "10-K"}]
       (is (= "10-K" (:formType idx))))))
+
+(deftest filing-doc-url-test
+  (testing "builds correct SEC archives URL from filing map and doc name"
+    (let [f {:cik "0000320193" :accessionNumber "0000320193-23-000106"}]
+      (is (= "https://www.sec.gov/Archives/edgar/data/320193/000032019323000106/report.htm"
+             (filing/filing-doc-url f "report.htm")))))
+  (testing "strips leading zeros from CIK in URL path"
+    (let [f {:cik "0001652044" :accessionNumber "0001652044-26-000026"}]
+      (is (= "https://www.sec.gov/Archives/edgar/data/1652044/000165204426000026/goog-20260304.htm"
+             (filing/filing-doc-url f "goog-20260304.htm"))))))
