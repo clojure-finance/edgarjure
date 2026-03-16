@@ -169,3 +169,45 @@
     (testing "no original → amendment returned"
       (with-redefs [edgar.filings/get-filings (fn [_ & _] [amendment])]
         (is (= amendment (filings/latest-effective-filing "AAPL" :form "10-K")))))))
+
+(deftest shape-daily-hit-nil-period-test
+  (let [f #'edgar.filings/shape-daily-hit]
+    (testing "nil period_ending produces nil :periodOfReport, not \"nil\""
+      (let [src {:adsh "0000320193-24-000001"
+                 :form "10-K"
+                 :file_date "2024-11-01"
+                 :ciks ["320193"]
+                 :display_names ["Apple Inc."]
+                 :period_ending nil
+                 :items []}
+            result (f src)]
+        (is (nil? (:periodOfReport result)))
+        (is (not= "nil" (:periodOfReport result)))))
+    (testing "missing period_ending key produces nil"
+      (let [src {:adsh "0000320193-24-000002"
+                 :form "8-K"
+                 :file_date "2024-11-01"
+                 :ciks ["320193"]
+                 :display_names ["Apple Inc."]}
+            result (f src)]
+        (is (nil? (:periodOfReport result)))))
+    (testing "non-nil period_ending is preserved"
+      (let [src {:adsh "0000320193-24-000003"
+                 :form "10-K"
+                 :file_date "2024-11-01"
+                 :ciks ["320193"]
+                 :display_names ["Apple Inc."]
+                 :period_ending "2024-09-28"
+                 :items []}
+            result (f src)]
+        (is (= "2024-09-28" (:periodOfReport result)))))
+    (testing "blank string period_ending produces nil via not-empty"
+      (let [src {:adsh "0000320193-24-000004"
+                 :form "10-K"
+                 :file_date "2024-11-01"
+                 :ciks ["320193"]
+                 :display_names ["Apple Inc."]
+                 :period_ending ""
+                 :items []}
+            result (f src)]
+        (is (nil? (:periodOfReport result)))))))

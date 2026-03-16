@@ -67,7 +67,7 @@
   [addr]
   (when addr
     {:street1 (:street1 addr)
-     :street2 (not-empty (str (:street2 addr)))
+     :street2 (some-> (:street2 addr) not-empty)
      :city (:city addr)
      :state (:stateOrCountry addr)
      :state-description (:stateOrCountryDescription addr)

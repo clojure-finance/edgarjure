@@ -207,7 +207,7 @@
    :cik (some-> (first (:ciks src))
                 (as-> c (format "%010d" (Long/parseLong c))))
    :companyName (first (:display_names src))
-   :periodOfReport (not-empty (str (:period_ending src)))
+   :periodOfReport (some-> (:period_ending src) not-empty)
    :items (or (:items src) [])})
 
 (defn get-daily-filings

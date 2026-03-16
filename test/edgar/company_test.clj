@@ -60,3 +60,39 @@
     (with-redefs [edgar.company/load-tickers!
                   (fn [] {0 {:cik_str "320193" :ticker "AAPL"}})]
       (is (nil? (company/cik->ticker "9999999999"))))))
+
+(deftest shape-address-nil-street2-test
+  (let [f #'edgar.company/shape-address]
+    (testing "nil street2 produces nil, not \"nil\""
+      (let [addr {:street1 "ONE APPLE PARK WAY"
+                  :street2 nil
+                  :city "CUPERTINO"
+                  :stateOrCountry "CA"
+                  :stateOrCountryDescription "CA"
+                  :zipCode "95014"
+                  :isForeignLocation 0}
+            result (f addr)]
+        (is (nil? (:street2 result)))
+        (is (not= "nil" (:street2 result)))))
+    (testing "non-nil street2 is preserved"
+      (let [addr {:street1 "200 WEST ST"
+                  :street2 "SUITE 100"
+                  :city "NEW YORK"
+                  :stateOrCountry "NY"
+                  :stateOrCountryDescription "NY"
+                  :zipCode "10282"
+                  :isForeignLocation 0}
+            result (f addr)]
+        (is (= "SUITE 100" (:street2 result)))))
+    (testing "blank string street2 produces nil via not-empty"
+      (let [addr {:street1 "100 MAIN ST"
+                  :street2 ""
+                  :city "ANYTOWN"
+                  :stateOrCountry "TX"
+                  :stateOrCountryDescription "TX"
+                  :zipCode "75001"
+                  :isForeignLocation 0}
+            result (f addr)]
+        (is (nil? (:street2 result)))))
+    (testing "nil addr returns nil"
+      (is (nil? (f nil))))))
