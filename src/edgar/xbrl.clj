@@ -71,7 +71,8 @@
     (cond-> ds
       concept-set (ds/filter-column :concept #(contains? concept-set %))
       form (ds/filter-column :form #(= % form))
-      (= sort :desc) ds/reverse-rows)))
+      (= sort :desc) (ds/sort-by #(get % :end) #(compare %2 %1))
+      (= sort :asc) (ds/sort-by #(get % :end) compare))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Concept frames — cross-sectional data for a given concept + period
