@@ -1,6 +1,7 @@
 (ns edgar.company-test
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
+            [edgar.core :as core]
             [edgar.company :as company]))
 
 ;;; ---------------------------------------------------------------------------
@@ -112,3 +113,80 @@
         (is (nil? (:street2 result)))))
     (testing "nil addr returns nil"
       (is (nil? (f nil))))))
+
+(deftest search-companies-shape-test
+  (testing "returns shaped maps with :entity-name :cik :location :inc-states"
+    (with-redefs [edgar.core/edgar-get
+                  (fn [_]
+                    {:hits {:hits
+                            [{:_source {:display_names ["Apple Inc.  (AAPL)  (CIK 0000320193)"]
+                                        :ciks ["0000320193"]
+                                        :biz_locations ["Cupertino, CA"]
+                                        :inc_states ["CA"]}}
+                             {:_source {:display_names ["Apple Hospitality REIT, Inc.  (APLE)  (CIK 0001418121)"]
+                                        :ciks ["0001418121"]
+                                        :biz_locations ["Richmond, VA"]
+                                        :inc_states ["VA"]}}]}})]
+      (let [results (company/search-companies "apple" :limit 10)]
+        (is (= 2 (count results)))
+        (is (every? #(contains? % :entity-name) results))
+        (is (every? #(contains? % :cik) results))
+        (is (every? #(contains? % :location) results))
+        (is (every? #(contains? % :inc-states) results)))))
+  (testing "entity-name strips CIK and ticker suffixes"
+    (with-redefs [edgar.core/edgar-get
+                  (fn [_]
+                    {:hits {:hits
+                            [{:_source {:display_names ["Apple Inc.  (AAPL)  (CIK 0000320193)"]
+                                        :ciks ["0000320193"]
+                                        :biz_locations ["Cupertino, CA"]
+                                        :inc_states ["CA"]}}
+                             {:_source {:display_names ["CITIGROUP INC  (C, C-PN)  (CIK 0000831001)"]
+                                        :ciks ["0000831001"]
+                                        :biz_locations ["New York, NY"]
+                                        :inc_states ["DE"]}}
+                             {:_source {:display_names ["MULTI FINELINE ELECTRONIX INC  (CIK 0000830916)"]
+                                        :ciks ["0000830916"]
+                                        :biz_locations ["Anaheim, CA"]
+                                        :inc_states []}}]}})]
+      (let [results (company/search-companies "test" :limit 10)
+            by-cik (into {} (map (juxt :cik identity) results))]
+        (is (= "Apple Inc." (get-in by-cik ["0000320193" :entity-name])))
+        (is (= "CITIGROUP INC" (get-in by-cik ["0000831001" :entity-name])))
+        (is (= "MULTI FINELINE ELECTRONIX INC" (get-in by-cik ["0000830916" :entity-name]))))))
+  (testing "deduplicates hits by CIK"
+    (with-redefs [edgar.core/edgar-get
+                  (fn [_]
+                    {:hits {:hits
+                            [{:_source {:display_names ["Apple Inc.  (AAPL)  (CIK 0000320193)"]
+                                        :ciks ["0000320193"]
+                                        :biz_locations ["Cupertino, CA"]
+                                        :inc_states ["CA"]}}
+                             {:_source {:display_names ["Apple Inc.  (AAPL)  (CIK 0000320193)"]
+                                        :ciks ["0000320193"]
+                                        :biz_locations ["Cupertino, CA"]
+                                        :inc_states ["CA"]}}]}})]
+      (let [results (company/search-companies "apple" :limit 10)]
+        (is (= 1 (count results)) "duplicate CIKs must be deduplicated"))))
+  (testing ":limit is respected"
+    (with-redefs [edgar.core/edgar-get
+                  (fn [_]
+                    {:hits {:hits
+                            (vec (for [i (range 10)]
+                                   {:_source {:display_names [(str "Corp " i "  (CIK 000000000" i ")")]
+                                              :ciks [(str "000000000" i)]
+                                              :biz_locations ["New York, NY"]
+                                              :inc_states ["NY"]}}))}})]
+      (let [results (company/search-companies "corp" :limit 3)]
+        (is (= 3 (count results))))))
+  (testing "hits with missing cik or display_names are skipped"
+    (with-redefs [edgar.core/edgar-get
+                  (fn [_]
+                    {:hits {:hits
+                            [{:_source {:display_names nil :ciks [] :biz_locations [] :inc_states []}}
+                             {:_source {:display_names ["Apple Inc.  (AAPL)  (CIK 0000320193)"]
+                                        :ciks ["0000320193"]
+                                        :biz_locations ["Cupertino, CA"]
+                                        :inc_states ["CA"]}}]}})]
+      (let [results (company/search-companies "apple" :limit 10)]
+        (is (= 1 (count results)))))))
