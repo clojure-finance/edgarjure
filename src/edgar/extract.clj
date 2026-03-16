@@ -61,7 +61,7 @@
    "9.01" "Financial Statements and Exhibits"})
 
 (defn items-for-form [form]
-  (case form
+  (case (str/replace (or form "") #"/A$" "")
     "10-K" items-10k
     "10-Q" items-10q
     "8-K" items-8k
