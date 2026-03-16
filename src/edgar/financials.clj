@@ -167,20 +167,26 @@
   (keep #(resolve-fallback % available-concepts) chains))
 
 (defn- dedup-restatements
-  "Keep the most recently filed observation per [concept end] pair."
+  "Keep the most recently filed observation per [concept unit start end] tuple.
+
+   Using :start in the key preserves distinct duration windows — e.g. a
+   3-month Q3 observation (start=July 1) and a 9-month YTD observation
+   (start=January 1) both ending September 30 are kept as separate rows."
   [rows]
   (->> rows
-       (group-by (juxt :concept :end))
+       (group-by (juxt :concept :unit :start :end))
        (mapcat (fn [[_ group]]
                  [(reduce #(if (pos? (compare (:filed %1) (:filed %2))) %1 %2) group)]))))
 
 (defn- dedup-point-in-time
   "Point-in-time (look-ahead-safe) restatement deduplication.
 
-   For each [concept end] pair, keeps the most recently filed observation
-   among those where :filed <= as-of-date. Observations filed after
-   as-of-date are excluded entirely — they represent information the market
-   could not have had at that date.
+   For each [concept unit start end] tuple, keeps the most recently filed
+   observation among those where :filed <= as-of-date. Observations filed
+   after as-of-date are excluded entirely.
+
+   Using :start in the key preserves distinct duration windows (e.g. 3-month
+   vs 9-month observations sharing the same :end date).
 
    as-of-date is an ISO date string (\"YYYY-MM-DD\") or nil (falls back to
    dedup-restatements, i.e. always-latest / as-reported behaviour)."
@@ -189,7 +195,7 @@
     (dedup-restatements rows)
     (->> rows
          (filter #(not (pos? (compare (:filed %) as-of-date))))
-         (group-by (juxt :concept :end))
+         (group-by (juxt :concept :unit :start :end))
          (mapcat (fn [[_ group]]
                    [(reduce #(if (pos? (compare (:filed %1) (:filed %2))) %1 %2) group)])))))
 

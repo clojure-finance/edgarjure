@@ -67,19 +67,24 @@
 ;;; ---------------------------------------------------------------------------
 
 (deftest dedup-restatements-test
-  (let [f #'edgar.financials/dedup-restatements
-        rows [{:concept "Assets" :end "2023-09-30" :filed "2023-11-03" :val 100}
-              {:concept "Assets" :end "2023-09-30" :filed "2024-01-15" :val 105}
-              {:concept "Assets" :end "2022-09-30" :filed "2022-10-28" :val 90}]]
-    (testing "keeps most-recently-filed row per [concept end]"
-      (let [result (vec (f rows))]
+  (let [f #'edgar.financials/dedup-restatements]
+    (testing "keeps most-recently-filed row per [concept unit start end]"
+      (let [rows [{:concept "Assets" :unit "USD" :start nil :end "2023-09-30" :filed "2023-11-03" :val 100}
+                  {:concept "Assets" :unit "USD" :start nil :end "2023-09-30" :filed "2024-01-15" :val 105}
+                  {:concept "Assets" :unit "USD" :start nil :end "2022-09-30" :filed "2022-10-28" :val 90}]
+            result (vec (f rows))]
         (is (= 2 (count result)))
         (is (some #(= 105 (:val %)) result))
         (is (some #(= 90 (:val %)) result))
         (is (not (some #(= 100 (:val %)) result)))))
+    (testing "distinct duration windows preserved — same concept+end, different :start"
+      (let [rows [{:concept "Revenue" :unit "USD" :start "2023-07-01" :end "2023-09-30" :filed "2023-11-03" :val 300}
+                  {:concept "Revenue" :unit "USD" :start "2023-01-01" :end "2023-09-30" :filed "2023-11-03" :val 900}]
+            result (vec (f rows))]
+        (is (= 2 (count result)) "3-month and 9-month windows must not be collapsed")))
     (testing "no duplicates → same count"
-      (let [unique-rows [{:concept "A" :end "2023-09-30" :filed "2023-11-03" :val 1}
-                         {:concept "B" :end "2023-09-30" :filed "2023-11-03" :val 2}]
+      (let [unique-rows [{:concept "A" :unit "USD" :start nil :end "2023-09-30" :filed "2023-11-03" :val 1}
+                         {:concept "B" :unit "USD" :start nil :end "2023-09-30" :filed "2023-11-03" :val 2}]
             result (vec (f unique-rows))]
         (is (= 2 (count result)))))))
 
@@ -88,22 +93,31 @@
 ;;; ---------------------------------------------------------------------------
 
 (deftest dedup-point-in-time-test
-  (let [f #'edgar.financials/dedup-point-in-time
-        rows [{:concept "Assets" :end "2023-09-30" :filed "2023-11-03" :val 100}
-              {:concept "Assets" :end "2023-09-30" :filed "2024-01-15" :val 105}
-              {:concept "Assets" :end "2022-09-30" :filed "2022-10-28" :val 90}]]
+  (let [f #'edgar.financials/dedup-point-in-time]
     (testing "as-of nil behaves like dedup-restatements (latest filed wins)"
-      (let [result (vec (f rows nil))]
+      (let [rows [{:concept "Assets" :unit "USD" :start nil :end "2023-09-30" :filed "2023-11-03" :val 100}
+                  {:concept "Assets" :unit "USD" :start nil :end "2023-09-30" :filed "2024-01-15" :val 105}
+                  {:concept "Assets" :unit "USD" :start nil :end "2022-09-30" :filed "2022-10-28" :val 90}]
+            result (vec (f rows nil))]
         (is (= 2 (count result)))
         (is (some #(= 105 (:val %)) result))))
     (testing "as-of before the restatement excludes the restatement"
-      (let [result (vec (f rows "2023-12-31"))]
+      (let [rows [{:concept "Assets" :unit "USD" :start nil :end "2023-09-30" :filed "2023-11-03" :val 100}
+                  {:concept "Assets" :unit "USD" :start nil :end "2023-09-30" :filed "2024-01-15" :val 105}
+                  {:concept "Assets" :unit "USD" :start nil :end "2022-09-30" :filed "2022-10-28" :val 90}]
+            result (vec (f rows "2023-12-31"))]
         (is (= 2 (count result)))
         (is (some #(= 100 (:val %)) result))
         (is (not (some #(= 105 (:val %)) result)))))
     (testing "as-of before all rows returns empty"
-      (let [result (vec (f rows "2022-01-01"))]
-        (is (empty? result))))))
+      (let [rows [{:concept "Assets" :unit "USD" :start nil :end "2023-09-30" :filed "2023-11-03" :val 100}]
+            result (vec (f rows "2022-01-01"))]
+        (is (empty? result))))
+    (testing "distinct duration windows preserved under point-in-time"
+      (let [rows [{:concept "Revenue" :unit "USD" :start "2023-07-01" :end "2023-09-30" :filed "2023-11-03" :val 300}
+                  {:concept "Revenue" :unit "USD" :start "2023-01-01" :end "2023-09-30" :filed "2023-11-03" :val 900}]
+            result (vec (f rows "2024-01-01"))]
+        (is (= 2 (count result)) "3-month and 9-month windows must not be collapsed")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; to-wide
