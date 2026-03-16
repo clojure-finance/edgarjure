@@ -45,9 +45,15 @@
     (is (= extract/items-10q (extract/items-for-form "10-Q"))))
   (testing "8-K returns items-8k"
     (is (= extract/items-8k (extract/items-for-form "8-K"))))
+  (testing "amended forms return same map as their base form"
+    (is (= extract/items-10k (extract/items-for-form "10-K/A")))
+    (is (= extract/items-10q (extract/items-for-form "10-Q/A")))
+    (is (= extract/items-8k (extract/items-for-form "8-K/A"))))
   (testing "unknown form returns empty map"
     (is (= {} (extract/items-for-form "SC 13G")))
-    (is (= {} (extract/items-for-form "4")))))
+    (is (= {} (extract/items-for-form "4"))))
+  (testing "nil form returns empty map"
+    (is (= {} (extract/items-for-form nil)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; item-pattern regex
