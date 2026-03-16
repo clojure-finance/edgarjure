@@ -36,7 +36,11 @@
      :end-date        - \"YYYY-MM-DD\"
      :download-all?   - download all attachments, not just primary doc (default false)
      :skip-existing?  - skip filings whose output file already exists (default false)
-   Returns a seq of result maps {:status :ok :path ...} or {:status :error ...}."
+   Returns a seq of result maps per filing:
+     {:status :ok    :path  \"...\"}              ; primary-doc-only download
+     {:status :ok    :paths [\"...\" \"...\"]}     ; download-all? download
+     {:status :skipped :accession-number \"...\"}
+     {:status :error   :accession-number \"...\" :type ... :message \"...\"}"
   [ticker-or-cik dir & {:keys [form limit start-date end-date download-all? skip-existing?]
                         :or {download-all? false skip-existing? false}}]
   (let [fs-list (filings/get-filings ticker-or-cik
@@ -51,7 +55,7 @@
                   (when-let [p (output-path f dir)] (fs/exists? (fs/path p))))
            {:status :skipped :accession-number (:accessionNumber f)}
            (if download-all?
-             (mapv ok (filing/filing-save-all! f dir))
+             {:status :ok :paths (filing/filing-save-all! f dir)}
              (ok (filing/filing-save! f dir))))
          (catch Exception e
            (let [data (ex-data e)
