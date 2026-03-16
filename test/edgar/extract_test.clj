@@ -183,6 +183,53 @@
     (testing "item 7 text contains MD&A text"
       (is (str/includes? (get-in result ["7" :text]) "MD")))))
 
+(deftest extract-items-html-boundary-slicing-test
+  (testing "item text ends at next boundary even when intermediate items are not requested"
+    (let [html "<html><body>
+                  <h2>Item 1. Business</h2>
+                  <p>Business description here.</p>
+                  <h2>Item 1A. Risk Factors</h2>
+                  <p>Risk content here.</p>
+                  <h2>Item 7. Management Discussion</h2>
+                  <p>MD&amp;A content here.</p>
+                  <h2>Item 7A. Quantitative Disclosures</h2>
+                  <p>Market risk content here.</p>
+                  <h2>Item 8. Financial Statements</h2>
+                  <p>Financial statements here.</p>
+                </body></html>"
+          f #'edgar.extract/extract-items-html
+          tree (-> html hickory/parse hickory/as-hickory)
+          result (f tree #{"1A" "7"})]
+      (testing "returns only requested items"
+        (is (= #{"1A" "7"} (set (keys result)))))
+      (testing "item 1A text does not bleed into item 7 content"
+        (let [text-1a (get-in result ["1A" :text])]
+          (is (str/includes? text-1a "Risk content"))
+          (is (not (str/includes? text-1a "MD&A content"))
+              "1A text must stop at Item 7 boundary, not bleed into Item 7 or beyond")))
+      (testing "item 7 text does not bleed into item 7A content"
+        (let [text-7 (get-in result ["7" :text])]
+          (is (str/includes? text-7 "MD"))
+          (is (not (str/includes? text-7 "Market risk"))
+              "Item 7 text must stop at Item 7A boundary")))))
+  (testing "single requested item gets correct end boundary"
+    (let [html "<html><body>
+                  <h2>Item 1A. Risk Factors</h2>
+                  <p>Risk content only.</p>
+                  <h2>Item 2. Properties</h2>
+                  <p>Properties content.</p>
+                  <h2>Item 3. Legal Proceedings</h2>
+                  <p>Legal content.</p>
+                </body></html>"
+          f #'edgar.extract/extract-items-html
+          tree (-> html hickory/parse hickory/as-hickory)
+          result (f tree #{"1A"})]
+      (is (= #{"1A"} (set (keys result))))
+      (let [text (get-in result ["1A" :text])]
+        (is (str/includes? text "Risk content"))
+        (is (not (str/includes? text "Properties"))
+            "1A text must stop at Item 2 boundary even though Item 2 was not requested")))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Fixture HTML loaded from file — more complete 10-K
 ;;; ---------------------------------------------------------------------------

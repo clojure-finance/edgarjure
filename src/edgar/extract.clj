@@ -165,23 +165,27 @@
 
 (defn- extract-items-html
   "Main HTML extraction path. Returns a map of item-id ->
-   {:title \"...\" :text \"...\" :method :html-heading-boundaries}."
+   {:title \"...\" :text \"...\" :method :html-heading-boundaries}.
+   Uses ALL boundaries for end-position calculation so that requesting only
+   a subset of items does not cause a requested item's text to bleed into
+   the next requested item (skipping unrequested boundaries in between)."
   [tree target-ids]
   (let [flat (flatten-nodes tree)
-        boundaries (find-item-boundaries flat)
-        relevant (filter #(target-ids (:item-id %)) boundaries)]
+        all-boundaries (vec (find-item-boundaries flat))
+        all-count (count all-boundaries)]
     (into {}
-          (for [[{:keys [item-id title node-index]}
-                 next-boundary]
-                (partition-all 2 1 relevant)]
-            (let [end-idx (if next-boundary
-                            (:node-index next-boundary)
-                            (count flat))
-                  body-nodes (subvec (vec flat) (inc node-index) end-idx)
-                  text (text-from-node-slice body-nodes)]
-              [item-id {:title title
-                        :text text
-                        :method :html-heading-boundaries}])))))
+          (keep-indexed
+           (fn [i {:keys [item-id title node-index]}]
+             (when (target-ids item-id)
+               (let [next-idx (when (< (inc i) all-count)
+                                (:node-index (nth all-boundaries (inc i))))
+                     end-idx (or next-idx (count flat))
+                     body-nodes (subvec (vec flat) (inc node-index) end-idx)
+                     text (text-from-node-slice body-nodes)]
+                 [item-id {:title title
+                           :text text
+                           :method :html-heading-boundaries}])))
+           all-boundaries))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Plain-text item boundary detection (pre-2000 filings)
