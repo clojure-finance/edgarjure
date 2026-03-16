@@ -2,16 +2,16 @@
   "Financial statement extraction with normalization.
 
    Three output layers for each statement:
-     raw-*          ? all matching observations, unprocessed
-     *-statement    ? normalized, restatement-deduplicated, long-format
-     get-financials ? all three statements, optionally wide-format
+     raw-*          - all matching observations, unprocessed
+     *-statement    - normalized, restatement-deduplicated, long-format
+     get-financials - all three statements, optionally wide-format
 
    Concept fallback chains: each line item is a vector of concept names tried
    in order; the first one present in the facts data wins.
 
    Duration vs instant:
-     Income statement + cash flow -> duration observations (:frame does NOT end in \"I\")
-     Balance sheet               -> instant observations  (:frame ends in \"I\")
+     Income statement + cash flow -> duration observations (row has :start date)
+     Balance sheet               -> instant observations  (row has no :start date)
 
    Point-in-time / look-ahead-safe mode:
      Pass :as-of \"YYYY-MM-DD\" to any public function to restrict to filings
@@ -19,8 +19,7 @@
      returned (as-reported / always-latest behaviour)."
   (:require [edgar.xbrl :as xbrl]
             [edgar.company :as company]
-            [tech.v3.dataset :as ds]
-            [clojure.string :as str]))
+            [tech.v3.dataset :as ds]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Concept fallback chains
@@ -147,11 +146,11 @@
 ;;; Internal helpers
 ;;; ---------------------------------------------------------------------------
 
-(defn- instant? [frame]
-  (and (string? frame) (str/ends-with? frame "I")))
+(defn- instant? [row]
+  (nil? (:start row)))
 
-(defn- duration? [frame]
-  (and (string? frame) (not (str/ends-with? frame "I")) (not (str/blank? frame))))
+(defn- duration? [row]
+  (some? (:start row)))
 
 (defn- concepts-in-data [facts-ds]
   (set (ds/column facts-ds :concept)))
@@ -194,8 +193,8 @@
 
 (defn- filter-by-duration-type [rows duration-type]
   (case duration-type
-    :instant (filter #(instant? (:frame %)) rows)
-    :duration (filter #(duration? (:frame %)) rows)
+    :instant (filter instant? rows)
+    :duration (filter duration? rows)
     :any rows))
 
 (defn- add-line-item-col [ds concept->label]
@@ -239,7 +238,7 @@
       (let [filtered (-> facts-ds
                          (ds/filter-column :concept #(contains? winning-concepts %))
                          (ds/filter-column :form #(= % form))
-                         ds/rows)
+                         (ds/rows {:nil-missing? true}))
             duration-filtered (filter-by-duration-type filtered duration-type)
             deduped (dedup-point-in-time duration-filtered as-of)
             result-ds (ds/->dataset (vec deduped))]

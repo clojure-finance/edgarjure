@@ -9,25 +9,21 @@
 
 (deftest instant-test
   (let [instant? #'edgar.financials/instant?]
-    (testing "frame ending in I is instant"
-      (is (instant? "CY2023Q4I")))
-    (testing "frame not ending in I is not instant"
-      (is (not (instant? "CY2023Q4"))))
-    (testing "nil is not instant"
-      (is (not (instant? nil))))
-    (testing "blank string is not instant"
-      (is (not (instant? ""))))))
+    (testing "row without :start is instant (balance sheet)"
+      (is (instant? {:end "2023-09-30" :val 100})))
+    (testing "row with :start is not instant (duration)"
+      (is (not (instant? {:start "2023-07-01" :end "2023-09-30" :val 100}))))
+    (testing "row with nil :start is instant"
+      (is (instant? {:start nil :end "2023-09-30" :val 100})))))
 
 (deftest duration-test
   (let [duration? #'edgar.financials/duration?]
-    (testing "frame not ending in I and non-blank is duration"
-      (is (duration? "CY2023Q4")))
-    (testing "frame ending in I is not duration"
-      (is (not (duration? "CY2023Q4I"))))
-    (testing "nil is not duration"
-      (is (not (duration? nil))))
-    (testing "blank string is not duration"
-      (is (not (duration? ""))))))
+    (testing "row with :start is duration (income/cashflow)"
+      (is (duration? {:start "2023-07-01" :end "2023-09-30" :val 100})))
+    (testing "row without :start is not duration"
+      (is (not (duration? {:end "2023-09-30" :val 100}))))
+    (testing "row with nil :start is not duration"
+      (is (not (duration? {:start nil :end "2023-09-30" :val 100}))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; resolve-fallback
