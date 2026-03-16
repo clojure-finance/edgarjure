@@ -94,12 +94,17 @@
     (when xml-doc
       (filing/filing-document filing (:name xml-doc) :raw? true))))
 
-(defn- find-primary-xml [filing]
+(defn- find-primary-cover-xml [filing]
   (let [idx (filing/filing-index filing)
         docs (:files idx)
-        xml-doc (first (filter #(str/ends-with? (str (:name %)) ".xml") docs))]
-    (when xml-doc
-      (filing/filing-document filing (:name xml-doc) :raw? true))))
+        cover-doc (first (remove #(= "INFORMATION TABLE" (:type %))
+                                 (filter (fn [{:keys [name type]}]
+                                           (and (str/ends-with? (str name) ".xml")
+                                                (not (str/ends-with? (str name) "_htm.xml"))
+                                                (not (str/includes? (str/lower-case (str type)) "xbrl"))))
+                                         docs)))]
+    (when cover-doc
+      (filing/filing-document filing (:name cover-doc) :raw? true))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Header / cover document parsing
@@ -176,6 +181,10 @@
 (defn parse-form13f
   "Parse a 13F-HR filing map into a structured map.
 
+   For two-document submissions (modern SEC format), header/manager data is
+   read from the cover XML and holdings from the separate INFORMATION TABLE
+   attachment. For single-document submissions, the same XML is used for both.
+
    Returns:
      {:form                \"13F-HR\"
       :period-of-report    \"YYYY-MM-DD\"
@@ -192,16 +201,19 @@
                                       :voting-sole :voting-shared :voting-none
       :total-value         long (sum of :value column, thousands of USD)}"
   [filing]
-  (when-let [raw (or (find-infotable-xml filing)
-                     (find-primary-xml filing))]
-    (let [root (parse-xml-str raw)
-          summary (parse-report-summary root)
-          holdings (parse-holdings root)
-          holdings-ds (holdings->dataset holdings)
-          total-value (reduce + 0 (remove nil? (map :value holdings)))]
+  (let [infotable-raw (find-infotable-xml filing)
+        cover-raw (or (find-primary-cover-xml filing) infotable-raw)
+        cover-root (when cover-raw (parse-xml-str cover-raw))
+        info-root (when infotable-raw (parse-xml-str infotable-raw))
+        summary (when cover-root (parse-report-summary cover-root))
+        manager (when cover-root (parse-manager cover-root))
+        holdings (parse-holdings (or info-root cover-root))
+        holdings-ds (holdings->dataset holdings)
+        total-value (reduce + 0 (remove nil? (map :value holdings)))]
+    (when (or cover-root info-root)
       (merge
        {:form "13F-HR"
-        :manager (parse-manager root)
+        :manager manager
         :holdings holdings-ds
         :total-value total-value}
        summary

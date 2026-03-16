@@ -180,3 +180,122 @@
     (testing "find-tag matches ns1:-prefixed single element"
       (let [node (#'edgar.forms.form13f/find-tag root :infoTable)]
         (is (some? node))))))
+
+(def ^:private cover-xml
+  "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<edgarSubmission>
+  <headerData>
+    <submissionType>13F-HR</submissionType>
+  </headerData>
+  <formData>
+    <coverPage>
+      <filingManager>
+        <name>GOLDMAN SACHS GROUP INC</name>
+        <address>
+          <street1>200 WEST ST</street1>
+          <city>NEW YORK</city>
+          <stateOrCountry>NY</stateOrCountry>
+          <zipCode>10282</zipCode>
+        </address>
+      </filingManager>
+    </coverPage>
+    <reportSummary>
+      <periodOfReport>2024-03-31</periodOfReport>
+      <reportType>13F HOLDINGS REPORT</reportType>
+      <form13FFileNumber>028-00019</form13FFileNumber>
+      <tableEntryCount>2</tableEntryCount>
+      <tableValueTotal>350000</tableValueTotal>
+    </reportSummary>
+  </formData>
+</edgarSubmission>")
+
+(def ^:private infotable-xml-separate
+  "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
+<ns1:informationTable xmlns:ns1=\"http://www.sec.gov/edgar/document/thirteenf/informationtable\">
+  <ns1:infoTable>
+    <ns1:nameOfIssuer>APPLE INC</ns1:nameOfIssuer>
+    <ns1:titleOfClass>COM</ns1:titleOfClass>
+    <ns1:cusip>037833100</ns1:cusip>
+    <ns1:value>200000</ns1:value>
+    <ns1:shrsOrPrnAmt>
+      <ns1:sshPrnamt>1000000</ns1:sshPrnamt>
+      <ns1:sshPrnamtType>SH</ns1:sshPrnamtType>
+    </ns1:shrsOrPrnAmt>
+    <ns1:investmentDiscretion>SOLE</ns1:investmentDiscretion>
+    <ns1:votingAuthority>
+      <ns1:Sole>1000000</ns1:Sole>
+      <ns1:Shared>0</ns1:Shared>
+      <ns1:None>0</ns1:None>
+    </ns1:votingAuthority>
+  </ns1:infoTable>
+  <ns1:infoTable>
+    <ns1:nameOfIssuer>MICROSOFT CORP</ns1:nameOfIssuer>
+    <ns1:titleOfClass>COM</ns1:titleOfClass>
+    <ns1:cusip>594918104</ns1:cusip>
+    <ns1:value>150000</ns1:value>
+    <ns1:shrsOrPrnAmt>
+      <ns1:sshPrnamt>400000</ns1:sshPrnamt>
+      <ns1:sshPrnamtType>SH</ns1:sshPrnamtType>
+    </ns1:shrsOrPrnAmt>
+    <ns1:investmentDiscretion>SOLE</ns1:investmentDiscretion>
+    <ns1:votingAuthority>
+      <ns1:Sole>400000</ns1:Sole>
+      <ns1:Shared>0</ns1:Shared>
+      <ns1:None>0</ns1:None>
+    </ns1:votingAuthority>
+  </ns1:infoTable>
+</ns1:informationTable>")
+
+(deftest parse-form13f-two-document-test
+  (testing "two-document submission: header from cover XML, holdings from infotable XML"
+    (let [mock-filing {:form "13F-HR" :cik "0000042352" :accessionNumber "0000042352-24-000001"}
+          result (with-redefs
+                  [edgar.forms.form13f/find-infotable-xml (fn [_] infotable-xml-separate)
+                   edgar.forms.form13f/find-primary-cover-xml (fn [_] cover-xml)]
+                   (form13f/parse-form13f mock-filing))]
+      (testing "manager comes from cover XML, not infotable"
+        (is (= "GOLDMAN SACHS GROUP INC" (get-in result [:manager :name])))
+        (is (= "NEW YORK" (get-in result [:manager :city]))))
+      (testing "period-of-report from cover XML"
+        (is (= "2024-03-31" (:period-of-report result))))
+      (testing "holdings come from infotable XML"
+        (is (= 2 (ds/row-count (:holdings result)))))
+      (testing "total-value sums infotable values"
+        (is (= 350000 (:total-value result))))
+      (testing "is-amendment? false for 13F-HR"
+        (is (false? (:is-amendment? result))))))
+  (testing "two-document submission: amendment status from filing :form key"
+    (let [mock-filing {:form "13F-HR/A" :cik "0000042352" :accessionNumber "0000042352-24-000002"}
+          result (with-redefs
+                  [edgar.forms.form13f/find-infotable-xml (fn [_] infotable-xml-separate)
+                   edgar.forms.form13f/find-primary-cover-xml (fn [_] cover-xml)]
+                   (form13f/parse-form13f mock-filing))]
+      (testing "is-amendment? true for 13F-HR/A regardless of XML reportType"
+        (is (true? (:is-amendment? result))))
+      (testing "manager still comes from cover XML"
+        (is (= "GOLDMAN SACHS GROUP INC" (get-in result [:manager :name]))))
+      (testing "holdings still come from infotable"
+        (is (= 2 (ds/row-count (:holdings result))))))))
+
+(deftest parse-form13f-single-document-fallback-test
+  (testing "single-document submission: cover XML used for both header and holdings when no infotable"
+    (let [mock-filing {:form "13F-HR" :cik "0000042352" :accessionNumber "0000042352-20-000001"}
+          result (with-redefs
+                  [edgar.forms.form13f/find-infotable-xml (fn [_] nil)
+                   edgar.forms.form13f/find-primary-cover-xml (fn [_] form13f-xml)]
+                   (form13f/parse-form13f mock-filing))]
+      (testing "returns non-nil result"
+        (is (some? result)))
+      (testing "period-of-report extracted"
+        (is (= "2024-03-31" (:period-of-report result))))
+      (testing "holdings extracted from the single doc"
+        (is (= 2 (ds/row-count (:holdings result)))))
+      (testing "total-value sums correctly"
+        (is (= 300000 (:total-value result))))))
+  (testing "returns nil when both cover and infotable are nil"
+    (let [mock-filing {:form "13F-HR"}
+          result (with-redefs
+                  [edgar.forms.form13f/find-infotable-xml (fn [_] nil)
+                   edgar.forms.form13f/find-primary-cover-xml (fn [_] nil)]
+                   (form13f/parse-form13f mock-filing))]
+      (is (nil? result)))))
