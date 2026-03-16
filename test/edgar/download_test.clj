@@ -99,3 +99,21 @@
       (is (= 2 (count result)))
       (is (every? map? result))
       (is (every? #(= :ok (:status %)) result)))))
+
+(deftest download-filings-nil-primary-doc-test
+  (testing "filing with no primary document yields :skipped, not {:status :ok :path nil}"
+    (let [result (with-redefs [filings/get-filings (fn [& _] [mock-filing])
+                               filing/filing-save! (fn [_ _] nil)]
+                   (download/download-filings! "AAPL" "/data" :form "10-K"))]
+      (is (= 1 (count result)))
+      (let [r (first result)]
+        (is (= :skipped (:status r)))
+        (is (= "0000320193-24-000001" (:accession-number r)))
+        (is (= :no-primary-doc (:reason r)))
+        (is (not (contains? r :path)) "no :path key on a skipped result"))))
+  (testing "nil path does not produce {:status :ok :path nil}"
+    (let [result (with-redefs [filings/get-filings (fn [& _] [mock-filing])
+                               filing/filing-save! (fn [_ _] nil)]
+                   (download/download-filings! "AAPL" "/data" :form "10-K"))
+          r (first result)]
+      (is (not= :ok (:status r))))))
