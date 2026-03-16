@@ -98,20 +98,24 @@
 
 (defn filing-text
   "Fetch the primary document of a filing as plain text (HTML stripped).
-   Script and style elements are excluded."
+   Script and style elements and their subtree content are excluded."
   [filing]
   (when-let [html (filing-html filing)]
-    (-> html
-        hickory/parse
-        hickory/as-hickory
-        (#(sel/select (sel/and sel/any
-                               (sel/not (sel/tag :script))
-                               (sel/not (sel/tag :style))) %))
-        (->> (map :content)
-             flatten
-             (filter string?)
-             (str/join " ")
-             str/trim))))
+    (let [excluded-tags #{:script :style}
+          extract-text
+          (fn extract-text [node]
+            (cond
+              (string? node) (str/replace node "\u00A0" " ")
+              (map? node) (if (excluded-tags (:tag node))
+                            ""
+                            (str/join "" (map extract-text (:content node))))
+              :else ""))]
+      (-> html
+          hickory/parse
+          hickory/as-hickory
+          extract-text
+          (str/replace #"\s+" " ")
+          str/trim))))
 
 (defn filing-document
   "Fetch a specific named document from a filing as a string."

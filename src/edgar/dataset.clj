@@ -69,7 +69,7 @@
                                   (assoc acc k row)
                                   acc)))
                             {}
-                            (ds/rows filtered))]
+                            (ds/rows filtered {:nil-missing? true}))]
         (ds/->dataset (vals deduped))))))
 
 ;;; ---------------------------------------------------------------------------
@@ -115,7 +115,7 @@
   [ds]
   (let [deduped (ds/unique-by ds (fn [row] [(:end row) (:concept row)]))]
     (ds/->dataset
-     (->> (ds/rows deduped)
+     (->> (ds/rows deduped {:nil-missing? true})
           (group-by :end)
           (map (fn [[period rows]]
                  (into {:end period}

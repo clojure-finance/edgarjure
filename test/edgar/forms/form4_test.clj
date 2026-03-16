@@ -120,3 +120,21 @@
         (is (= "D" (:acquired-disposed t))))
       (testing "shares-after is numeric"
         (is (= 1200000.0 (:shares-after t)))))))
+
+(deftest form4-xml-excludes-ixbrl-test
+  (let [f #'edgar.forms.form4/form4-xml]
+    (testing "prefers plain .xml over iXBRL _htm.xml instance doc"
+      (with-redefs [edgar.filing/filing-index
+                    (fn [_] {:files [{:name "aapl-20240115_htm.xml" :type "EX-101.INS" :sequence "2"}
+                                     {:name "ownership.xml" :type "4" :sequence "1"}]
+                             :formType "4"})
+                    edgar.filing/filing-document
+                    (fn [_ name & _] (str "fetched:" name))]
+        (is (= "fetched:ownership.xml" (f {})))))
+    (testing "falls back to first doc when no qualifying xml exists"
+      (with-redefs [edgar.filing/filing-index
+                    (fn [_] {:files [{:name "primary.htm" :type "4" :sequence "1"}]
+                             :formType "4"})
+                    edgar.filing/filing-document
+                    (fn [_ name & _] (str "fetched:" name))]
+        (is (= "fetched:primary.htm" (f {})))))))

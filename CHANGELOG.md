@@ -2,45 +2,91 @@
 
 All notable changes to edgarjure are documented here.
 
-## [Unreleased]
+## [0.1.4] — 2026-03-16
 
 ### Fixed
 
-**`edgar.filings/fetch-extra-filings` ? silent truncation for filers with >1000 filings**
-- `fetch-extra-filings` was calling `(parse-filings-recent (:recent chunk))` on paginated submission chunks. These chunks are flat columnar objects (same format as `[:filings :recent]`) ? NOT wrapped in a `{:recent {...}}` envelope. The call to `:recent` returned `nil`, causing `parse-filings-recent` to throw on any company with >1000 filings (e.g. AAPL), silently returning only the first 1000. Fixed by calling `(parse-filings-recent chunk)` directly.
+**`edgar.company/ticker->cik` — `MissingFormatArgumentException` at runtime**
+- `format "%010d"` was applied directly to `:cik_str`, which is a string in the SEC tickers JSON. `%d` requires a `Long`/`Integer`, not a string, so every ticker→CIK lookup threw a `MissingFormatArgumentException`. Fixed by parsing with `(Long/parseLong (str (:cik_str entry)))` before formatting; the `str` wrapper also handles the case where jsonista delivers `cik_str` as an integer rather than a string.
 
-**`edgar.filings/latest-effective-filing` ? amendments never found**
+**`edgar.company/cik->ticker` — precision loss for large CIKs**
+- CIK comparison used `Double/parseDouble`, which loses integer precision for values with more than 15 significant digits. Fixed to `Long/parseLong`, consistent with every other CIK-handling path in the codebase.
+
+**`edgar.filing/filing-text` — duplicated and garbled plain-text output**
+- `filing-text` used `sel/select` to find every non-script/non-style node in the hickory tree, then called `(map :content ...)` + `flatten` + `(filter string? ...)` on the result. Because `sel/select` returns *all* matching nodes — including every ancestor of every text node — each string was collected once per ancestor, producing heavily duplicated output. Additionally, string children of excluded `<script>` and `<style>` nodes still passed through because `sel/not` only excluded the tag node itself, not its subtree content.
+- Fixed by replacing the `sel/select` approach with a recursive `extract-text` function that mirrors the existing `cell-text` helper: walk `:content`, return `""` for any `:script` or `:style` subtree (dropping all descendant content), normalise `\u00A0`, and join. Single-pass, no duplication, correct exclusion.
+
+**`edgar.forms.form4/form4-xml` — iXBRL instance document selected instead of ownership XML**
+- `form4-xml` picked the first `.xml` file in the filing index. Modern Form 4 filings with inline XBRL contain both the real `ownership.xml` and an iXBRL instance document named `*_htm.xml`. If the iXBRL doc sorted first, the parser received the wrong file and returned empty/nil results for every field.
+- Fixed by excluding filenames ending in `_htm.xml` from the candidate list, matching the filter already used in `edgar.forms.form13f/find-infotable-xml`.
+
+**`edgar.financials/normalized-statement` — `:line-item` sorted descending (Z→A) within each period**
+- The sort used `(ds/sort-by key-fn #(compare %2 %1))` where `key-fn` returned `[end line-item]`. The reversed comparator applied to the entire vector, flipping *both* components — so `:line-item` was sorted Z→A instead of A→Z within each period.
+- Fixed with an explicit two-key comparator: `(compare (first b) (first a))` for `:end` descending, falling through to `(compare (second a) (second b))` for `:line-item` ascending.
+
+**`edgar.dataset/pivot-wide` — nil-valued columns caused missing keys in flyweight maps**
+- `pivot-wide` called `(ds/rows deduped)` without `{:nil-missing? true}`. TMD flyweight maps omit nil-valued keys, so columns like `:frame` (nil for most XBRL rows) were absent rather than explicitly nil, causing `:concept` and `:val` lookups to silently fail for affected rows and producing an incomplete wide dataset.
+- Fixed by using `(ds/rows deduped {:nil-missing? true})`.
+
+**`edgar.dataset/multi-company-facts` (`:as-of` path) — nil-valued columns caused missing keys in flyweight maps**
+- The `:as-of` dedup `reduce` called `(ds/rows filtered)` without `{:nil-missing? true}`. Facts datasets have nil `:frame` columns; without the option, flyweight maps silently omit nil keys, making `(:filed row)` unreliable in the reduce comparator.
+- Fixed by using `(ds/rows filtered {:nil-missing? true})`.
+
+**`edgar.filings/enrich-filing` — unaliased `clojure.string/replace`**
+- `enrich-filing` used the fully-qualified `clojure.string/replace` despite the namespace aliasing `[clojure.string :as str]`. Works at runtime but inconsistent with the rest of the file. Fixed to `str/replace`.
+
+**`edgar.filings/fetch-extra-filings` — silent truncation for filers with >1000 filings**
+- `fetch-extra-filings` was calling `(parse-filings-recent (:recent chunk))` on paginated submission chunks. These chunks are flat columnar objects (same format as `[:filings :recent]`) — NOT wrapped in a `{:recent {...}}` envelope. The call to `:recent` returned `nil`, causing `parse-filings-recent` to throw on any company with >1000 filings (e.g. AAPL), silently returning only the first 1000. Fixed by calling `(parse-filings-recent chunk)` directly.
+
+**`edgar.filings/latest-effective-filing` — amendments never found**
 - Was passing `:form form` to `get-filings`, which filters by exact form equality and excludes `"10-K/A"` when searching for `"10-K"`. The amendment branch was always empty. Fixed by calling `get-filings` without a `:form` filter and manually partitioning results into base-form vs. amendment lists.
 
-**`edgar.forms.form13f/find-infotable-xml` ? wrong document parsed for modern 13F submissions**
+**`edgar.forms.form13f/find-infotable-xml` — wrong document parsed for modern 13F submissions**
 - Modern 13F-HR submissions package the holdings infotable as a separate attachment with `:type "INFORMATION TABLE"`. `find-infotable-xml` used filename heuristics and selected `primary_doc.xml` (cover page only), producing an empty `:holdings` dataset. Fixed by preferring the `"INFORMATION TABLE"` typed index entry over the filename-based fallback.
 
-**`edgar.forms.form13f` ? XML namespace prefix matching failure**
+**`edgar.forms.form13f` — XML namespace prefix matching failure**
 - `find-tag`, `find-tags`, and `child-tag-text` used exact keyword equality for tag matching. Modern 13F infotable XML uses `ns1:` namespace prefixes (`:ns1:infoTable`, `:ns1:nameOfIssuer`, etc.), so all tag lookups returned nil and holdings were empty. Fixed by matching on the tag name suffix after splitting on `":"`.
 
-**`edgar.financials/to-wide` ? nil-valued columns caused missing keys in flyweight maps**
+**`edgar.financials/to-wide` — nil-valued columns caused missing keys in flyweight maps**
 - `to-wide` called `(ds/rows deduped)` without `{:nil-missing? true}`. TMD flyweight maps omit nil-valued keys, so columns like `:start` (nil for all balance-sheet rows) were absent rather than explicitly nil, corrupting `:end`/`:line-item` lookups and producing an empty wide balance sheet. Fixed by using `(ds/rows deduped {:nil-missing? true})`.
 
-**`edgar.financials/concepts-in-data` ? crash on empty dataset**
+**`edgar.financials/concepts-in-data` — crash on empty dataset**
 - `(ds/column facts-ds :concept)` throws when the dataset is empty (no columns). Fixed by returning `#{}` early when `(ds/row-count facts-ds)` is zero.
 
-**`edgar.financials` ? instant/duration filtering dropped majority of rows (two bugs)**
+**`edgar.financials` — instant/duration filtering dropped majority of rows (two bugs)**
 - `instant?` and `duration?` tested whether `:frame` ended in `"I"`. The `:frame` field is only populated on ~25-50% of XBRL observations, silently dropping most rows from every statement. Fixed: `instant?` now checks `(nil? (:start row))`; `duration?` checks `(some? (:start row))`.
 - `normalized-statement` called `(ds/rows filtered-ds)` without `{:nil-missing? true}`. TMD flyweight maps omit nil-valued keys, so balance-sheet rows had no `:start` key at all, making `instant?` return `true` for every row. Fixed by using `(ds/rows filtered-ds {:nil-missing? true})`.
 
 ### Added
 
-**`edgar.financials` ? expanded unit test coverage**
+**`edgar.company-test` — `ticker->cik` and `cik->ticker` correctness tests**
+- `ticker->cik-format-test`: verifies correct zero-padded output for both string and integer `cik_str` values, and nil return for unknown tickers. Uses `with-redefs` on `tickers-by-ticker` — no network access.
+- `cik->ticker-test`: verifies Long-based CIK comparison (not Double), nil for unknown CIK. Uses `with-redefs` on `load-tickers!`.
+
+**`edgar.filing-test` — `filing-text` subtree exclusion regression test**
+- Extended `filing-text-excludes-script-style-test` with a second case using deeply nested `<script>` (`var x = 'injected'`) and `<style>` (`display: none`) blocks. Confirms that inner string content of excluded tags is fully absent from output, not just the tag nodes themselves.
+
+**`edgar.forms.form4-test` — `form4-xml` iXBRL exclusion test**
+- `form4-xml-excludes-ixbrl-test`: two cases using `with-redefs` on `filing/filing-index` and `filing/filing-document`. First case: index contains both `*_htm.xml` (iXBRL) and `ownership.xml`; verifies `ownership.xml` is selected. Second case: index contains only a `.htm` file; verifies fallback to first doc works.
+
+**`edgar.financials-test` — `normalized-statement` sort-order test**
+- `normalized-statement-sort-order-test`: four-row fixture with two periods and two concepts. Verifies `:end` column is descending (most recent first) and `:line-item` is ascending (A→Z) within each period.
+
+**`edgar.dataset-test` — `multi-company-facts` `:as-of` and `pivot-wide` tests**
+- `multi-company-facts-as-of-dedup-test`: two sub-cases with `with-redefs`. First verifies that `:as-of` excludes a later restatement and keeps only the earlier observation. Second verifies that nil `:as-of` returns all rows unfiltered.
+- `pivot-wide-test`: verifies correct wide-format output from a facts dataset with nil `:frame` and `:start` columns — specifically that `{:nil-missing? true}` prevents missing-key errors.
+
+**`edgar.financials` — expanded unit test coverage**
 - New tests: `concepts-in-data` (including empty-dataset guard), `filter-by-duration-type` (all three branches), `add-line-item-col`, `raw-statement`, `normalized-statement` (empty-winning-concepts early-return path), `to-wide-nil-columns-test` (nil `:start`/`:frame` columns regression).
 
-**`edgar.filings` ? expanded unit test coverage**
-- `fetch-extra-filings-flat-chunk-test` ? verifies `parse-filings-recent` handles a flat chunk with no `:recent` wrapper.
-- `latest-effective-filing-logic-test` ? four `with-redefs` cases covering amendment newer/older/absent/only.
+**`edgar.filings` — expanded unit test coverage**
+- `fetch-extra-filings-flat-chunk-test`: verifies `parse-filings-recent` handles a flat chunk with no `:recent` wrapper.
+- `latest-effective-filing-logic-test`: four `with-redefs` cases covering amendment newer/older/absent/only.
 
-**`edgar.forms.form13f` ? namespace-prefix regression test**
-- `find-tags-namespace-prefix-test` ? `ns1:`-prefixed XML fixture verifying `find-tags`, `find-tag`, and `parse-holding` round-trip on namespaced XML. Also covers the `child-tag-text` namespace fix via `:shares` field extraction.
+**`edgar.forms.form13f` — namespace-prefix regression test**
+- `find-tags-namespace-prefix-test`: `ns1:`-prefixed XML fixture verifying `find-tags`, `find-tag`, and `parse-holding` round-trip on namespaced XML. Also covers the `child-tag-text` namespace fix via `:shares` field extraction.
 
-**Integration test suite ? complete `edgar.api` coverage**
+**Integration test suite — complete `edgar.api` coverage**
 - Expanded from 15 to 32 tests (137 assertions), covering every public function in `edgar.api` including `search`, `latest-effective-filing`, `filings-dataset`, `search-filings`, `daily-filings`, `html`, `item`, `obj` (Form 4 + 13F-HR), `tables`, `doc-url`, `exhibits`, `exhibit`, `xbrl-docs`, `save!`, `save-all!`, `frame`, `financials` (all with `:shape :wide` and `:as-of`), `pivot`, and Malli validation errors.
 - Canonical 13F filer changed from `BRK-A` to `GS` (Goldman Sachs), which uses the modern `"INFORMATION TABLE"` document format with `ns1:` namespace prefixes.
 

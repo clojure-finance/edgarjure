@@ -167,7 +167,23 @@
         (testing "CSS content is excluded"
           (is (not (str/includes? result "color"))))
         (testing "JavaScript content is excluded"
-          (is (not (str/includes? result "alert"))))))))
+          (is (not (str/includes? result "alert")))))))
+
+  (testing "script/style subtrees are fully excluded — not just the tag"
+    (let [html "<html><body>
+                  <p>Before</p>
+                  <script type=\"text/javascript\">
+                    var x = 'injected'; document.write(x);
+                  </script>
+                  <style>.cls { display: none; }</style>
+                  <p>After</p>
+                </body></html>"]
+      (with-redefs [edgar.filing/filing-html (fn [_] html)]
+        (let [result (filing/filing-text {})]
+          (is (str/includes? result "Before"))
+          (is (str/includes? result "After"))
+          (is (not (str/includes? result "injected")))
+          (is (not (str/includes? result "display"))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; filing-save! — nil primary-doc guard
