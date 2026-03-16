@@ -74,7 +74,18 @@
     (when (and value (.isAfter ^java.time.Instant expires-at (java.time.Instant/now)))
       value)))
 
+(defn- cache-evict!
+  "Remove all expired entries from the cache. Called before each put to bound
+   memory growth in long-running processes."
+  []
+  (let [now (java.time.Instant/now)]
+    (swap! cache (fn [m]
+                   (into {} (remove (fn [[_ v]]
+                                      (.isAfter now ^java.time.Instant (:expires-at v)))
+                                    m))))))
+
 (defn- cache-put! [url value]
+  (cache-evict!)
   (let [ttl (cache-ttl-for url)
         expires-at (.plusMillis (java.time.Instant/now) ttl)]
     (swap! cache assoc url {:value value :expires-at expires-at})))
