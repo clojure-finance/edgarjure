@@ -95,21 +95,35 @@
   (or (= status 429) (>= status 500)))
 
 (defn- http-get-with-retry
-  "Execute a hato GET with exponential backoff retry on 429/5xx.
-   Returns the response map. Throws ex-info ::http-error on exhausted retries or 4xx."
+  "Execute a hato GET with exponential backoff retry on 429/5xx and transport errors.
+   Uses :throw-exceptions? false so all HTTP status codes are returned as response maps
+   rather than thrown — enabling status-based retry logic to work correctly.
+   Transport-level exceptions (timeouts, connection resets) are also retried.
+   Returns the response map on success.
+   Throws ex-info ::http-error on exhausted retries or non-retryable 4xx."
   [url opts]
   (loop [attempt 0]
     (throttle!)
-    (let [resp (hato/get url opts)
-          status (:status resp)]
-      (cond
-        (< status 400) resp
-        (and (retryable? status) (< attempt max-retries))
-        (do (Thread/sleep (* retry-base-ms (long (Math/pow 2 attempt))))
-            (recur (inc attempt)))
-        :else
-        (throw (ex-info (str "HTTP " status " from SEC API")
-                        {:type ::http-error :status status :url url}))))))
+    (let [resp (try
+                 (hato/get url (assoc opts :throw-exceptions? false))
+                 (catch Exception e
+                   (if (< attempt max-retries)
+                     (do (Thread/sleep (* retry-base-ms (long (Math/pow 2 attempt))))
+                         ::transport-error)
+                     (throw (ex-info (str "Transport error fetching " url)
+                                     {:type ::http-error :url url}
+                                     e)))))]
+      (if (= resp ::transport-error)
+        (recur (inc attempt))
+        (let [status (:status resp)]
+          (cond
+            (< status 400) resp
+            (and (retryable? status) (< attempt max-retries))
+            (do (Thread/sleep (* retry-base-ms (long (Math/pow 2 attempt))))
+                (recur (inc attempt)))
+            :else
+            (throw (ex-info (str "HTTP " status " from SEC API")
+                            {:type ::http-error :status status :url url}))))))))
 
 (defn edgar-get
   "Rate-limited GET against any SEC URL.
