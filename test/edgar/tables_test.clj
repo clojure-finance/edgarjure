@@ -331,3 +331,30 @@
                         (tables/extract-tables {:form "10-K"} :min-rows 5))]
     (testing "fewer tables returned with higher min-rows"
       (is (>= (count result-loose) (count result-strict))))))
+
+(deftest extract-tables-nil-html-test
+  (testing "nil html returns empty seq (not a crash)"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] nil)]
+                   (tables/extract-tables {:form "10-K"}))]
+      (is (= [] result))))
+  (testing "nil html with :nth returns nil (not a crash)"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] nil)]
+                   (tables/extract-tables {:form "10-K"} :nth 0))]
+      (is (nil? result))))
+  (testing "blank html returns empty seq"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] "   ")]
+                   (tables/extract-tables {:form "10-K"}))]
+      (is (= [] result))))
+  (testing "plain text (no HTML tags) returns empty seq"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] "ITEM 1. BUSINESS\nSome plain text.")]
+                   (tables/extract-tables {:form "10-K"}))]
+      (is (= [] result))))
+  (testing "plain text with :nth returns nil"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] "ITEM 1. BUSINESS\nSome plain text.")]
+                   (tables/extract-tables {:form "10-K"} :nth 0))]
+      (is (nil? result))))
+  (testing "valid HTML with tables still works after guard"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
+                   (tables/extract-tables {:form "10-K"}))]
+      (is (seq result))
+      (is (every? #(instance? tech.v3.dataset.impl.dataset.Dataset %) result)))))
