@@ -41,7 +41,7 @@
      :concept   - string or collection of concept strings to keep (default all)
      :form      - \"10-K\" | \"10-Q\" (default \"10-K\")
      :as-of     - \"YYYY-MM-DD\" string; exclude filings submitted after this date
-                  and keep only the most recently filed observation per [ticker concept end]"
+                  and keep only the most recently filed observation per [ticker concept unit start end]"
   [tickers & {:keys [concept form as-of] :or {form "10-K"}}]
   (let [concept-set (when concept
                       (if (string? concept) #{concept} (set concept)))
@@ -63,7 +63,7 @@
       combined
       (let [filtered (ds/filter-column combined :filed #(not (pos? (compare % as-of))))
             deduped (reduce (fn [acc row]
-                              (let [k [(:ticker row) (:concept row) (:end row)]]
+                              (let [k [(:ticker row) (:concept row) (:unit row) (:start row) (:end row)]]
                                 (if (or (not (contains? acc k))
                                         (pos? (compare (:filed row) (:filed (get acc k)))))
                                   (assoc acc k row)
