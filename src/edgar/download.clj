@@ -56,7 +56,12 @@
            {:status :skipped :accession-number (:accessionNumber f)}
            (if download-all?
              {:status :ok :paths (filing/filing-save-all! f dir)}
-             (ok (filing/filing-save! f dir))))
+             (let [path (filing/filing-save! f dir)]
+               (if path
+                 (ok path)
+                 {:status :skipped
+                  :accession-number (:accessionNumber f)
+                  :reason :no-primary-doc}))))
          (catch Exception e
            (let [data (ex-data e)
                  type (or (:type data) :exception)]
