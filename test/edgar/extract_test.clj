@@ -421,3 +421,64 @@
     (testing "item 2 text contains properties content when present"
       (when (contains? result "2")
         (is (str/includes? (str/lower-case (get-in result ["2" :text])) "offices"))))))
+
+(deftest html-content-predicate-test
+  (let [f #'edgar.extract/html-content?]
+    (testing "recognises HTML DOCTYPE"
+      (is (f "<!DOCTYPE html><html><body></body></html>")))
+    (testing "recognises lowercase html tag"
+      (is (f "<html><body>text</body></html>")))
+    (testing "recognises mixed-case"
+      (is (f "<HTML><BODY></BODY></HTML>")))
+    (testing "rejects plain text"
+      (is (not (f "ITEM 1. Business\nSome business text."))))
+    (testing "rejects blank string"
+      (is (not (f "   "))))
+    (testing "rejects nil-like empty"
+      (is (not (f ""))))))
+
+(def ^:private plain-text-filing-content
+  "ANNUAL REPORT ON FORM 10-K
+
+ITEM 1. BUSINESS
+Acme Corp manufactures widgets for industrial use.
+Revenue was $100 million last year.
+
+ITEM 1A. RISK FACTORS
+Competition is intense in the widget market.
+Raw material costs present a risk.
+
+ITEM 7. DISCUSSION AND ANALYSIS
+Revenue increased 10% driven by volume growth.
+Operating income improved year over year.")
+
+(deftest extract-items-plain-text-fallback-test
+  (testing "plain-text filing routes to extract-items-text, not HTML path"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] plain-text-filing-content)]
+                   (extract/extract-items {:form "10-K"} :items #{"1" "1A" "7"}))]
+      (testing "all three items extracted"
+        (is (= #{"1" "1A" "7"} (set (keys result)))))
+      (testing "method is :plain-text-regex, not :html-heading-boundaries"
+        (is (every? #(= :plain-text-regex (:method %)) (vals result))))
+      (testing "item 1 contains business text"
+        (is (str/includes? (get-in result ["1" :text]) "widgets")))
+      (testing "item 1A contains risk text"
+        (is (str/includes? (str/lower-case (get-in result ["1A" :text])) "risk")))
+      (testing "item 7 contains MD&A text"
+        (is (str/includes? (get-in result ["7" :text]) "Revenue")))))
+  (testing "nil html falls back to filing-text"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] nil)
+                               edgar.filing/filing-text (fn [_] plain-text-filing-content)]
+                   (extract/extract-items {:form "10-K"} :items #{"1"}))]
+      (is (contains? result "1"))
+      (is (= :plain-text-regex (get-in result ["1" :method])))))
+  (testing "blank html falls back to filing-text"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] "   ")
+                               edgar.filing/filing-text (fn [_] plain-text-filing-content)]
+                   (extract/extract-items {:form "10-K"} :items #{"1"}))]
+      (is (contains? result "1"))
+      (is (= :plain-text-regex (get-in result ["1" :method])))))
+  (testing "HTML content is NOT routed to plain-text path"
+    (let [result (with-redefs [edgar.filing/filing-html (fn [_] mock-filing-html)]
+                   (extract/extract-items {:form "10-K"} :items #{"1A"}))]
+      (is (= :html-heading-boundaries (get-in result ["1A" :method]))))))
