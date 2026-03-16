@@ -191,6 +191,11 @@
 ;;; Plain-text item boundary detection (pre-2000 filings)
 ;;; ---------------------------------------------------------------------------
 
+(defn- html-content?
+  "Returns true if the string looks like an HTML document."
+  [s]
+  (boolean (re-find #"(?i)<(!DOCTYPE|html)" s)))
+
 (defn- extract-items-text
   "Extract item sections from plain-text filing content using regex boundaries.
    Returns a map of item-id ->
@@ -247,14 +252,16 @@
         html (filing/filing-html filing)]
     (cond
       ;; modern HTML path
-      (and html (not (str/blank? html)))
+      (and html (not (str/blank? html)) (html-content? html))
       (let [tree (-> html hickory/parse hickory/as-hickory)
             clean-tree (if remove-tables? (remove-tables tree) tree)]
         (extract-items-html clean-tree target-ids))
 
-      ;; plain-text fallback (pre-2000 filings)
+      ;; plain-text path — either filing-html returned raw text, or no html at all
       :else
-      (let [text (filing/filing-text filing)]
+      (let [text (if (and html (not (str/blank? html)))
+                   html
+                   (filing/filing-text filing))]
         (if (str/blank? text)
           {}
           (extract-items-text text items-map))))))
