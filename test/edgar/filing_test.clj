@@ -195,6 +195,74 @@
                   edgar.filing/primary-doc (fn [_] nil)]
       (is (nil? (filing/filing-save! {} "/tmp"))))))
 
+(deftest binary-filename-test
+  (let [f #'edgar.filing/binary-filename?]
+    (testing "known binary extensions are recognised"
+      (is (f "report.pdf"))
+      (is (f "data.xls"))
+      (is (f "data.xlsx"))
+      (is (f "archive.zip"))
+      (is (f "logo.gif"))
+      (is (f "photo.jpg"))
+      (is (f "photo.jpeg"))
+      (is (f "image.png"))
+      (is (f "doc.doc"))
+      (is (f "doc.docx")))
+    (testing "extension check is case-insensitive"
+      (is (f "REPORT.PDF"))
+      (is (f "Data.XLS"))
+      (is (f "Logo.PNG")))
+    (testing "text extensions are not binary"
+      (is (not (f "report.htm")))
+      (is (not (f "report.html")))
+      (is (not (f "data.xml")))
+      (is (not (f "filing.txt")))
+      (is (not (f "schema.xsd"))))
+    (testing "nil or empty name is not binary"
+      (is (not (f nil)))
+      (is (not (f ""))))))
+
+(deftest save-doc-uses-bytes-for-binary-test
+  (testing "binary file triggers edgar-get-bytes, not edgar-get"
+    (let [bytes-called (atom false)
+          text-called (atom false)
+          tmp-file (java.io.File/createTempFile "edgar-test-" ".pdf")]
+      (try
+        (with-redefs [edgar.core/edgar-get-bytes (fn [_] (do (reset! bytes-called true) (byte-array [1 2 3])))
+                      edgar.core/edgar-get (fn [& _] (do (reset! text-called true) "text"))]
+          (#'edgar.filing/save-doc!
+           {:cik "320193" :accessionNumber "0000320193-24-000001"}
+           {:name "exhibit.pdf"}
+           (.toPath tmp-file)))
+        (is (true? @bytes-called) "edgar-get-bytes must be called for .pdf")
+        (is (false? @text-called) "edgar-get must NOT be called for .pdf")
+        (finally (.delete tmp-file)))))
+  (testing "text file triggers edgar-get (spit path), not edgar-get-bytes"
+    (let [bytes-called (atom false)
+          text-called (atom false)
+          tmp-file (java.io.File/createTempFile "edgar-test-" ".htm")]
+      (try
+        (with-redefs [edgar.core/edgar-get-bytes (fn [_] (do (reset! bytes-called true) (byte-array [])))
+                      edgar.core/edgar-get (fn [& _] (do (reset! text-called true) "<html/>"))]
+          (#'edgar.filing/save-doc!
+           {:cik "320193" :accessionNumber "0000320193-24-000001"}
+           {:name "report.htm"}
+           (.toPath tmp-file)))
+        (is (false? @bytes-called) "edgar-get-bytes must NOT be called for .htm")
+        (is (true? @text-called) "edgar-get must be called for .htm")
+        (finally (.delete tmp-file)))))
+  (testing "binary file content is written correctly as bytes"
+    (let [expected-bytes (byte-array [10 20 30 40 50])
+          tmp-file (java.io.File/createTempFile "edgar-test-" ".pdf")]
+      (try
+        (with-redefs [edgar.core/edgar-get-bytes (fn [_] expected-bytes)]
+          (#'edgar.filing/save-doc!
+           {:cik "320193" :accessionNumber "0000320193-24-000001"}
+           {:name "exhibit.pdf"}
+           (.toPath tmp-file)))
+        (is (= (seq expected-bytes) (seq (java.nio.file.Files/readAllBytes (.toPath tmp-file)))))
+        (finally (.delete tmp-file))))))
+
 ;;; ---------------------------------------------------------------------------
 
 (deftest accession-format-normalization

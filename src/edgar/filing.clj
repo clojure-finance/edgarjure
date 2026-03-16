@@ -4,7 +4,8 @@
             [hickory.core :as hickory]
             [hickory.select :as sel]
             [babashka.fs :as fs])
-  (:import [java.nio.file Path]))
+  (:import [java.nio.file Path]
+           [java.io FileOutputStream]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Filing index — list of documents in a single filing
@@ -126,6 +127,28 @@
 ;;; Filing save to disk (sec-edgar-downloader analog)
 ;;; ---------------------------------------------------------------------------
 
+(def ^:private binary-extensions
+  #{".pdf" ".xls" ".xlsx" ".zip" ".gif" ".jpg" ".jpeg" ".png" ".doc" ".docx"})
+
+(defn- binary-filename?
+  "Return true if the filename has a known binary extension."
+  [name]
+  (let [lower (str/lower-case (str name))]
+    (boolean (some #(str/ends-with? lower %) binary-extensions))))
+
+(defn- save-doc!
+  "Fetch a single filing document and write it to out-file.
+   Binary files (PDF, images, Office docs, ZIP) are written as raw bytes.
+   Text files (HTML, XML, TXT) are written as strings via spit."
+  [filing doc out-file]
+  (let [url (filing-doc-url filing (:name doc))]
+    (if (binary-filename? (:name doc))
+      (let [bytes (core/edgar-get-bytes url)]
+        (with-open [out (java.io.FileOutputStream. (str out-file))]
+          (.write out bytes)))
+      (spit (str out-file)
+            (core/edgar-get url :raw? true)))))
+
 (defn filing-save!
   "Download a filing's primary document to a directory.
    Creates subdirectory structure: dir/{form}/{cik}/{accession-no}/{filename}
@@ -140,8 +163,7 @@
             out-dir (fs/path dir form cik acc)
             out-file (fs/path out-dir (:name primary))]
         (fs/create-dirs out-dir)
-        (spit (str out-file)
-              (core/edgar-get (filing-doc-url filing (:name primary)) :raw? true))
+        (save-doc! filing primary out-file)
         (str out-file)))))
 
 (defn filing-save-all!
@@ -158,8 +180,7 @@
      (for [doc (:files idx)
            :when (:name doc)]
        (let [out-file (fs/path out-dir (:name doc))]
-         (spit (str out-file)
-               (core/edgar-get (filing-doc-url filing (:name doc)) :raw? true))
+         (save-doc! filing doc out-file)
          (str out-file))))))
 
 ;;; ---------------------------------------------------------------------------
