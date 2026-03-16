@@ -31,14 +31,14 @@
 
 (deftest resolve-fallback-test
   (let [f #'edgar.financials/resolve-fallback]
-    (testing "returns [label winner] when first candidate is available"
-      (is (= ["Revenue" "Revenues"]
+    (testing "returns [label [winner]] when only first candidate is available"
+      (is (= ["Revenue" ["Revenues"]]
+             (f ["Revenue" "Revenues" "SalesRevenueNet"]
+                #{"Revenues"}))))
+    (testing "returns all present candidates when multiple match"
+      (is (= ["Revenue" ["Revenues" "SalesRevenueNet"]]
              (f ["Revenue" "Revenues" "SalesRevenueNet"]
                 #{"Revenues" "SalesRevenueNet"}))))
-    (testing "falls back to second candidate when first is absent"
-      (is (= ["Revenue" "SalesRevenueNet"]
-             (f ["Revenue" "Revenues" "SalesRevenueNet"]
-                #{"SalesRevenueNet"}))))
     (testing "returns nil when no candidate is available"
       (is (nil? (f ["Revenue" "Revenues" "SalesRevenueNet"] #{}))))
     (testing "returns nil when available set is empty"
@@ -53,14 +53,22 @@
         chains [["Revenue" "Revenues" "SalesRevenueNet"]
                 ["Net Income" "NetIncomeLoss" "ProfitLoss"]
                 ["Missing" "ConceptNotPresent"]]]
-    (testing "resolved chains for available concepts"
-      (let [result (f chains #{"Revenues" "NetIncomeLoss"})]
+    (testing "resolved chains include all present candidates"
+      (let [result (f chains #{"Revenues" "SalesRevenueNet" "NetIncomeLoss"})]
         (is (= 2 (count result)))
-        (is (some #(= ["Revenue" "Revenues"] %) result))
-        (is (some #(= ["Net Income" "NetIncomeLoss"] %) result))))
+        (is (some #(= ["Revenue" ["Revenues" "SalesRevenueNet"]] %) result))
+        (is (some #(= ["Net Income" ["NetIncomeLoss"]] %) result))))
     (testing "chain with no available concepts is omitted"
       (let [result (f chains #{"Revenues" "NetIncomeLoss"})]
-        (is (every? #(not= "Missing" (first %)) result))))))
+        (is (every? #(not= "Missing" (first %)) result))))
+    (testing "concept->label map derived from result covers all candidates"
+      (let [result (f chains #{"Revenues" "SalesRevenueNet" "NetIncomeLoss"})
+            concept->label (into {} (mapcat (fn [[label winners]]
+                                              (map (fn [w] [w label]) winners))
+                                            result))]
+        (is (= "Revenue" (get concept->label "Revenues")))
+        (is (= "Revenue" (get concept->label "SalesRevenueNet")))
+        (is (= "Net Income" (get concept->label "NetIncomeLoss")))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; dedup-restatements
@@ -206,6 +214,24 @@
         (is (every? #{"10-K"} (ds/column result :form)))))
     (testing "returns empty dataset when no concepts match"
       (is (= 0 (ds/row-count (f facts-ds [["X" "NonExistentConcept"]] "10-K")))))))
+
+(deftest normalized-statement-multi-candidate-test
+  (let [f #'edgar.financials/normalized-statement
+        facts-ds (ds/->dataset
+                  [{:concept "SalesRevenueNet" :form "10-K" :val 100
+                    :unit "USD" :start "2015-01-01" :end "2015-12-31"
+                    :filed "2016-02-01" :frame nil}
+                   {:concept "Revenues" :form "10-K" :val 200
+                    :unit "USD" :start "2020-01-01" :end "2020-12-31"
+                    :filed "2021-02-01" :frame nil}])
+        chains [["Revenue" "Revenues" "SalesRevenueNet" "SalesRevenueGoodsNet"]]]
+    (testing "both present candidates are included — no historical periods dropped"
+      (let [result (f facts-ds chains "10-K" :duration nil)]
+        (is (= 2 (ds/row-count result)) "pre-2018 SalesRevenueNet and post-2018 Revenues must both appear")))
+    (testing "both rows carry the same :line-item label"
+      (let [result (f facts-ds chains "10-K" :duration nil)
+            labels (set (ds/column result :line-item))]
+        (is (= #{"Revenue"} labels))))))
 
 (deftest normalized-statement-empty-concepts-test
   (let [f #'edgar.financials/normalized-statement
