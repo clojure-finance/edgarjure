@@ -12,7 +12,8 @@
             edgar.xbrl-test
             edgar.schema-test
             edgar.dataset-test
-            edgar.download-test))
+            edgar.download-test
+            edgar.api-docstring-test))
 
 (defn -main [& _]
   (let [result (t/run-tests 'edgar.core-test
@@ -27,5 +28,6 @@
                             'edgar.xbrl-test
                             'edgar.schema-test
                             'edgar.dataset-test
-                            'edgar.download-test)]
+                            'edgar.download-test
+                            'edgar.api-docstring-test)]
     (System/exit (if (= 0 (:fail result) (:error result)) 0 1))))
