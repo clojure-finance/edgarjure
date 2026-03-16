@@ -152,6 +152,11 @@
 ;;; Main extraction pipeline
 ;;; ---------------------------------------------------------------------------
 
+(defn- html-content?
+  "Return true if the string looks like an HTML document."
+  [s]
+  (boolean (re-find #"(?i)<(!DOCTYPE|html|table)" s)))
+
 (defn- parse-html
   "Parse an HTML string into a hickory tree."
   [html-str]
@@ -201,6 +206,9 @@
    Tables that appear to be layout/navigation (single-column, <2 data rows)
    are automatically filtered out.
 
+   Returns nil (for :nth) or an empty seq when the filing has no HTML content
+   or the HTML contains no tables.
+
    Example:
      (require '[edgar.tables :as tables]
               '[edgar.api :as e])
@@ -218,14 +226,16 @@
      ;; Third table
      (tables/extract-tables f :nth 2)"
   [filing & {:keys [nth min-rows min-cols] :or {min-rows 2 min-cols 2}}]
-  (let [html-str (filing/filing-html filing)
-        hick (parse-html html-str)
-        table-nodes (sel/select (sel/tag :table) hick)
-        all-datasets (->> table-nodes
-                          (map-indexed (fn [idx node] (extract-table node idx)))
-                          (keep identity)
-                          (filter #(>= (ds/row-count %) min-rows))
-                          (filter #(>= (ds/column-count %) min-cols)))]
-    (if nth
-      (clojure.core/nth (vec all-datasets) nth nil)
-      all-datasets)))
+  (let [html-str (filing/filing-html filing)]
+    (if-not (and html-str (not (str/blank? html-str)) (html-content? html-str))
+      (if nth nil [])
+      (let [hick (parse-html html-str)
+            table-nodes (sel/select (sel/tag :table) hick)
+            all-datasets (->> table-nodes
+                              (map-indexed (fn [idx node] (extract-table node idx)))
+                              (keep identity)
+                              (filter #(>= (ds/row-count %) min-rows))
+                              (filter #(>= (ds/column-count %) min-cols)))]
+        (if nth
+          (clojure.core/nth (vec all-datasets) nth nil)
+          all-datasets)))))
