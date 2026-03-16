@@ -133,11 +133,30 @@
 
 (defn search-companies
   "Search EDGAR for companies matching a name query string.
-   Returns a seq of result maps with :entity-name :cik :category."
+   Returns a seq of shaped result maps with keys:
+     :entity-name - company display name (parsed from display_names)
+     :cik         - zero-padded 10-digit CIK
+     :location    - business location string or nil
+     :inc-states  - vector of incorporation state codes"
   [query & {:keys [limit] :or {limit 10}}]
   (let [resp (core/edgar-get (str core/efts-url
                                   "?q=" (java.net.URLEncoder/encode query "UTF-8")
-                                  "&hits.hits._source=entity_name,file_num,biz_location,inc_states"))]
-    (->> (get-in resp [:hits :hits])
-         (take limit)
-         (map #(get % :_source)))))
+                                  "&hits.hits._source=display_names,ciks,biz_locations,inc_states"))
+        hits (get-in resp [:hits :hits])
+        shaped (keep (fn [hit]
+                       (let [src (:_source hit)
+                             cik (first (:ciks src))
+                             display (first (:display_names src))]
+                         (when (and cik display)
+                           {:entity-name (-> display
+                                             (str/replace #"\s*\(CIK [^)]+\)" "")
+                                             (str/replace #"\s*\([^)]+\)\s*$" "")
+                                             str/trim)
+                            :cik cik
+                            :location (first (:biz_locations src))
+                            :inc-states (vec (:inc_states src))})))
+                     hits)
+        deduped (vals (reduce (fn [acc m] (if (contains? acc (:cik m)) acc (assoc acc (:cik m) m)))
+                              {}
+                              shaped))]
+    (take limit deduped)))

@@ -74,6 +74,7 @@
 
 (defn search
   "Search EDGAR for companies matching a name query.
+   Returns a seq of shaped maps with :entity-name :cik :location :inc-states.
    Options:
      :limit - max results (default 10)"
   [query & {:keys [limit] :or {limit 10}}]
