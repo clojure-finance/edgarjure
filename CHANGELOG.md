@@ -2,6 +2,24 @@
 
 All notable changes to edgarjure are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+**`edgar.financials` — instant/duration filtering dropped majority of rows (two bugs)**
+
+Bug 1 — Wrong discriminator for instant vs duration observations:
+- `instant?` and `duration?` tested whether `:frame` ended in `"I"` (e.g. `"CY2023Q4I"`). The `:frame` field is only populated on ~25–50% of balance-sheet observations and ~25% of income-statement observations in the SEC XBRL API. This silently dropped the majority of rows from every financial statement.
+- The correct discriminator is the `:start` key: instant (balance-sheet) observations have no `:start` date; duration (income/cashflow) observations always have one. Fixed: `instant?` now checks `(nil? (:start row))`; `duration?` checks `(some? (:start row))`. `filter-by-duration-type` updated to pass the whole row map.
+
+Bug 2 — `ds/rows` flyweight maps elide nil-valued keys:
+- `normalized-statement` called `(ds/rows filtered-ds)` without `{:nil-missing? true}`. TMD flyweight maps omit keys whose values are nil, so rows where `:start` is nil (i.e. all balance-sheet rows) had no `:start` key at all. After fixing Bug 1, `(nil? (:start row))` would have returned `true` for all rows regardless of type. Fixed by using `(ds/rows filtered-ds {:nil-missing? true})` so nil `:start` is present as an explicit nil.
+
+Removed unused `[clojure.string :as str]` require from `edgar.financials` (was only needed by the old frame-based predicates).
+
+**`financials_test.clj` — `instant?` / `duration?` tests updated**
+- Tests now pass row maps instead of frame strings, matching the new predicate signatures.
+
 ## [0.1.3] — 2026-03-15
 
 ### Fixed
