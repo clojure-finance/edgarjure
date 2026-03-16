@@ -202,4 +202,27 @@
       (let [result (f facts-ds chains "10-K" :instant nil)]
         (is (= 0 (ds/row-count result)))))))
 
-
+(deftest normalized-statement-sort-order-test
+  (let [f #'edgar.financials/normalized-statement
+        facts-ds (ds/->dataset
+                  [{:concept "Assets" :form "10-K" :val 100
+                    :end "2022-09-30" :filed "2022-10-28" :start nil :frame nil}
+                   {:concept "Assets" :form "10-K" :val 200
+                    :end "2023-09-30" :filed "2023-11-03" :start nil :frame nil}
+                   {:concept "LiabilitiesCurrent" :form "10-K" :val 50
+                    :end "2022-09-30" :filed "2022-10-28" :start nil :frame nil}
+                   {:concept "LiabilitiesCurrent" :form "10-K" :val 80
+                    :end "2023-09-30" :filed "2023-11-03" :start nil :frame nil}])
+        chains [["Total Assets" "Assets"]
+                ["Current Liabilities" "LiabilitiesCurrent"]]
+        result (f facts-ds chains "10-K" :instant nil)
+        ends (vec (ds/column result :end))
+        labels (vec (ds/column result :line-item))]
+    (testing "most recent period comes first (:end descending)"
+      (is (= "2023-09-30" (first ends)))
+      (is (every? #(>= (compare (first ends) %) 0) ends)))
+    (testing ":line-item sorted ascending within each period"
+      (let [period-2023 (->> (ds/rows result {:nil-missing? true})
+                             (filter #(= "2023-09-30" (:end %)))
+                             (map :line-item))]
+        (is (= (sort period-2023) period-2023))))))

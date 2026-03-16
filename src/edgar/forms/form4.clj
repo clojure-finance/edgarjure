@@ -137,7 +137,10 @@
 (defn- form4-xml [filing]
   (let [idx (filing/filing-index filing)
         docs (:files idx)
-        xml-doc (or (first (filter #(str/ends-with? (str (:name %)) ".xml") docs))
+        xml-doc (or (first (filter (fn [{:keys [name]}]
+                                     (and (str/ends-with? (str name) ".xml")
+                                          (not (str/ends-with? (str name) "_htm.xml"))))
+                                   docs))
                     (first docs))]
     (when xml-doc
       (filing/filing-document filing (:name xml-doc) :raw? true))))

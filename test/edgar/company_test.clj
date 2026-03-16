@@ -34,3 +34,29 @@
   (testing "pure numeric-string branch always zero-pads"
     (is (= "0000001234" (company/company-cik "1234")))
     (is (= "0000000042" (company/company-cik "42")))))
+
+(deftest ticker->cik-format-test
+  (testing "ticker->cik zero-pads using Long parse, not raw string format"
+    (with-redefs [edgar.company/tickers-by-ticker
+                  (fn [] {"AAPL" {:cik_str "320193" :ticker "AAPL"}})]
+      (is (= "0000320193" (company/ticker->cik "AAPL")))
+      (is (= 10 (count (company/ticker->cik "AAPL"))))))
+  (testing "ticker->cik handles cik_str values that arrive as integers"
+    (with-redefs [edgar.company/tickers-by-ticker
+                  (fn [] {"AAPL" {:cik_str 320193 :ticker "AAPL"}})]
+      (is (= "0000320193" (company/ticker->cik "AAPL")))))
+  (testing "ticker->cik returns nil for unknown ticker"
+    (with-redefs [edgar.company/tickers-by-ticker
+                  (fn [] {"AAPL" {:cik_str "320193" :ticker "AAPL"}})]
+      (is (nil? (company/ticker->cik "ZZZNOTTICKER"))))))
+
+(deftest cik->ticker-test
+  (testing "cik->ticker uses Long comparison, not Double (avoids precision loss)"
+    (with-redefs [edgar.company/load-tickers!
+                  (fn [] {0 {:cik_str "320193" :ticker "AAPL"}})]
+      (is (= "AAPL" (company/cik->ticker "320193")))
+      (is (= "AAPL" (company/cik->ticker "0000320193")))))
+  (testing "cik->ticker returns nil for unknown CIK"
+    (with-redefs [edgar.company/load-tickers!
+                  (fn [] {0 {:cik_str "320193" :ticker "AAPL"}})]
+      (is (nil? (company/cik->ticker "9999999999"))))))

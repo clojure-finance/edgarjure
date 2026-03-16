@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""
+Pre-commit hook: reject CHANGELOG.md entries that contain encoding artifacts.
+
+The CHANGELOG uses Unicode em-dashes (—, U+2014) as separators in headings.
+Copy-pasting through non-UTF-8 channels can corrupt these to a literal ASCII
+question mark (?).  This hook catches that corruption before it lands in git.
+
+Pattern detected: a word character or backtick followed by space-?-space
+followed by a letter, e.g.:  `edgar.company/ticker->cik` ? amendments
+"""
+
+import subprocess
+import sys
+import re
+
+def get_staged_changelog():
+    """Return the staged content of CHANGELOG.md, or None if not staged."""
+    # Check if CHANGELOG.md is in the index at all
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        capture_output=True, text=True
+    )
+    if "CHANGELOG.md" not in result.stdout:
+        # Not staged — nothing to check
+        return None
+
+    result = subprocess.run(
+        ["git", "show", ":CHANGELOG.md"],
+        capture_output=True
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        # Can't decode — let git handle it
+        return None
+
+def check_for_artifacts(text):
+    """
+    Return a list of (line_number, line) tuples where encoding artifacts
+    were detected.  Artifacts are ASCII ? characters used as em-dash
+    substitutes in section headings.
+
+    Looks for: non-whitespace, space, ?, space, non-whitespace
+    but only on lines that look like headings or bullet points
+    (i.e. lines starting with ** or - ).
+    """
+    artifact_pattern = re.compile(r'\S \? \S')
+    bad_lines = []
+    for i, line in enumerate(text.splitlines(), start=1):
+        if artifact_pattern.search(line):
+            bad_lines.append((i, line))
+    return bad_lines
+
+def main():
+    content = get_staged_changelog()
+    if content is None:
+        # CHANGELOG.md not staged — nothing to check
+        sys.exit(0)
+
+    bad = check_for_artifacts(content)
+    if not bad:
+        sys.exit(0)
+
+    print("COMMIT REJECTED: CHANGELOG.md contains encoding artifacts.", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Em-dashes (—) have been corrupted to ASCII '?' in the following lines:", file=sys.stderr)
+    print("", file=sys.stderr)
+    for lineno, line in bad:
+        print(f"  Line {lineno}: {line}", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Fix: replace ' ? ' with ' \u2014 ' (U+2014 em-dash) in the affected lines.", file=sys.stderr)
+    print("     Em-dash character to copy: \u2014", file=sys.stderr)
+    sys.exit(1)
+
+if __name__ == "__main__":
+    main()

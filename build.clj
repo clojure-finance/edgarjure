@@ -3,7 +3,7 @@
             [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'com.github.clojure-finance/edgarjure)
-(def version "0.1.3")
+(def version "0.1.4")
 (def class-dir "target/classes")
 (def basis (delay (b/create-basis {:project "deps.edn"})))
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
@@ -22,7 +22,7 @@
                       :developerConnection "scm:git:ssh://git@github.com/clojure-finance/edgarjure.git"
                       :tag (str "v" version)}
                 :pom-data [[:description
-                            "A Clojure library for SEC EDGAR ? filings, financials, and XBRL data, ready for research."]
+                            "A Clojure library for SEC EDGAR — filings, financials, and XBRL data, ready for research."]
                            [:url "https://github.com/clojure-finance/edgarjure"]
                            [:licenses
                             [:license

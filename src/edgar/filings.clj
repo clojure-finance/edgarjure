@@ -27,7 +27,7 @@
   "Add derived keys to a raw filing map."
   [cik filing]
   (let [acc (accession->str (:accessionNumber filing))
-        acc-clean (clojure.string/replace acc "-" "")
+        acc-clean (str/replace acc "-" "")
         cik-numeric (str (Long/parseLong cik))
         primary (:primaryDocument filing)
         url (when primary

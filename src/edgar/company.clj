@@ -26,7 +26,7 @@
    Returns nil if not found."
   [ticker]
   (when-let [entry (get (tickers-by-ticker) (str/upper-case ticker))]
-    (format "%010d" (:cik_str entry))))
+    (format "%010d" (Long/parseLong (str (:cik_str entry))))))
 
 (defn cik->ticker
   "Reverse lookup: CIK integer or string → ticker symbol."
@@ -34,7 +34,7 @@
   (let [cik-long (Long/parseLong (str cik))]
     (->> (load-tickers!)
          vals
-         (filter #(= cik-long (long (Double/parseDouble (str (:cik_str %))))))
+         (filter #(= cik-long (Long/parseLong (str (:cik_str %)))))
          first
          :ticker)))
 

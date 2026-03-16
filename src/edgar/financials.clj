@@ -229,7 +229,7 @@
           as-of nil  => latest restated value (as-reported)
           as-of date => point-in-time; excludes filings filed after as-of
      5. Add :line-item column
-     6. Sort :end descending"
+     6. Sort :end descending, :line-item ascending within each period"
   [facts-ds chains form duration-type as-of]
   (let [available (concepts-in-data facts-ds)
         resolved (resolve-all-chains chains available)
@@ -248,8 +248,13 @@
           result-ds
           (-> result-ds
               (add-line-item-col concept->label)
-              (ds/sort-by (fn [row] [(:end row) (:line-item row)])
-                          #(compare %2 %1))))))))
+              (ds/sort-by
+               (fn [row] [(:end row) (:line-item row)])
+               (fn [a b]
+                 (let [c (compare (first b) (first a))]
+                   (if (zero? c)
+                     (compare (second a) (second b))
+                     c))))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Wide-format pivot
