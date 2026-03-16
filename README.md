@@ -424,8 +424,11 @@ SEC enforces a `User-Agent` header and a rate limit of ~10 requests/second. edga
 # Start REPL on port 7888
 clj -M:nrepl
 
-# Run tests (offline only — no network calls)
+# Run offline unit tests (93 tests, no network)
 clj -M:test
+
+# Run live integration tests (manual only, requires network)
+clj -M:test-integration
 ```
 
 ```clojure

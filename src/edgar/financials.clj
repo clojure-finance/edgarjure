@@ -153,7 +153,9 @@
   (some? (:start row)))
 
 (defn- concepts-in-data [facts-ds]
-  (set (ds/column facts-ds :concept)))
+  (if (zero? (ds/row-count facts-ds))
+    #{}
+    (set (ds/column facts-ds :concept))))
 
 (defn- resolve-fallback [chain available-concepts]
   (let [label (first chain)
@@ -177,7 +179,7 @@
 
    For each [concept end] pair, keeps the most recently filed observation
    among those where :filed <= as-of-date. Observations filed after
-   as-of-date are excluded entirely ? they represent information the market
+   as-of-date are excluded entirely — they represent information the market
    could not have had at that date.
 
    as-of-date is an ISO date string (\"YYYY-MM-DD\") or nil (falls back to
@@ -203,7 +205,7 @@
    (mapv #(get concept->label % %) (ds/column ds :concept))))
 
 ;;; ---------------------------------------------------------------------------
-;;; Raw statement (no normalization ? backward compatible)
+;;; Raw statement (no normalization — backward compatible)
 ;;; ---------------------------------------------------------------------------
 
 (defn- raw-statement [facts-ds concepts form]
@@ -258,7 +260,7 @@
     ds
     (let [deduped (ds/unique-by ds (fn [row] [(:end row) (:line-item row)]))]
       (ds/->dataset
-       (->> (ds/rows deduped)
+       (->> (ds/rows deduped {:nil-missing? true})
             (group-by :end)
             (sort-by key #(compare %2 %1))
             (map (fn [[period rows]]

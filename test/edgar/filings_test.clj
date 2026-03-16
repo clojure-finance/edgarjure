@@ -135,3 +135,37 @@
     (is (neg? (compare "2023-11-03" "2023-12-15"))))
   (testing "same dates → compare zero"
     (is (zero? (compare "2023-11-03" "2023-11-03")))))
+
+(deftest fetch-extra-filings-flat-chunk-test
+  (let [f #'edgar.filings/fetch-extra-filings
+        enrich #'edgar.filings/enrich-filing]
+    (testing "fetch-extra-filings returns empty when no :files key"
+      (let [company {:filings {:recent {}}}]
+        (is (nil? (f company)))))
+    (testing "parse-filings-recent handles flat columnar chunk (no :recent wrapper)"
+      (let [parse #'edgar.filings/parse-filings-recent
+            chunk {"form" ["10-K" "10-Q"]
+                   "filingDate" ["2020-01-01" "2020-07-01"]
+                   "accessionNumber" ["0000320193-20-000001" "0000320193-20-000002"]
+                   "primaryDocument" ["doc1.htm" "doc2.htm"]}
+            result (vec (parse chunk))]
+        (is (= 2 (count result)))
+        (is (= "10-K" (:form (first result))))
+        (is (= "10-Q" (:form (second result))))))))
+
+(deftest latest-effective-filing-logic-test
+  (let [original {:form "10-K" :filingDate "2023-11-03" :accessionNumber "A"}
+        amendment {:form "10-K/A" :filingDate "2024-01-15" :accessionNumber "B"}
+        older-amendment {:form "10-K/A" :filingDate "2023-10-01" :accessionNumber "C"}]
+    (testing "amendment newer than original → amendment returned"
+      (with-redefs [edgar.filings/get-filings (fn [_ & _] [amendment original])]
+        (is (= amendment (filings/latest-effective-filing "AAPL" :form "10-K")))))
+    (testing "amendment older than original → original returned"
+      (with-redefs [edgar.filings/get-filings (fn [_ & _] [original older-amendment])]
+        (is (= original (filings/latest-effective-filing "AAPL" :form "10-K")))))
+    (testing "no amendment → original returned"
+      (with-redefs [edgar.filings/get-filings (fn [_ & _] [original])]
+        (is (= original (filings/latest-effective-filing "AAPL" :form "10-K")))))
+    (testing "no original → amendment returned"
+      (with-redefs [edgar.filings/get-filings (fn [_ & _] [amendment])]
+        (is (= amendment (filings/latest-effective-filing "AAPL" :form "10-K")))))))

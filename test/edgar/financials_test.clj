@@ -127,3 +127,79 @@
         (is (contains? cols "Net Income"))))
     (testing "empty dataset returns empty dataset"
       (is (= 0 (ds/row-count (f (ds/->dataset []))))))))
+
+(deftest to-wide-nil-columns-test
+  (let [f #'edgar.financials/to-wide
+        rows [{:end "2023-09-30" :line-item "Total Assets" :val 100 :start nil :frame nil}
+              {:end "2023-09-30" :line-item "Current Assets" :val 40 :start nil :frame nil}
+              {:end "2022-09-30" :line-item "Total Assets" :val 90 :start nil :frame nil}]
+        long-ds (ds/->dataset rows)]
+    (testing "nil-valued columns do not cause missing-key errors"
+      (is (= 2 (ds/row-count (f long-ds)))))
+    (testing "line-item columns are present when nil columns exist"
+      (let [cols (set (map name (ds/column-names (f long-ds))))]
+        (is (contains? cols "Total Assets"))
+        (is (contains? cols "Current Assets"))))))
+
+(deftest concepts-in-data-test
+  (let [f #'edgar.financials/concepts-in-data]
+    (testing "returns set of concept strings"
+      (let [ds (ds/->dataset [{:concept "Assets" :val 1}
+                              {:concept "Assets" :val 2}
+                              {:concept "Liabilities" :val 3}])]
+        (is (= #{"Assets" "Liabilities"} (f ds)))))
+    (testing "returns empty set for empty dataset"
+      (is (= #{} (f (ds/->dataset [])))))))
+
+(deftest filter-by-duration-type-test
+  (let [f #'edgar.financials/filter-by-duration-type
+        instant-row {:end "2023-09-30" :val 100}
+        duration-row {:start "2023-07-01" :end "2023-09-30" :val 200}
+        rows [instant-row duration-row]]
+    (testing ":instant keeps only rows without :start"
+      (is (= [instant-row] (vec (f rows :instant)))))
+    (testing ":duration keeps only rows with :start"
+      (is (= [duration-row] (vec (f rows :duration)))))
+    (testing ":any keeps all rows"
+      (is (= rows (vec (f rows :any)))))))
+
+(deftest add-line-item-col-test
+  (let [f #'edgar.financials/add-line-item-col
+        input-ds (ds/->dataset [{:concept "Assets" :val 100}
+                                {:concept "Liabilities" :val 50}
+                                {:concept "Unknown" :val 10}])
+        concept->label {"Assets" "Total Assets" "Liabilities" "Total Liabilities"}
+        result (f input-ds concept->label)]
+    (testing "adds :line-item column"
+      (is (contains? (set (ds/column-names result)) :line-item)))
+    (testing "maps known concepts to labels"
+      (is (= ["Total Assets" "Total Liabilities" "Unknown"]
+             (vec (ds/column result :line-item)))))))
+
+(deftest raw-statement-test
+  (let [f #'edgar.financials/raw-statement
+        facts-ds (ds/->dataset [{:concept "Assets" :form "10-K" :val 100}
+                                {:concept "Liabilities" :form "10-K" :val 50}
+                                {:concept "Revenue" :form "10-K" :val 200}
+                                {:concept "Assets" :form "10-Q" :val 90}])
+        concepts [["Total Assets" "Assets"] ["Total Liabilities" "Liabilities"]]]
+    (testing "filters to matching concepts and form"
+      (let [result (f facts-ds concepts "10-K")]
+        (is (= 2 (ds/row-count result)))
+        (is (every? #{"Assets" "Liabilities"} (ds/column result :concept)))))
+    (testing "excludes non-matching form"
+      (let [result (f facts-ds concepts "10-K")]
+        (is (every? #{"10-K"} (ds/column result :form)))))
+    (testing "returns empty dataset when no concepts match"
+      (is (= 0 (ds/row-count (f facts-ds [["X" "NonExistentConcept"]] "10-K")))))))
+
+(deftest normalized-statement-empty-concepts-test
+  (let [f #'edgar.financials/normalized-statement
+        facts-ds (ds/->dataset [{:concept "Assets" :form "10-K" :val 100
+                                 :end "2023-09-30" :filed "2023-11-01" :start nil}])
+        chains [["Missing" "ConceptNotInData"]]]
+    (testing "returns empty dataset when no chains resolve"
+      (let [result (f facts-ds chains "10-K" :instant nil)]
+        (is (= 0 (ds/row-count result)))))))
+
+
