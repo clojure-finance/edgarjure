@@ -2,6 +2,54 @@
 
 All notable changes to edgarjure are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+**`edgar.financials/dedup-restatements` and `dedup-point-in-time` — coarse grouping key silently dropped 10-Q duration windows**
+- Both functions grouped by `(juxt :concept :end)` only. For 10-Q data a company can have a 3-month Q3 observation (`:start` = July 1) and a 9-month YTD observation (`:start` = January 1) both ending September 30. The old key collapsed these into one row, keeping whichever was filed more recently.
+- Fixed: group by `(juxt :concept :unit :start :end)`. Distinct duration windows are now preserved; genuine restatements of the same observation are still collapsed.
+
+**`edgar.dataset/multi-company-facts` — same coarse dedup key in `:as-of` panel path**
+- The as-of dedup reduce keyed on `[ticker concept end]`, missing `:unit` and `:start`. Same class of bug as above.
+- Fixed: key is now `[ticker concept unit start end]`.
+
+**`edgar.financials/resolve-fallback` — global winner silently dropped historical periods**
+- `resolve-fallback` returned only the first matching candidate `[label winner]`. If a company used `SalesRevenueNet` before 2018 and `Revenues` after, `Revenues` won globally and all pre-2018 rows were filtered out downstream.
+- Fixed: `resolve-fallback` now returns `[label [winner1 winner2 ...]]` — all candidates present in the data. `normalized-statement` flatmaps these into `concept->label` so every present candidate maps to the correct label, and the dedup step picks the right survivor per `[concept unit start end]` group.
+
+**`edgar.extract/items-for-form` — returned `{}` for amended form types**
+- `"10-K/A"`, `"10-Q/A"`, `"8-K/A"` fell through the `case` to the default `{}`, causing `extract-items` to return an empty map for any amended filing. `nil` also produced `{}`.
+- Fixed: strip trailing `/A` suffix via `(str/replace (or form "") #"/A$" "")` before the `case` dispatch.
+
+**`edgar.company/company-cik` — returned nil for unknown tickers instead of throwing**
+- `company-cik` silently returned nil when `ticker->cik` could not resolve a symbol. Downstream callers such as `xbrl/get-facts-dataset` passed nil to `(Long/parseLong cik)`, throwing a `NullPointerException` with no useful context.
+- Fixed: throws `ex-info` with `:type ::edgar.company/unknown-ticker` and `:ticker` when `ticker->cik` returns nil. `ticker->cik` itself continues to return nil.
+
+**`edgar.company/search-companies` — returned raw EFTS `_source` payloads that did not match docstring**
+- Docstring claimed `{:entity-name :cik :category}` keys. Actual code returned raw SEC field names, and the requested fields (`entity_name`, `file_num`, `biz_location`) do not exist in the EFTS `edgar_file` index.
+- Fixed: requests correct fields (`display_names`, `ciks`, `biz_locations`, `inc_states`). Strips CIK/ticker suffixes from `display_names`. Deduplicates by CIK. Returns shaped `{:entity-name :cik :location :inc-states}` maps.
+
+**`edgar.download/download-filings!` — nil save path produced misleading `:ok` envelope**
+- When `filing/filing-save!` returned nil (filing has no primary document), the result was `{:status :ok :path nil}`.
+- Fixed: nil path emits `{:status :skipped :accession-number "..." :reason :no-primary-doc}`.
+
+**`edgar.core` TTL cache — expired entries accumulated indefinitely**
+- The cache atom was never pruned. In long-running processes or broad crawls, stale entries accumulated as a slow memory leak.
+- Fixed: added private `cache-evict!` which removes all entries where `:expires-at` is in the past, called at the start of every `cache-put!`. No background thread required.
+
+### Added
+
+**Offline test suite expanded from 124 to 129 tests (545 → 584 assertions)**
+- `financials_test.clj` — duration-window preservation assertions in `dedup-restatements-test` and `dedup-point-in-time-test`; updated `resolve-fallback-test` and `resolve-all-chains-test` for new all-candidates return shape; new `normalized-statement-multi-candidate-test`.
+- `dataset_test.clj` — duration-window preservation assertion in `multi-company-facts-as-of-dedup-test`.
+- `extract_test.clj` — amended-form and nil-form cases in `items-for-form-test`.
+- `company_test.clj` — `company-cik-unknown-ticker-test`; `search-companies-shape-test` (5 cases: output shape, name stripping, CIK dedup, limit, bad-hit skipping).
+- `download_test.clj` — `download-filings-nil-primary-doc-test`.
+- `core_test.clj` — `cache-eviction-test` (expired entries removed, non-expired entries survive).
+
+---
+
 ## [0.1.5] — 2026-03-16
 
 ### Fixed
