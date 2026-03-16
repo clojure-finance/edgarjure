@@ -2,6 +2,83 @@
 
 All notable changes to edgarjure are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+**`edgar.core/http-get-with-retry` — retry branch was unreachable (issue 1)**
+- `hato/get` throws by default on non-2xx responses, so the `(< status 400)` cond branch was never reached for 4xx/5xx errors. Retry logic never fired.
+- Fixed: added `:throw-exceptions? false` to every `hato/get` call inside `http-get-with-retry`. Wrapped in `try/catch` to also handle transport-level errors (timeouts, connection resets) as retryable. Throws `ex-info ::http-error` on exhaustion or non-retryable 4xx.
+
+**`edgar.extract/extract-items` — plain-text fallback unreachable (issue 2)**
+- The HTML branch condition `(and html (not (str/blank? html)))` was always true for plain-text filings because `filing/filing-html` returns raw content regardless of content type. The `extract-items-text` function was defined but never called.
+- Fixed: added private `html-content?` predicate checking for `<(!DOCTYPE|html)` (case-insensitive). HTML path requires `(html-content? html)`. Plain-text content is passed directly to `extract-items-text`.
+
+**`edgar.extract/extract-items-html` — item text bled across unrequested items (issue 3)**
+- End-position pairs were built from `(partition-all 2 1 relevant)` where `relevant` was the filtered (requested-only) boundary list. Requesting `#{"1A" "7"}` in a doc with items 1, 1A, 2, 3, 7, 7A, 8 would pair 1A→7, making item 1A's text span all the way to item 7's heading — consuming items 2 and 3 in between.
+- Fixed: iterate over all boundaries via `keep-indexed`; emit only entries for `target-ids`, but always use the next boundary in full document order for end-position calculation.
+
+**`edgar.forms.form13f/parse-form13f` — manager/summary nil for modern two-document submissions (issue 4)**
+- Modern 13F-HR filings package the cover page and holdings infotable as two separate XML attachments. `parse-form13f` fetched whichever single XML came first and ran both header and holdings parsing on it. The infotable XML has no `<filingManager>` or `<reportSummary>`, so `:manager` and `:period-of-report` were always nil.
+- Fixed: introduced `find-primary-cover-xml` (excludes `INFORMATION TABLE`-typed entries). `parse-form13f` fetches cover and infotable separately; parses manager/summary from `cover-root`, holdings from `(or info-root cover-root)`. Single-document filings fall back correctly.
+
+**`edgar.filing/filing-save!` and `filing-save-all!` — binary attachments corrupted by `spit` (issue 5)**
+- Both save functions used `spit` (text mode) for every file, including PDFs, images, XLS, ZIP, causing encoding corruption.
+- Fixed: introduced `binary-filename?` predicate (extensions `.pdf .xls .xlsx .zip .gif .jpg .jpeg .png .doc .docx`, case-insensitive) and `save-doc!` helper. Binary files fetched via `edgar-get-bytes` + `java.io.FileOutputStream`; text files continue with `edgar-get :raw?` + `spit`.
+
+**`edgar.download/download-filings!` — inconsistent return shape for `:download-all?` (issue 6)**
+- When `:download-all? true`, the branch returned `(mapv ok (filing/filing-save-all! f dir))` — a vector of `{:status :ok :path ...}` maps (one per attachment) instead of a single map per filing.
+- Fixed: `:download-all?` now returns `{:status :ok :paths [...]}` — one envelope per filing in all modes.
+
+**`edgar.company/shape-address` and `edgar.filings/shape-daily-hit` — nil values became the string `"nil"` (issue 7)**
+- `(not-empty (str nil))` → `"nil"`. Affected `:street2` in `shape-address` and `:periodOfReport` in `shape-daily-hit`.
+- Fixed both with `(some-> value not-empty)`.
+
+**`edgar.tables/infer-column` — single blank cell caused entire numeric column to fall back to strings (issue 8)**
+- `infer-column` required every cell to parse as a number. One blank cell in an otherwise numeric column made the whole column strings.
+- Fixed: infer type from non-blank cells only; blank cells become `nil` in numeric columns.
+
+**`edgar.tables/row-cells` — `<th>` cells collected before `<td>`, losing DOM order (issue 9)**
+- `row-cells` collected all `<th>` nodes first, then all `<td>` nodes. A row with interleaved `[td th td]` produced `[th td td]`, misaligning headers with data.
+- Fixed: single ordered pass over direct child nodes, emitting each cell in DOM order.
+
+**`edgar.tables/row-cells` — colspan docstring claim with no implementation (issue 10)**
+- Namespace docstring claimed colspan support; no code existed. A header cell with `colspan="3"` appeared as one entry, misaligning subsequent columns.
+- Fixed: `row-cells` reads `:colspan` attribute and expands each cell into N repeated `[text hdr?]` entries. Invalid or missing colspan defaults to 1.
+
+**`edgar.tables/extract-tables` — crash on nil or plain-text HTML (issue 11)**
+- `filing/filing-html` result was passed directly to `hickory/parse`, which throws on nil. Plain-text filings and filings with no primary doc both reach this path.
+- Fixed: `html-content?` guard at top of `extract-tables` (matches `<(!DOCTYPE|html|table)`). When HTML is nil, blank, or non-HTML: `:nth` → nil; seq → `[]`.
+
+**`edgar.xbrl/get-facts-dataset` — `:desc` sort relied on SEC delivery order; `:asc` was a no-op (issue 12)**
+- `:desc` used `ds/reverse-rows`, only correct if SEC delivers observations ascending — not guaranteed. `:asc` had no matching `cond->` clause and was a silent no-op. `ds/sort-by-column` with a comparator lambda on string columns causes `StackOverflowError` in TMD 7.030.
+- Fixed: both branches now use `ds/sort-by` with an explicit key fn and comparator on the `:end` string column.
+
+**`edgar.api` — docstring mismatches for `items`, `item`, and `exhibits` (issue 13)**
+- `items`: `"item-id → text string"` corrected to `"item-id → {:title \"...\" :text \"...\" :method ...}"`.
+- `item`: `"Returns text string or nil"` corrected to `"Returns {:title ... :text ... :method ...} or nil"`.
+- `exhibits`: removed non-existent `:document` field; actual key is `:name`. Example corrected from non-public `(e/filing-document ...)` to `(e/doc-url ...)`.
+
+### Added
+
+**Offline test suite expanded from 99 to 124 tests (545 assertions)**
+
+Two new test files added to `test_runner.clj`:
+- `test/edgar/download_test.clj` — envelope shape for primary-doc, `:download-all?`, skipped, error, and multi-filing modes; all results are plain maps.
+- `test/edgar/api_docstring_test.clj` — return shapes for `e/items`, `e/item`, `e/exhibits` (pins map shape, `:name` vs `:document`).
+
+Additional tests in existing files:
+- `core_test.clj` — retry on 429, transport error retry, exhausted retries throw, non-retryable 4xx throw.
+- `extract_test.clj` — `html-content-predicate-test`, `extract-items-plain-text-fallback-test`, `extract-items-html-boundary-slicing-test`.
+- `forms/form13f_test.clj` — `parse-form13f-two-document-test`, `parse-form13f-single-document-fallback-test`.
+- `filing_test.clj` — `binary-filename-test`, `save-doc-uses-bytes-for-binary-test`.
+- `company_test.clj` — `shape-address-nil-street2-test`.
+- `filings_test.clj` — `shape-daily-hit-nil-period-test`.
+- `tables_test.clj` — `infer-column-blank-cells-test`, `row-cells-dom-order-test`, `row-cells-colspan-test`, `extract-tables-nil-html-test`.
+- `xbrl_test.clj` — `get-facts-dataset-sort-test` (desc, asc, nil, default, determinism).
+
+---
+
 ## [0.1.4] — 2026-03-16
 
 ### Fixed
