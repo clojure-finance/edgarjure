@@ -40,18 +40,18 @@
         (is (= ["GOOD"] (vec (get result :ticker))))))))
 
 (deftest multi-company-facts-as-of-dedup-test
-  (testing "as-of path deduplicates per [ticker concept end] keeping most recently filed"
+  (testing "as-of path deduplicates per [ticker concept unit start end] keeping most recently filed"
     (with-redefs [edgar.company/company-cik (fn [t] t)
                   edgar.xbrl/get-facts-dataset
                   (fn [cik & _]
                     (ds/->dataset
                      [{:taxonomy "us-gaap" :concept "Assets" :unit "USD"
-                       :end "2023-12-31" :val 900 :accn "0001-23-000001"
+                       :start nil :end "2023-12-31" :val 900 :accn "0001-23-000001"
                        :fy 2023 :fp "FY" :form "10-K"
                        :filed "2023-11-01" :frame nil
                        :label "Assets" :description ""}
                       {:taxonomy "us-gaap" :concept "Assets" :unit "USD"
-                       :end "2023-12-31" :val 1000 :accn "0001-24-000001"
+                       :start nil :end "2023-12-31" :val 1000 :accn "0001-24-000001"
                        :fy 2023 :fp "FY" :form "10-K"
                        :filed "2024-01-15" :frame nil
                        :label "Assets" :description ""}]))]
@@ -65,17 +65,34 @@
                   (fn [cik & _]
                     (ds/->dataset
                      [{:taxonomy "us-gaap" :concept "Assets" :unit "USD"
-                       :end "2022-12-31" :val 800 :accn "0001-22-000001"
+                       :start nil :end "2022-12-31" :val 800 :accn "0001-22-000001"
                        :fy 2022 :fp "FY" :form "10-K"
                        :filed "2022-11-01" :frame nil
                        :label "Assets" :description ""}
                       {:taxonomy "us-gaap" :concept "Assets" :unit "USD"
-                       :end "2023-12-31" :val 1000 :accn "0001-23-000001"
+                       :start nil :end "2023-12-31" :val 1000 :accn "0001-23-000001"
                        :fy 2023 :fp "FY" :form "10-K"
                        :filed "2023-11-01" :frame nil
                        :label "Assets" :description ""}]))]
       (let [result (dataset/multi-company-facts ["AAPL"] :concept "Assets")]
-        (is (= 2 (ds/row-count result)))))))
+        (is (= 2 (ds/row-count result))))))
+  (testing "distinct duration windows (same concept+end, different :start) are preserved"
+    (with-redefs [edgar.company/company-cik (fn [t] t)
+                  edgar.xbrl/get-facts-dataset
+                  (fn [cik & _]
+                    (ds/->dataset
+                     [{:taxonomy "us-gaap" :concept "Revenue" :unit "USD"
+                       :start "2023-07-01" :end "2023-09-30" :val 300 :accn "0001-23-000001"
+                       :fy 2023 :fp "Q3" :form "10-Q"
+                       :filed "2023-11-01" :frame nil
+                       :label "Revenue" :description ""}
+                      {:taxonomy "us-gaap" :concept "Revenue" :unit "USD"
+                       :start "2023-01-01" :end "2023-09-30" :val 900 :accn "0001-23-000001"
+                       :fy 2023 :fp "Q3" :form "10-Q"
+                       :filed "2023-11-01" :frame nil
+                       :label "Revenue" :description ""}]))]
+      (let [result (dataset/multi-company-facts ["AAPL"] :concept "Revenue" :form "10-Q" :as-of "2024-01-01")]
+        (is (= 2 (ds/row-count result)) "3-month and 9-month windows must not be collapsed")))))
 
 (deftest pivot-wide-test
   (let [f dataset/pivot-wide
