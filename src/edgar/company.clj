@@ -118,11 +118,14 @@
                          (:formerNames raw))}))
 
 (defn company-cik
-  "Return the zero-padded 10-digit CIK for a ticker or CIK input."
+  "Return the zero-padded 10-digit CIK for a ticker or CIK input.
+   Throws ex-info with :type ::unknown-ticker when a ticker cannot be resolved."
   [ticker-or-cik]
   (if (re-matches #"\d+" (str ticker-or-cik))
     (format "%010d" (Long/parseLong (str ticker-or-cik)))
-    (ticker->cik ticker-or-cik)))
+    (or (ticker->cik ticker-or-cik)
+        (throw (ex-info (str "Unknown ticker: " ticker-or-cik)
+                        {:type ::unknown-ticker :ticker ticker-or-cik})))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Company search via EFTS full-text search

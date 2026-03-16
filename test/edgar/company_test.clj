@@ -1,5 +1,6 @@
 (ns edgar.company-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [edgar.company :as company]))
 
 ;;; ---------------------------------------------------------------------------
@@ -34,6 +35,21 @@
   (testing "pure numeric-string branch always zero-pads"
     (is (= "0000001234" (company/company-cik "1234")))
     (is (= "0000000042" (company/company-cik "42")))))
+
+(deftest company-cik-unknown-ticker-test
+  (testing "unknown ticker throws ex-info with ::unknown-ticker type"
+    (with-redefs [edgar.company/tickers-by-ticker
+                  (fn [] {"AAPL" {:cik_str "320193" :ticker "AAPL"}})]
+      (let [ex (try
+                 (company/company-cik "ZZZNOTTICKER")
+                 nil
+                 (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? ex) "should throw for unknown ticker")
+        (is (= ::company/unknown-ticker (:type (ex-data ex))))
+        (is (= "ZZZNOTTICKER" (:ticker (ex-data ex))))
+        (is (str/includes? (ex-message ex) "ZZZNOTTICKER")))))
+  (testing "numeric input is never treated as a ticker lookup — no throw"
+    (is (= "0000001234" (company/company-cik "1234")))))
 
 (deftest ticker->cik-format-test
   (testing "ticker->cik zero-pads using Long parse, not raw string format"
