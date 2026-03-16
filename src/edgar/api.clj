@@ -213,7 +213,8 @@
   (filing/filing-text filing-map))
 
 (defn items
-  "Extract item sections from a filing as a map of item-id → text string.
+  "Extract item sections from a filing.
+   Returns a map of item-id → {:title \"...\" :text \"...\" :method ...}.
    Options:
      :only           - set of item ids to extract e.g. #{\"7\" \"1A\"} (default all)
      :remove-tables? - strip numeric tables before extraction (default false)"
@@ -223,8 +224,9 @@
                          :remove-tables? remove-tables?))
 
 (defn item
-  "Extract a single item section from a filing. Returns text string or nil.
-   (e/item f \"7\")  => MD&A text"
+  "Extract a single item section from a filing.
+   Returns {:title \"...\" :text \"...\" :method ...} or nil.
+   (e/item f \"7\")  => {:title \"Management's Discussion...\" :text \"...\" :method :html-heading-boundaries}"
   [filing-map item-id]
   (extract/extract-item filing-map item-id))
 
@@ -292,7 +294,7 @@
 
 (defn exhibits
   "Return all exhibit entries from a filing's index as a seq of maps.
-   Each map has :name :type :document :description :sequence.
+   Each map has :name :type :description :sequence.
    Exhibits have :type values beginning with \"EX-\" (e.g. \"EX-21\", \"EX-31.1\").
 
    Example:
@@ -302,7 +304,7 @@
 
    Fetch an exhibit's content:
      (let [ex (e/exhibit f \"EX-21\")]
-       (e/filing-document f (:name ex)))"
+       (e/doc-url f (:name ex)))"
   [filing-map]
   (filing/filing-exhibits filing-map))
 
