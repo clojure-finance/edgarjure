@@ -106,3 +106,47 @@
                     (catch clojure.lang.ExceptionInfo e e))]
         (is (some? ex))
         (is (= ::core/http-error (:type (ex-data ex))))))))
+
+(deftest cache-eviction-test
+  (testing "expired entries are removed from cache when a new entry is put"
+    (core/clear-cache!)
+    ;; Manually insert an already-expired entry by poking the atom directly
+    (let [cache (var-get #'edgar.core/cache)
+          expired-at (.minusMillis (java.time.Instant/now) 1000)]
+      (swap! cache assoc
+             "https://example.com/expired"
+             {:value "old" :expires-at expired-at}))
+    ;; Confirm the expired entry is present before eviction
+    (is (= 1 (count @(var-get #'edgar.core/cache)))
+        "expired entry should be present before next put")
+    ;; Trigger a cache-put! by calling edgar-get with a stubbed response
+    (with-redefs [hato.client/get (fn [_url _opts]
+                                    {:status 200 :body "\"fresh\""})
+                  edgar.core/throttle! (fn [] nil)]
+      (core/set-identity! "Test test@example.com")
+      (core/edgar-get "https://example.com/fresh"))
+    ;; Expired entry should now be gone; only the fresh entry should remain
+    (let [cache-contents @(var-get #'edgar.core/cache)]
+      (is (not (contains? cache-contents "https://example.com/expired"))
+          "expired entry must be evicted after next cache-put!")
+      (is (contains? cache-contents "https://example.com/fresh")
+          "newly cached entry must be present")))
+  (testing "non-expired entries are not evicted"
+    (core/clear-cache!)
+    ;; Insert a still-valid entry
+    (let [cache (var-get #'edgar.core/cache)
+          future-at (.plusMillis (java.time.Instant/now) 60000)]
+      (swap! cache assoc
+             "https://example.com/valid"
+             {:value "still-good" :expires-at future-at}))
+    ;; Trigger cache-put! for a different URL
+    (with-redefs [hato.client/get (fn [_url _opts]
+                                    {:status 200 :body "\"new\""})
+                  edgar.core/throttle! (fn [] nil)]
+      (core/set-identity! "Test test@example.com")
+      (core/edgar-get "https://example.com/another"))
+    ;; Both entries should still be present
+    (let [cache-contents @(var-get #'edgar.core/cache)]
+      (is (contains? cache-contents "https://example.com/valid")
+          "non-expired entry must survive eviction sweep")
+      (is (contains? cache-contents "https://example.com/another")))))
