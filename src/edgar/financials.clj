@@ -159,9 +159,10 @@
 
 (defn- resolve-fallback [chain available-concepts]
   (let [label (first chain)
-        candidates (rest chain)]
-    (when-let [winner (first (filter available-concepts candidates))]
-      [label winner])))
+        candidates (rest chain)
+        winners (filter available-concepts candidates)]
+    (when (seq winners)
+      [label winners])))
 
 (defn- resolve-all-chains [chains available-concepts]
   (keep #(resolve-fallback % available-concepts) chains))
@@ -228,19 +229,28 @@
   "Build a normalized long-format statement dataset.
 
    Steps:
-     1. Resolve fallback chains -> pick winning concept per line item
-     2. Filter facts to winning concepts + form type
-     3. Filter to the correct duration type (instant vs duration)
-     4. Deduplicate via dedup-point-in-time:
+     1. Resolve fallback chains -> collect ALL present candidates per line item
+     2. Build a concept->label map covering every present candidate
+     3. Filter facts to all winning concepts + form type
+     4. Filter to the correct duration type (instant vs duration)
+     5. Deduplicate via dedup-point-in-time:
           as-of nil  => latest restated value (as-reported)
           as-of date => point-in-time; excludes filings filed after as-of
-     5. Add :line-item column
-     6. Sort :end descending, :line-item ascending within each period"
+     6. Add :line-item column
+     7. Sort :end descending, :line-item ascending within each period
+
+   Note on multi-candidate resolution (Step 1-2):
+     A company may have used SalesRevenueNet pre-2018 and Revenues post-2018.
+     Both are present in the facts data. We include ALL present candidates so
+     that historical rows are not silently dropped. The dedup step then picks
+     the right survivor per [concept unit start end] group."
   [facts-ds chains form duration-type as-of]
   (let [available (concepts-in-data facts-ds)
         resolved (resolve-all-chains chains available)
-        winning-concepts (set (map second resolved))
-        concept->label (into {} resolved)]
+        concept->label (into {} (mapcat (fn [[label winners]]
+                                          (map (fn [w] [w label]) winners))
+                                        resolved))
+        winning-concepts (set (keys concept->label))]
     (if (empty? winning-concepts)
       (ds/->dataset [])
       (let [filtered (-> facts-ds
