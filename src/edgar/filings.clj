@@ -50,7 +50,7 @@
       (mapcat (fn [file-entry]
                 (let [url (str core/submissions-url "/" (:name file-entry))
                       chunk (core/edgar-get url)]
-                  (parse-filings-recent (:recent chunk))))
+                  (parse-filings-recent chunk)))
               extra-files))))
 
 (defn- amended? [filing]
@@ -100,12 +100,13 @@
    Options:
      :form - form type string e.g. \"10-K\""
   [ticker-or-cik & {:keys [form]}]
-  (let [all (get-filings ticker-or-cik :form form :include-amends? true)
-        base-form form
-        amend-form (when form (str form "/A"))
-        non-amended (filter #(= base-form (:form %)) all)
+  (let [amend-form (when form (str form "/A"))
+        all (get-filings ticker-or-cik :include-amends? true)
+        matching (filter #(or (= form (:form %)) (= amend-form (:form %))) all)
+        non-amended (filter #(= form (:form %)) matching)
+        amendments (filter #(= amend-form (:form %)) matching)
         latest-original (first non-amended)
-        latest-amendment (first (filter #(= amend-form (:form %)) all))]
+        latest-amendment (first amendments)]
     (if (and latest-amendment latest-original
              (pos? (compare (:filingDate latest-amendment)
                             (:filingDate latest-original))))

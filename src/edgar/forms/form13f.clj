@@ -21,19 +21,29 @@
   (xml/parse (java.io.ByteArrayInputStream. (.getBytes s "UTF-8"))))
 
 (defn- find-tag
-  "Return the first descendant element with the given tag (depth-first)."
+  "Return the first descendant element with the given tag (depth-first).
+   Matches both exact tags and namespace-prefixed tags (e.g. :ns1:infoTable matches :infoTable)."
   [node tag]
   (when (map? node)
-    (if (= tag (:tag node))
-      node
-      (some #(find-tag % tag) (:content node)))))
+    (let [node-tag (:tag node)
+          matches? (or (= tag node-tag)
+                       (when (keyword? node-tag)
+                         (= (name tag) (last (clojure.string/split (name node-tag) #":")))))]
+      (if matches?
+        node
+        (some #(find-tag % tag) (:content node))))))
 
 (defn- find-tags
-  "Return all descendant elements with the given tag."
+  "Return all descendant elements with the given tag.
+   Matches both exact tags and namespace-prefixed tags."
   [node tag]
   (when (map? node)
-    (let [here (if (= tag (:tag node)) [node] [])]
-      (into here (mapcat #(find-tags % tag) (:content node))))))
+    (let [node-tag (:tag node)
+          matches? (or (= tag node-tag)
+                       (when (keyword? node-tag)
+                         (= (name tag) (last (clojure.string/split (name node-tag) #":")))))]
+      (let [here (if matches? [node] [])]
+        (into here (mapcat #(find-tags % tag) (:content node)))))))
 
 (defn- tag-text
   "Find a descendant node by tag and return its trimmed text content."
@@ -46,9 +56,14 @@
           not-empty))
 
 (defn- child-tag-text
-  "Return text of the first *direct* child element matching tag."
+  "Return text of the first *direct* child element matching tag.
+   Matches both exact tags and namespace-prefixed tags."
   [node tag]
-  (some-> (filter #(and (map? %) (= tag (:tag %))) (:content node))
+  (some-> (filter #(and (map? %)
+                        (let [t (:tag %)]
+                          (or (= tag t)
+                              (when (keyword? t)
+                                (= (name tag) (last (str/split (name t) #":"))))))) (:content node))
           first
           :content
           first
@@ -69,11 +84,13 @@
 (defn- find-infotable-xml [filing]
   (let [idx (filing/filing-index filing)
         docs (:files idx)
-        xml-doc (first (filter (fn [{:keys [name type]}]
-                                 (and (str/ends-with? (str name) ".xml")
-                                      (not (str/ends-with? (str name) "_htm.xml"))
-                                      (not (str/includes? (str/lower-case (str type)) "xbrl"))))
-                               docs))]
+        info-table-doc (first (filter #(= "INFORMATION TABLE" (:type %)) docs))
+        xml-doc (or info-table-doc
+                    (first (filter (fn [{:keys [name type]}]
+                                     (and (str/ends-with? (str name) ".xml")
+                                          (not (str/ends-with? (str name) "_htm.xml"))
+                                          (not (str/includes? (str/lower-case (str type)) "xbrl"))))
+                                   docs)))]
     (when xml-doc
       (filing/filing-document filing (:name xml-doc) :raw? true))))
 

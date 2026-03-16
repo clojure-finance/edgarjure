@@ -6,19 +6,43 @@ All notable changes to edgarjure are documented here.
 
 ### Fixed
 
-**`edgar.financials` — instant/duration filtering dropped majority of rows (two bugs)**
+**`edgar.filings/fetch-extra-filings` ? silent truncation for filers with >1000 filings**
+- `fetch-extra-filings` was calling `(parse-filings-recent (:recent chunk))` on paginated submission chunks. These chunks are flat columnar objects (same format as `[:filings :recent]`) ? NOT wrapped in a `{:recent {...}}` envelope. The call to `:recent` returned `nil`, causing `parse-filings-recent` to throw on any company with >1000 filings (e.g. AAPL), silently returning only the first 1000. Fixed by calling `(parse-filings-recent chunk)` directly.
 
-Bug 1 — Wrong discriminator for instant vs duration observations:
-- `instant?` and `duration?` tested whether `:frame` ended in `"I"` (e.g. `"CY2023Q4I"`). The `:frame` field is only populated on ~25–50% of balance-sheet observations and ~25% of income-statement observations in the SEC XBRL API. This silently dropped the majority of rows from every financial statement.
-- The correct discriminator is the `:start` key: instant (balance-sheet) observations have no `:start` date; duration (income/cashflow) observations always have one. Fixed: `instant?` now checks `(nil? (:start row))`; `duration?` checks `(some? (:start row))`. `filter-by-duration-type` updated to pass the whole row map.
+**`edgar.filings/latest-effective-filing` ? amendments never found**
+- Was passing `:form form` to `get-filings`, which filters by exact form equality and excludes `"10-K/A"` when searching for `"10-K"`. The amendment branch was always empty. Fixed by calling `get-filings` without a `:form` filter and manually partitioning results into base-form vs. amendment lists.
 
-Bug 2 — `ds/rows` flyweight maps elide nil-valued keys:
-- `normalized-statement` called `(ds/rows filtered-ds)` without `{:nil-missing? true}`. TMD flyweight maps omit keys whose values are nil, so rows where `:start` is nil (i.e. all balance-sheet rows) had no `:start` key at all. After fixing Bug 1, `(nil? (:start row))` would have returned `true` for all rows regardless of type. Fixed by using `(ds/rows filtered-ds {:nil-missing? true})` so nil `:start` is present as an explicit nil.
+**`edgar.forms.form13f/find-infotable-xml` ? wrong document parsed for modern 13F submissions**
+- Modern 13F-HR submissions package the holdings infotable as a separate attachment with `:type "INFORMATION TABLE"`. `find-infotable-xml` used filename heuristics and selected `primary_doc.xml` (cover page only), producing an empty `:holdings` dataset. Fixed by preferring the `"INFORMATION TABLE"` typed index entry over the filename-based fallback.
 
-Removed unused `[clojure.string :as str]` require from `edgar.financials` (was only needed by the old frame-based predicates).
+**`edgar.forms.form13f` ? XML namespace prefix matching failure**
+- `find-tag`, `find-tags`, and `child-tag-text` used exact keyword equality for tag matching. Modern 13F infotable XML uses `ns1:` namespace prefixes (`:ns1:infoTable`, `:ns1:nameOfIssuer`, etc.), so all tag lookups returned nil and holdings were empty. Fixed by matching on the tag name suffix after splitting on `":"`.
 
-**`financials_test.clj` — `instant?` / `duration?` tests updated**
-- Tests now pass row maps instead of frame strings, matching the new predicate signatures.
+**`edgar.financials/to-wide` ? nil-valued columns caused missing keys in flyweight maps**
+- `to-wide` called `(ds/rows deduped)` without `{:nil-missing? true}`. TMD flyweight maps omit nil-valued keys, so columns like `:start` (nil for all balance-sheet rows) were absent rather than explicitly nil, corrupting `:end`/`:line-item` lookups and producing an empty wide balance sheet. Fixed by using `(ds/rows deduped {:nil-missing? true})`.
+
+**`edgar.financials/concepts-in-data` ? crash on empty dataset**
+- `(ds/column facts-ds :concept)` throws when the dataset is empty (no columns). Fixed by returning `#{}` early when `(ds/row-count facts-ds)` is zero.
+
+**`edgar.financials` ? instant/duration filtering dropped majority of rows (two bugs)**
+- `instant?` and `duration?` tested whether `:frame` ended in `"I"`. The `:frame` field is only populated on ~25-50% of XBRL observations, silently dropping most rows from every statement. Fixed: `instant?` now checks `(nil? (:start row))`; `duration?` checks `(some? (:start row))`.
+- `normalized-statement` called `(ds/rows filtered-ds)` without `{:nil-missing? true}`. TMD flyweight maps omit nil-valued keys, so balance-sheet rows had no `:start` key at all, making `instant?` return `true` for every row. Fixed by using `(ds/rows filtered-ds {:nil-missing? true})`.
+
+### Added
+
+**`edgar.financials` ? expanded unit test coverage**
+- New tests: `concepts-in-data` (including empty-dataset guard), `filter-by-duration-type` (all three branches), `add-line-item-col`, `raw-statement`, `normalized-statement` (empty-winning-concepts early-return path), `to-wide-nil-columns-test` (nil `:start`/`:frame` columns regression).
+
+**`edgar.filings` ? expanded unit test coverage**
+- `fetch-extra-filings-flat-chunk-test` ? verifies `parse-filings-recent` handles a flat chunk with no `:recent` wrapper.
+- `latest-effective-filing-logic-test` ? four `with-redefs` cases covering amendment newer/older/absent/only.
+
+**`edgar.forms.form13f` ? namespace-prefix regression test**
+- `find-tags-namespace-prefix-test` ? `ns1:`-prefixed XML fixture verifying `find-tags`, `find-tag`, and `parse-holding` round-trip on namespaced XML. Also covers the `child-tag-text` namespace fix via `:shares` field extraction.
+
+**Integration test suite ? complete `edgar.api` coverage**
+- Expanded from 15 to 32 tests (137 assertions), covering every public function in `edgar.api` including `search`, `latest-effective-filing`, `filings-dataset`, `search-filings`, `daily-filings`, `html`, `item`, `obj` (Form 4 + 13F-HR), `tables`, `doc-url`, `exhibits`, `exhibit`, `xbrl-docs`, `save!`, `save-all!`, `frame`, `financials` (all with `:shape :wide` and `:as-of`), `pivot`, and Malli validation errors.
+- Canonical 13F filer changed from `BRK-A` to `GS` (Goldman Sachs), which uses the modern `"INFORMATION TABLE"` document format with `ns1:` namespace prefixes.
 
 ## [0.1.3] — 2026-03-15
 

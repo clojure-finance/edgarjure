@@ -128,3 +128,55 @@
   (testing "amendment status is correctly indicated by the filing :form key"
     (is (= "13F-HR/A" (:form {:form "13F-HR/A" :accessionNumber "x"})))
     (is (str/ends-with? "13F-HR/A" "/A"))))
+
+(def ^:private form13f-ns-xml
+  "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
+<ns1:informationTable xmlns:ns1=\"http://www.sec.gov/edgar/document/thirteenf/informationtable\">
+  <ns1:infoTable>
+    <ns1:nameOfIssuer>APPLE INC</ns1:nameOfIssuer>
+    <ns1:titleOfClass>COM</ns1:titleOfClass>
+    <ns1:cusip>037833100</ns1:cusip>
+    <ns1:value>200000</ns1:value>
+    <ns1:shrsOrPrnAmt>
+      <ns1:sshPrnamt>1000000</ns1:sshPrnamt>
+      <ns1:sshPrnamtType>SH</ns1:sshPrnamtType>
+    </ns1:shrsOrPrnAmt>
+    <ns1:investmentDiscretion>SOLE</ns1:investmentDiscretion>
+    <ns1:votingAuthority>
+      <ns1:Sole>1000000</ns1:Sole>
+      <ns1:Shared>0</ns1:Shared>
+      <ns1:None>0</ns1:None>
+    </ns1:votingAuthority>
+  </ns1:infoTable>
+  <ns1:infoTable>
+    <ns1:nameOfIssuer>MICROSOFT CORP</ns1:nameOfIssuer>
+    <ns1:titleOfClass>COM</ns1:titleOfClass>
+    <ns1:cusip>594918104</ns1:cusip>
+    <ns1:value>150000</ns1:value>
+    <ns1:shrsOrPrnAmt>
+      <ns1:sshPrnamt>400000</ns1:sshPrnamt>
+      <ns1:sshPrnamtType>SH</ns1:sshPrnamtType>
+    </ns1:shrsOrPrnAmt>
+    <ns1:investmentDiscretion>SOLE</ns1:investmentDiscretion>
+    <ns1:votingAuthority>
+      <ns1:Sole>400000</ns1:Sole>
+      <ns1:Shared>0</ns1:Shared>
+      <ns1:None>0</ns1:None>
+    </ns1:votingAuthority>
+  </ns1:infoTable>
+</ns1:informationTable>")
+
+(deftest find-tags-namespace-prefix-test
+  (let [root (#'edgar.forms.form13f/parse-xml-str form13f-ns-xml)
+        entries (#'edgar.forms.form13f/find-tags root :infoTable)]
+    (testing "find-tags matches ns1:-prefixed infoTable elements"
+      (is (= 2 (count entries))))
+    (testing "parse-holding works on ns1:-prefixed entry"
+      (let [h (#'edgar.forms.form13f/parse-holding (first entries))]
+        (is (= "APPLE INC" (:name h)))
+        (is (= "037833100" (:cusip h)))
+        (is (= 200000 (:value h)))
+        (is (= 1000000 (:shares h)))))
+    (testing "find-tag matches ns1:-prefixed single element"
+      (let [node (#'edgar.forms.form13f/find-tag root :infoTable)]
+        (is (some? node))))))
