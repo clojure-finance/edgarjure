@@ -3,7 +3,7 @@
 
    Extracts <table> elements from filing HTML and converts them to
    tech.ml.dataset objects. Handles iXBRL inline-tagged content,
-   colspan attributes, and mixed numeric/string columns.
+   colspan expansion, and mixed numeric/string columns.
 
    Usage:
      (require '[edgar.tables :as tables])
@@ -46,13 +46,20 @@
 ;;; ---------------------------------------------------------------------------
 
 (defn- row-cells
-  "Return a vector of [text is-header?] pairs for all cells in a tr node.
-   th cells are marked as headers."
+  "Return a vector of [text is-header?] pairs for all cells in a tr node,
+   in DOM order. th cells are marked as headers.
+   Colspan attributes are expanded: a cell with colspan=3 produces 3 entries."
   [tr-node]
-  (let [children (filter map? (:content tr-node))
-        ths (map #(vector (cell-text %) true) (filter #(= :th (:tag %)) children))
-        tds (map #(vector (cell-text %) false) (filter #(= :td (:tag %)) children))]
-    (vec (concat ths tds))))
+  (->> (filter map? (:content tr-node))
+       (filter #(#{:th :td} (:tag %)))
+       (mapcat (fn [cell]
+                 (let [span (or (when-let [cs (get-in cell [:attrs :colspan])]
+                                  (try (Integer/parseInt cs) (catch Exception _ nil)))
+                                1)
+                       text (cell-text cell)
+                       hdr? (= :th (:tag cell))]
+                   (repeat span [text hdr?]))))
+       vec))
 
 (defn- row-texts
   "Return a vector of non-blank cell text strings from a tr node."
@@ -82,15 +89,15 @@
 
 (defn- infer-column
   "Given a seq of cell strings for one column, return the best typed vector.
-   Tries Long, Double, then falls back to String."
+   Infers type from non-blank cells only; blank cells become nil.
+   Tries Long, then Double, then falls back to String."
   [cells]
-  (let [parsed (map parse-number cells)
-        all-numeric? (every? some? parsed)
-        any-double? (some double? parsed)]
+  (let [non-blank (remove str/blank? cells)
+        parsed-non-blank (map parse-number non-blank)
+        all-numeric? (and (seq non-blank) (every? some? parsed-non-blank))
+        any-double? (some double? parsed-non-blank)]
     (if all-numeric?
-      (if any-double?
-        (mapv double parsed)
-        (mapv long parsed))
+      (mapv #(when-not (str/blank? %) (parse-number %)) cells)
       (vec cells))))
 
 ;;; ---------------------------------------------------------------------------

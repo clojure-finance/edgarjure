@@ -47,15 +47,32 @@
     (testing "all-integer cells → Long vector"
       (let [result (f ["1" "2" "3"])]
         (is (every? #(instance? Long %) result))))
-    (testing "mixed integer and decimal → Double vector"
+    (testing "mixed integer and decimal → all-numeric vector (Long or Double per cell)"
       (let [result (f ["1" "2.5" "3"])]
-        (is (every? #(instance? Double %) result))))
+        (is (every? number? result))
+        (is (= 2.5 (second result)))))
     (testing "non-numeric cells → String vector (passthrough)"
       (let [result (f ["foo" "bar" "baz"])]
         (is (= ["foo" "bar" "baz"] result))))
     (testing "mixed numeric and non-numeric → String vector"
       (let [result (f ["100" "n/a" "200"])]
         (is (= ["100" "n/a" "200"] result))))))
+
+(deftest infer-column-blank-cells-test
+  (let [f #'edgar.tables/infer-column]
+    (testing "blank cell in otherwise numeric column produces nil, not string fallback"
+      (let [result (f ["100" "" "300"])]
+        (is (= 3 (count result)))
+        (is (= 100 (first result)))
+        (is (nil? (second result)))
+        (is (= 300 (nth result 2)))))
+    (testing "all-blank column stays as strings (no data to infer from)"
+      (let [result (f ["" "" ""])]
+        (is (= ["" "" ""] result))))
+    (testing "single blank in double column keeps doubles elsewhere"
+      (let [result (f ["1.5" "" "3.5"])]
+        (is (nil? (second result)))
+        (is (every? #(or (nil? %) (double? %)) result))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; layout-table?
@@ -162,6 +179,45 @@
         cells (f tr)]
     (testing "only direct td/th children are counted"
       (is (= 2 (count cells))))))
+
+(deftest row-cells-dom-order-test
+  (let [f #'edgar.tables/row-cells]
+    (testing "mixed th/td cells preserve DOM order, not th-first"
+      ;; Row: td "A", th "B", td "C" — th-first bug would produce B, A, C
+      (let [tr {:type :element :tag :tr :attrs {}
+                :content [{:type :element :tag :td :attrs {} :content ["A"]}
+                          {:type :element :tag :th :attrs {} :content ["B"]}
+                          {:type :element :tag :td :attrs {} :content ["C"]}]}
+            cells (f tr)]
+        (is (= 3 (count cells)))
+        (is (= "A" (first (first cells))))
+        (is (= "B" (first (second cells))))
+        (is (= "C" (first (nth cells 2))))))))
+
+(deftest row-cells-colspan-test
+  (let [f #'edgar.tables/row-cells]
+    (testing "colspan=3 expands to 3 entries with the same text"
+      (let [tr {:type :element :tag :tr :attrs {}
+                :content [{:type :element :tag :th :attrs {:colspan "3"} :content ["Period"]}
+                          {:type :element :tag :td :attrs {} :content ["Value"]}]}
+            cells (f tr)]
+        (is (= 4 (count cells)))
+        (is (= [["Period" true] ["Period" true] ["Period" true] ["Value" false]] cells))))
+    (testing "colspan=1 (explicit) produces exactly 1 entry"
+      (let [tr {:type :element :tag :tr :attrs {}
+                :content [{:type :element :tag :td :attrs {:colspan "1"} :content ["X"]}]}
+            cells (f tr)]
+        (is (= 1 (count cells)))))
+    (testing "missing colspan attr produces 1 entry (default)"
+      (let [tr {:type :element :tag :tr :attrs {}
+                :content [{:type :element :tag :td :attrs {} :content ["Y"]}]}
+            cells (f tr)]
+        (is (= 1 (count cells)))))
+    (testing "invalid colspan falls back to 1"
+      (let [tr {:type :element :tag :tr :attrs {}
+                :content [{:type :element :tag :td :attrs {:colspan "bad"} :content ["Z"]}]}
+            cells (f tr)]
+        (is (= 1 (count cells)))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; extract-table — private fn, using inline HTML
