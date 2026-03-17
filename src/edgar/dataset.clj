@@ -3,7 +3,6 @@
             [edgar.xbrl :as xbrl]
             [edgar.company :as company]
             [tech.v3.dataset :as ds]
-            [tech.v3.dataset.rolling :as ds-roll]
             [clojure.string :as str]))
 
 ;;; ---------------------------------------------------------------------------
