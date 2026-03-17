@@ -412,6 +412,43 @@
                         (contains? % :method))
                   (vals result))))))
 
+(deftest extract-items-text-heading-exclusion-test
+  ;; Regression test for Issue #12:
+  ;; Previously :text started at (:start match) — the match start position —
+  ;; so the "ITEM X. TITLE" heading line was included in :text.
+  ;; Fixed: :text starts at (:end match) — after the matched heading —
+  ;; consistent with the HTML path where heading nodes are excluded.
+  (let [f #'edgar.extract/extract-items-text
+        text "ITEM 1. BUSINESS\nAcme Corp makes widgets.\n\nITEM 1A. RISK FACTORS\nCompetition is intense.\n\nITEM 7. DISCUSSION\nRevenue grew 10%."
+        result (f text extract/items-10k)]
+    (testing "item 1 :text does NOT start with the heading line"
+      (let [body (get-in result ["1" :text])]
+        (is (some? body))
+        (is (not (str/starts-with? (str/triml body) "ITEM"))
+            ":text must not begin with 'ITEM 1. BUSINESS'")
+        (is (not (re-find #"(?i)^item\s+1" (str/triml body)))
+            "heading text must be absent from body")))
+    (testing "item 1 :text contains only body content"
+      (is (str/includes? (get-in result ["1" :text]) "widgets"))
+      (is (not (str/includes? (get-in result ["1" :text]) "BUSINESS"))
+          "title word from heading must not appear in body"))
+    (testing "item 1A :text does NOT include its heading"
+      (let [body (get-in result ["1A" :text])]
+        (is (not (re-find #"(?i)^item\s+1a" (str/triml body))))
+        (is (str/includes? body "Competition"))))
+    (testing "item 7 :text does NOT include its heading"
+      (let [body (get-in result ["7" :text])]
+        (is (not (re-find #"(?i)^item\s+7" (str/triml body))))
+        (is (str/includes? body "Revenue"))))
+    (testing ":title is still correctly populated from heading"
+      (is (= "BUSINESS" (get-in result ["1" :title])))
+      (is (= "RISK FACTORS" (get-in result ["1A" :title])))
+      (is (= "DISCUSSION" (get-in result ["7" :title]))))
+    (testing "body content does not bleed from one item into the next"
+      (let [body-1 (get-in result ["1" :text])]
+        (is (not (str/includes? body-1 "Competition"))
+            "item 1 body must not include item 1A content")))))
+
 (deftest extract-items-text-fixture-content-test
   (let [f #'edgar.extract/extract-items-text
         result (f fixture-text extract/items-10k)]
@@ -471,7 +508,12 @@ Operating income improved year over year.")
       (testing "item 1A contains risk text"
         (is (str/includes? (str/lower-case (get-in result ["1A" :text])) "risk")))
       (testing "item 7 contains MD&A text"
-        (is (str/includes? (get-in result ["7" :text]) "Revenue")))))
+        (is (str/includes? (get-in result ["7" :text]) "Revenue")))
+      (testing "heading lines are excluded from :text (Issue #12 regression)"
+        (is (not (re-find #"(?i)ITEM\s+1\b" (get-in result ["1" :text])))
+            "item 1 body must not contain its own heading")
+        (is (not (re-find #"(?i)ITEM\s+1A\b" (get-in result ["1A" :text])))
+            "item 1A body must not contain its own heading"))))
   (testing "nil html falls back to filing-text"
     (let [result (with-redefs [edgar.filing/filing-html (fn [_] nil)
                                edgar.filing/filing-text (fn [_] plain-text-filing-content)]
