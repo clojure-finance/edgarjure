@@ -429,17 +429,31 @@
 ;;; Wide-format pivot
 ;;; ---------------------------------------------------------------------------
 
-(defn- to-wide [ds]
+(defn- to-wide
+  "Pivot a long-format statement dataset to wide format.
+   One row per period (:end), one column per line item.
+
+   For 10-Q flow statements the long format includes :val-q and :val-ltm
+   columns.  These are preserved in wide format as \"<line-item> (Q)\" and
+   \"<line-item> (LTM)\" columns respectively alongside the plain YTD value."
+  [ds]
   (if (zero? (ds/row-count ds))
     ds
-    (let [deduped (ds/unique-by ds (fn [row] [(:end row) (:line-item row)]))]
+    (let [has-q? (boolean (some #{:val-q} (ds/column-names ds)))
+          has-ltm? (boolean (some #{:val-ltm} (ds/column-names ds)))
+          deduped (ds/unique-by ds (fn [row] [(:end row) (:line-item row)]))]
       (ds/->dataset
        (->> (ds/rows deduped {:nil-missing? true})
             (group-by :end)
             (sort-by key #(compare %2 %1))
             (map (fn [[period rows]]
-                   (into {:end period}
-                         (map (fn [r] [(:line-item r) (:val r)]) rows)))))))))
+                   (reduce (fn [m r]
+                             (let [li (:line-item r)]
+                               (cond-> (assoc m li (:val r))
+                                 has-q? (assoc (str li " (Q)") (:val-q r))
+                                 has-ltm? (assoc (str li " (LTM)") (:val-ltm r)))))
+                           {:end period}
+                           rows))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Public API
