@@ -1,5 +1,6 @@
 (ns edgar.filings-test
   (:require [clojure.test :refer [deftest is testing]]
+            [edgar.core :as core]
             [edgar.filings :as filings]))
 
 ;;; ---------------------------------------------------------------------------
@@ -42,6 +43,74 @@
   (testing "builds correct master index URL"
     (is (= "https://www.sec.gov/Archives/edgar/full-index/2020/QTR4/master.idx"
            (filings/full-index-url 2020 4 "master")))))
+
+(deftest get-quarterly-index-test
+  ;; Uses with-redefs on edgar-get to avoid network calls.
+  ;; Tests that header detection is date-based (not drop-N) and column mapping is correct.
+  (let [;; Realistic SEC company.idx content with a variable-length header.
+        ;; The header here has 11 lines (not 10) to verify the fix isn't just drop-11.
+        fake-idx (clojure.string/join "\n"
+                                      ["Full-Index of Submissions for the period 2023-01-01 to 2023-03-31"
+                                       "Generated on: 2023-04-03 00:32:11"
+                                       ""
+                                       "This file was created using the EDGAR Company Search."
+                                       "  https://www.sec.gov/cgi-bin/browse-edgar"
+                                       ""
+                                       "Column  1  Company Name"
+                                       "Column  2  Form Type"
+                                       "Column  3  Date Filed"
+                                       "Column  4  Filename"
+                                       "Column  5  CIK"
+                                       "" ; extra blank — header is now 12 lines, not 10
+                                       " Company Name                       |Form Type |Date Filed|Filename              |CIK"
+                                       " -----------------------------------|----------|----------|----------------------|-------"
+                                       "APPLE INC                           |10-K      |2023-01-20|edgar/data/1/0001.txt |0000320193"
+                                       "MICROSOFT CORP                      |10-Q      |2023-02-15|edgar/data/2/0002.txt |0000789019"
+                                       ""])]
+    (with-redefs [edgar.core/edgar-get (fn [_ & _] fake-idx)]
+      (let [result (vec (filings/get-quarterly-index 2023 1))]
+        (testing "returns 2 data rows, skipping all header/separator lines"
+          (is (= 2 (count result))))
+        (testing "column mapping: :company-name is at parts[0]"
+          (is (= "APPLE INC" (:company-name (first result)))))
+        (testing "column mapping: :form-type is at parts[1]"
+          (is (= "10-K" (:form-type (first result)))))
+        (testing "column mapping: :date-filed is at parts[2]"
+          (is (= "2023-01-20" (:date-filed (first result)))))
+        (testing "column mapping: :filename is at parts[3]"
+          (is (= "edgar/data/1/0001.txt" (:filename (first result)))))
+        (testing "column mapping: :cik is at parts[4] (not parts[0])"
+          (is (= "0000320193" (:cik (first result)))))
+        (testing "second row parsed correctly"
+          (is (= "MICROSOFT CORP" (:company-name (second result))))
+          (is (= "0000789019" (:cik (second result)))))
+        (testing "header row 'Company Name|Form Type|...' is NOT included as data"
+          (is (every? #(re-matches #"\d{4}-\d{2}-\d{2}" (:date-filed %)) result)))
+        (testing "separator row '---|---|...' is NOT included as data"
+          (is (every? #(not (clojure.string/starts-with? (:company-name %) "---")) result))))))
+  (testing "get-quarterly-index handles header longer than 10 lines without breaking"
+    ;; Simulate a header with 15 lines before data — old drop-10 would include junk
+    (let [long-header-idx (clojure.string/join "\n"
+                                               (concat (repeat 15 "# header comment line")
+                                                       ["ONLY CORP|8-K|2023-03-01|edgar/data/3/0003.txt|0000111111"]))]
+      (with-redefs [edgar.core/edgar-get (fn [_ & _] long-header-idx)]
+        (let [result (vec (filings/get-quarterly-index 2023 1))]
+          (is (= 1 (count result)))
+          (is (= "ONLY CORP" (:company-name (first result))))
+          (is (= "0000111111" (:cik (first result))))))))
+  (testing "get-quarterly-index returns empty seq for input with no data lines"
+    (with-redefs [edgar.core/edgar-get (fn [_ & _] "just a header\nno pipe data here\n")]
+      (let [result (vec (filings/get-quarterly-index 2023 1))]
+        (is (= [] result)))))
+  (testing "get-quarterly-index-by-form filters correctly"
+    (let [fake-idx (clojure.string/join "\n"
+                                        ["APPLE INC|10-K|2023-01-20|edgar/data/1/0001.txt|0000320193"
+                                         "MICROSOFT CORP|10-Q|2023-02-15|edgar/data/2/0002.txt|0000789019"
+                                         "AMAZON COM INC|10-K|2023-03-01|edgar/data/3/0003.txt|0001018724"])]
+      (with-redefs [edgar.core/edgar-get (fn [_ & _] fake-idx)]
+        (let [result (vec (filings/get-quarterly-index-by-form 2023 1 "10-K"))]
+          (is (= 2 (count result)))
+          (is (every? #(= "10-K" (:form-type %)) result)))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; get-filing keyword args
