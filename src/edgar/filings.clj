@@ -127,22 +127,37 @@
 
 (defn get-quarterly-index
   "Fetch and parse the full quarterly index for year/quarter.
-   Returns a seq of maps with :cik :company-name :form-type :date-filed :filename."
+   Returns a seq of maps with :cik :company-name :form-type :date-filed :filename.
+
+   The SEC quarterly index header has a variable number of lines before the
+   first data row.  Rather than dropping a fixed number of lines (fragile),
+   we skip until we find the first line whose third pipe-delimited field
+   looks like a date (YYYY-MM-DD) — a property unique to data rows.
+
+   Column order in company.idx:
+     0  Company Name
+     1  Form Type
+     2  Date Filed
+     3  Filename
+     4  CIK"
   [year quarter]
   (let [raw (core/edgar-get (full-index-url year quarter "company") :raw? true)
-        lines (str/split-lines raw)]
+        lines (str/split-lines raw)
+        data-line? (fn [line]
+                     (let [parts (str/split line #"\|")]
+                       (and (= 5 (count parts))
+                            (re-matches #"\d{4}-\d{2}-\d{2}"
+                                        (str/trim (nth parts 2))))))]
     (->> lines
-         (drop 10)
-         (map str/trim)
-         (remove str/blank?)
+         (drop-while (complement data-line?))
          (map (fn [line]
                 (let [parts (str/split line #"\|")]
                   (when (= 5 (count parts))
-                    {:cik (nth parts 0)
-                     :company-name (nth parts 1)
-                     :form-type (nth parts 2)
-                     :date-filed (nth parts 3)
-                     :filename (nth parts 4)}))))
+                    {:company-name (str/trim (nth parts 0))
+                     :form-type (str/trim (nth parts 1))
+                     :date-filed (str/trim (nth parts 2))
+                     :filename (str/trim (nth parts 3))
+                     :cik (str/trim (nth parts 4))}))))
          (remove nil?))))
 
 (defn get-quarterly-index-by-form
