@@ -199,7 +199,11 @@
 (defn- extract-items-text
   "Extract item sections from plain-text filing content using regex boundaries.
    Returns a map of item-id ->
-   {:title \"\" :text \"...\" :method :plain-text-regex}."
+   {:title \"\" :text \"...\" :method :plain-text-regex}.
+
+   The heading line itself (\"ITEM 7. MD&A\") is excluded from :text — only
+   the body content between consecutive headings is returned, consistent with
+   the HTML path where heading nodes are not included in :text."
   [text items-map]
   (let [ids-pattern (str/join "|"
                               (map #(str/replace % "." "\\.") (keys items-map)))
@@ -211,13 +215,14 @@
                   (if (.find matcher)
                     (recur (conj acc {:item-id (str/upper-case (.group matcher 1))
                                       :title (str/trim (.group matcher 2))
-                                      :start (.start matcher)}))
+                                      :start (.start matcher)
+                                      :end (.end matcher)}))
                     acc))]
     (into {}
-          (for [[{:keys [item-id title start]} next-m]
+          (for [[{:keys [item-id title end]} next-m]
                 (partition-all 2 1 matches)]
-            (let [end (if next-m (:start next-m) (count text))
-                  body (str/trim (subs text start end))]
+            (let [body-end (if next-m (:start next-m) (count text))
+                  body (str/trim (subs text end body-end))]
               [item-id {:title title
                         :text body
                         :method :plain-text-regex}])))))
