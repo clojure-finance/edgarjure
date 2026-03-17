@@ -41,7 +41,7 @@
 
 ;;; ---------------------------------------------------------------------------
 ;;; Row extraction
-;;; Each row is represented as a vector of non-blank cell text strings.
+;;; Each row is represented as a vector of cell text strings (blanks preserved).
 ;;; th and td are both collected; th is prioritised for header detection.
 ;;; ---------------------------------------------------------------------------
 
@@ -62,10 +62,10 @@
        vec))
 
 (defn- row-texts
-  "Return a vector of non-blank cell text strings from a tr node."
+  "Return a vector of cell text strings from a tr node, preserving blank cells.
+   Column positions are maintained so downstream alignment is correct."
   [tr-node]
-  (filterv #(not (str/blank? %))
-           (mapv (comp cell-text first) (row-cells tr-node))))
+  (mapv (comp cell-text first) (row-cells tr-node)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Numeric type inference
@@ -106,10 +106,10 @@
 
 (defn- layout-table?
   "Return true if a table appears to be layout/navigation rather than data.
-   Heuristics: fewer than 2 data rows, or all rows have only 1 cell."
+   Heuristics: fewer than 2 data rows, or all rows have only 1 non-blank cell."
   [data-rows]
   (or (< (count data-rows) 2)
-      (every? #(= 1 (count %)) data-rows)))
+      (every? #(< (count (remove str/blank? %)) 2) data-rows)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Table → dataset conversion
@@ -182,9 +182,13 @@
   [table-node table-idx]
   (let [rows (->> (direct-rows table-node)
                   (mapv row-texts)
-                  (filterv seq))
-        ;; Find the first row with >=2 cells as the header
-        header-idx (or (first (keep-indexed #(when (>= (count %2) 2) %1) rows)) 0)
+                  ;; Filter out rows where every cell is blank
+                  (filterv #(some (complement str/blank?) %)))
+        ;; Find the first row with >=2 non-blank cells as the header
+        header-idx (or (first (keep-indexed
+                               #(when (>= (count (remove str/blank? %2)) 2) %1)
+                               rows))
+                       0)
         header-row (nth rows header-idx nil)
         data-rows (drop (inc header-idx) rows)]
     (when (and header-row
