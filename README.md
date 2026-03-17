@@ -12,7 +12,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ## What You Can Do
 
-**Pull financial statements** — income statement, balance sheet, and cash flow, with automatic line-item resolution across different XBRL tags, restatement deduplication, and long or wide output. Override the mappings for non-standard filers.
+**Pull financial statements** — income statement, balance sheet, and cash flow, with automatic line-item resolution across different XBRL tags, restatement deduplication, and long or wide output. Override the mappings for non-standard filers. For 10-Q data, quarterly and trailing-twelve-month values are derived automatically from YTD figures.
 
 **Backtest without look-ahead bias** — the `:as-of` option on every financial statement and panel query restricts data to what was actually filed on or before a given date. Essential for event studies, strategy backtests, and panel regressions.
 
@@ -37,7 +37,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ```clojure
 ;; deps.edn
-{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.1.7"}}}
+{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.1.8"}}}
 ```
 
 ## Getting Started
@@ -269,6 +269,10 @@ Income statement, balance sheet, and cash flow — with automatic line-item reso
 (e/financials "AAPL")
 ;=> {:income ds :balance ds :cashflow ds}
 (e/financials "AAPL" :shape :wide)
+
+;; Quarterly and LTM (10-Q income/cashflow only)
+(e/income   "AAPL" :form "10-Q")        ; adds :val-q and :val-ltm columns
+(e/cashflow "AAPL" :form "10-Q")        ; single-quarter + trailing 12 months
 ```
 
 The library decides which XBRL tags map to "Revenue", "Net Income", etc. by looking up each label in a list of candidate tags (trying the most common one first, then falling back to alternatives). These lists are exposed as public vars, so you can inspect them or swap in your own if a company uses non-standard tags:
@@ -278,6 +282,8 @@ edgar.financials/income-statement-concepts   ; e.g. ["Revenue" "RevenueFromContr
 edgar.financials/balance-sheet-concepts
 edgar.financials/cash-flow-concepts
 ```
+
+For 10-Q queries on income statement and cash flow (flow variables), the long-format output includes two derived columns: `:val-q` is the single-quarter value computed by subtracting the prior cumulative YTD, and `:val-ltm` is the trailing twelve months computed as the sum of four consecutive quarter values. Both use SEC's `:fy` and `:fp` fields for fiscal year sequencing, so they handle non-calendar fiscal years correctly. Balance sheet queries and 10-K queries are unaffected.
 
 ### Panel Datasets
 
@@ -424,7 +430,7 @@ SEC enforces a `User-Agent` header and a rate limit of ~10 requests/second. edga
 # Start REPL on port 7888
 clj -M:nrepl
 
-# Run offline unit tests (131 tests, 596 assertions, no network)
+# Run offline unit tests (139 tests, 633 assertions, no network)
 clj -M:test
 
 # Run live integration tests (manual only, requires network)

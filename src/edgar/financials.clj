@@ -16,7 +16,13 @@
    Point-in-time / look-ahead-safe mode:
      Pass :as-of \"YYYY-MM-DD\" to any public function to restrict to filings
      where :filed <= as-of-date.  Without :as-of the latest restated value is
-     returned (as-reported / always-latest behaviour)."
+     returned (as-reported / always-latest behaviour).
+
+   Quarterly and LTM derivation (10-Q only, flow variables only):
+     :val-q   - single-quarter value derived by subtracting prior YTD from
+                current YTD.  Q1 = reported value; Q2 = H1 - Q1; etc.
+     :val-ltm - last-twelve-months: sum of four consecutive :val-q values.
+                nil when any of the four quarters is missing."
   (:require [edgar.xbrl :as xbrl]
             [edgar.company :as company]
             [tech.v3.dataset :as ds]))
@@ -236,6 +242,120 @@
    (mapv #(get concept->label % %) (ds/column ds :concept))))
 
 ;;; ---------------------------------------------------------------------------
+;;; Quarterly and LTM derivation
+;;; ---------------------------------------------------------------------------
+
+(def ^:private fp-order
+  {"Q1" 0 "Q2" 1 "Q3" 2 "Q4" 3})
+
+(defn- prior-quarter
+  "Return [fy fp] for the quarter preceding the given [fy fp].
+   E.g. [2024 \"Q1\"] -> [2023 \"Q4\"], [2024 \"Q3\"] -> [2024 \"Q2\"]."
+  [fy fp]
+  (case fp
+    "Q1" [(dec fy) "Q4"]
+    "Q2" [fy "Q1"]
+    "Q3" [fy "Q2"]
+    "Q4" [fy "Q3"]
+    nil))
+
+(defn- quarter-seq
+  "Return a lazy seq of [fy fp] pairs going backwards from (but not including)
+   the given quarter. E.g. (take 3 (quarter-seq 2024 \"Q3\"))
+   => ([2024 \"Q2\"] [2024 \"Q1\"] [2023 \"Q4\"])"
+  [fy fp]
+  (let [prev (prior-quarter fy fp)]
+    (when prev
+      (lazy-seq (cons prev (quarter-seq (first prev) (second prev)))))))
+
+(defn- build-ytd-lookup
+  "Build a lookup map {[line-item unit fy fp] -> val} from rows.
+   Only includes rows with valid :fy and :fp (Q1-Q4)."
+  [rows]
+  (into {}
+        (keep (fn [row]
+                (when-let [fp (get fp-order (:fp row))]
+                  (when (:fy row)
+                    [[(or (:line-item row) (:concept row))
+                      (:unit row)
+                      (long (:fy row))
+                      (:fp row)]
+                     (:val row)]))))
+        rows))
+
+(defn- compute-val-q
+  "Compute single-quarter value from YTD data.
+   Q1 -> reported value (already single quarter).
+   Q2 -> H1 YTD - Q1 YTD.  Q3 -> 9M YTD - H1 YTD.  Q4 -> FY YTD - 9M YTD.
+   Returns nil if prior YTD is not available."
+  [row ytd-lookup]
+  (let [fp (:fp row)
+        fy (when (:fy row) (long (:fy row)))
+        line-item (or (:line-item row) (:concept row))
+        unit (:unit row)
+        val (:val row)]
+    (cond
+      (nil? fy) nil
+      (nil? (get fp-order fp)) nil
+      (= fp "Q1") val
+      :else
+      (let [[prior-fy prior-fp] (prior-quarter fy fp)
+            prior-val (get ytd-lookup [line-item unit prior-fy prior-fp])]
+        (when (and val prior-val)
+          (- val prior-val))))))
+
+(defn- compute-val-ltm
+  "Compute LTM (last twelve months) as sum of four consecutive quarterly values.
+   Returns nil if any of the four quarters is missing."
+  [row val-q-lookup]
+  (let [fp (:fp row)
+        fy (when (:fy row) (long (:fy row)))
+        line-item (or (:line-item row) (:concept row))
+        unit (:unit row)]
+    (when (and fy (get fp-order fp))
+      (let [current-q (get val-q-lookup [line-item unit fy fp])
+            prior-qs (take 3 (quarter-seq fy fp))
+            prior-vals (map (fn [[qfy qfp]]
+                              (get val-q-lookup [line-item unit qfy qfp]))
+                            prior-qs)]
+        (when (and current-q
+                   (= 3 (count prior-qs))
+                   (every? some? prior-vals))
+          (+ current-q (apply + prior-vals)))))))
+
+(defn- add-quarterly-and-ltm
+  "Add :duration-months, :val-q, and :val-ltm columns to a duration dataset.
+   Only applies to 10-Q data; returns the dataset unchanged for other forms.
+
+   :val-q is the single-quarter value derived from YTD subtraction.
+   :val-ltm is the trailing twelve months (sum of 4 consecutive :val-q)."
+  [ds form]
+  (if (not= form "10-Q")
+    ds
+    (if (zero? (ds/row-count ds))
+      ds
+      (let [rows (vec (ds/rows ds {:nil-missing? true}))
+            ytd-lookup (build-ytd-lookup rows)
+            rows-with-q (mapv (fn [row]
+                                (assoc row :val-q (compute-val-q row ytd-lookup)))
+                              rows)
+            val-q-lookup (into {}
+                               (keep (fn [row]
+                                       (when (and (:val-q row) (:fy row)
+                                                  (get fp-order (:fp row)))
+                                         [[(or (:line-item row) (:concept row))
+                                           (:unit row)
+                                           (long (:fy row))
+                                           (:fp row)]
+                                          (:val-q row)])))
+                               rows-with-q)
+            rows-with-ltm (mapv (fn [row]
+                                  (assoc row :val-ltm
+                                         (compute-val-ltm row val-q-lookup)))
+                                rows-with-q)]
+        (ds/->dataset rows-with-ltm)))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Raw statement (no normalization — backward compatible)
 ;;; ---------------------------------------------------------------------------
 
@@ -262,7 +382,8 @@
           When multiple concepts from the same chain co-exist for a period,
           keep only the highest-priority (lowest chain index) concept
      7. Add :line-item column
-     8. Sort :end descending, :line-item ascending within each period
+     8. For 10-Q duration statements: add :val-q and :val-ltm columns
+     9. Sort :end descending, :line-item ascending within each period
 
    Multi-candidate handling:
      All present candidates are fetched so that historical periods using
@@ -295,6 +416,7 @@
           result-ds
           (-> result-ds
               (add-line-item-col concept->label)
+              (add-quarterly-and-ltm form)
               (ds/sort-by
                (fn [row] [(:end row) (:line-item row)])
                (fn [a b]
@@ -333,7 +455,10 @@
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, excludes filings where :filed > as-of-date,
                  giving point-in-time / look-ahead-safe results suitable
-                 for backtesting and event studies."
+                 for backtesting and event studies.
+
+   For 10-Q queries, long-format output includes :val-q (single-quarter value)
+   and :val-ltm (trailing twelve months) columns derived from YTD subtraction."
   [ticker-or-cik & {:keys [form concepts shape as-of]
                     :or {form "10-K" shape :long}}]
   (let [chains (or concepts income-statement-concepts)
@@ -367,7 +492,10 @@
      :shape    - :long (default) or :wide
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, excludes filings where :filed > as-of-date,
-                 giving point-in-time / look-ahead-safe results."
+                 giving point-in-time / look-ahead-safe results.
+
+   For 10-Q queries, long-format output includes :val-q (single-quarter value)
+   and :val-ltm (trailing twelve months) columns derived from YTD subtraction."
   [ticker-or-cik & {:keys [form concepts shape as-of]
                     :or {form "10-K" shape :long}}]
   (let [chains (or concepts cash-flow-concepts)
@@ -385,7 +513,10 @@
      :shape - :long (default) or :wide
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                All three statements use point-in-time deduplication:
-               filings where :filed > as-of-date are excluded."
+               filings where :filed > as-of-date are excluded.
+
+   For 10-Q queries, long-format income and cash flow include :val-q and
+   :val-ltm columns. Balance sheet is unaffected (instant observations)."
   [ticker-or-cik & {:keys [form shape as-of]
                     :or {form "10-K" shape :long}}]
   (let [cik (company/company-cik ticker-or-cik)
