@@ -293,6 +293,24 @@
   [filing-map doc-name]
   (filing/filing-doc-url filing-map doc-name))
 
+(defn filing-document
+  "Fetch a specific named document from a filing as a raw string.
+   doc-name is the filename as it appears in the filing index.
+
+   Use (e/exhibits f) or (e/filing-index f) to discover available document names.
+   Use (e/doc-url f doc-name) if you only need the URL.
+
+   Examples:
+     ;; Fetch the subsidiaries exhibit content
+     (def f  (e/filing \"AAPL\" :form \"10-K\"))
+     (def ex (e/exhibit f \"EX-21\"))
+     (e/filing-document f (:name ex))
+
+     ;; Fetch a known attachment by name
+     (e/filing-document f \"R2.htm\")"
+  [filing-map doc-name]
+  (filing/filing-document filing-map doc-name))
+
 (defn exhibits
   "Return all exhibit entries from a filing's index as a seq of maps.
    Each map has :name :type :description :sequence.
@@ -320,9 +338,14 @@
      \"EX-31.2\" — CFO Sarbanes-Oxley certification
      \"EX-32\"   — Section 906 certifications
 
-   Example:
-     (def f (e/filing \"AAPL\" :form \"10-K\"))
+   To fetch the exhibit content, use (e/doc-url ...) to get the URL, or
+   (e/filing-document ...) to fetch the raw content string directly:
+
+     (def f  (e/filing \"AAPL\" :form \"10-K\"))
      (def ex (e/exhibit f \"EX-21\"))
+     ;; Get the SEC URL:
+     (e/doc-url f (:name ex))
+     ;; Or fetch the content directly:
      (e/filing-document f (:name ex))"
   [filing-map exhibit-type]
   (filing/filing-exhibit filing-map exhibit-type))

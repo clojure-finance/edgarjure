@@ -129,3 +129,43 @@
         (testing "correct filing is returned for n=1"
           (let [result (e/filing "AAPL" :form "10-K" :n 1)]
             (is (= "B" (:accessionNumber result)))))))))
+
+(deftest filing-document-test
+  ;; Regression for Issue #16: e/exhibit docstring referenced e/filing-document
+  ;; which did not exist as a public function. Fix: expose e/filing-document
+  ;; as a public wrapper and update the e/exhibit docstring to use it.
+  (let [mock-index {:files [{:sequence "1" :name "report.htm"
+                             :type "10-K" :description "Annual Report"
+                             :size "900000"}
+                            {:sequence "2" :name "ex21.htm"
+                             :type "EX-21" :description "Subsidiaries"
+                             :size "5000"}]
+                    :formType "10-K"}
+        mock-filing {:cik "320193" :accessionNumber "0000320193-24-000001" :form "10-K"}]
+    (testing "e/filing-document is a public function in edgar.api"
+      (is (fn? edgar.api/filing-document)
+          "e/filing-document must exist and be callable"))
+    (testing "e/filing-document delegates to filing/filing-document"
+      (let [fetched (atom nil)]
+        (with-redefs [filing/filing-document (fn [f doc & _]
+                                               (reset! fetched {:filing f :doc doc})
+                                               "<html>EX-21 content</html>")]
+          (let [result (e/filing-document mock-filing "ex21.htm")]
+            (is (= "<html>EX-21 content</html>" result))
+            (is (= "ex21.htm" (:doc @fetched)))))))
+    (testing "e/exhibit + e/filing-document workflow works end-to-end"
+      (with-redefs [filing/filing-index (fn [_] mock-index)
+                    filing/filing-document (fn [_ doc-name & _]
+                                             (str "content-of-" doc-name))]
+        (let [ex (e/exhibit mock-filing "EX-21")
+              result (e/filing-document mock-filing (:name ex))]
+          (is (= "ex21.htm" (:name ex))
+              "e/exhibit returns map with :name")
+          (is (= "content-of-ex21.htm" result)
+              "e/filing-document fetches the exhibit using (:name ex)"))))
+    (testing "e/exhibit + e/doc-url workflow also works (both examples valid)"
+      (with-redefs [filing/filing-index (fn [_] mock-index)]
+        (let [ex (e/exhibit mock-filing "EX-21")
+              url (e/doc-url mock-filing (:name ex))]
+          (is (string? url))
+          (is (clojure.string/ends-with? url "ex21.htm")))))))
