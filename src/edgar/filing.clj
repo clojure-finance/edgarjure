@@ -50,9 +50,13 @@
                             (when (= 5 (count texts))
                               {:sequence (nth texts 0)
                                :description (nth texts 1)
-                               :name (some-> (sel/select (sel/descendant (sel/tag :td) (sel/tag :a)) row)
-                                             first
-                                             (get-in [:content 0]))
+                               :name (let [doc-cell (nth cells 2 nil)
+                                           a-node (first (when doc-cell
+                                                           (sel/select (sel/tag :a) doc-cell)))]
+                                       (if a-node
+                                         (str/trim (cell-text a-node))
+                                         (let [t (str/trim (cell-text doc-cell))]
+                                           (when-not (str/blank? t) t))))
                                :type (nth texts 3)
                                :size (nth texts 4)}))))
                    (remove nil?)
