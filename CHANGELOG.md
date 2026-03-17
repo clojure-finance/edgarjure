@@ -57,6 +57,11 @@ All notable changes to edgarjure are documented here.
 - Both functions used `(mapcat (fn [[_ g]] [(reduce ...)]) ...)` — wrapping the `reduce` result in a single-element vector `[...]` solely to unwrap it via `mapcat`. Equivalent to `map`.
 - Fixed: replaced `mapcat` + vector-wrap with `map` in both functions. `dedup-by-priority` retains `mapcat` as it genuinely emits variable-length results.
 
+**`edgar.filing` — `filing-save-all!` silently overwrote duplicate filenames (Issue #9)**
+- The SEC filing index can (rarely) list duplicate `:name` entries. Without deduplication, `filing-save-all!` would download and write the same file twice, potentially clobbering a good copy.
+- Fixed: deduplicate `(:files idx)` by `:name` before the `for` loop using `(vals (into {} (map (juxt :name identity) ...)))`. Last entry wins on collision.
+- Tests: `filing-save-all-dedup-test` (2 cases: download count equals unique filenames, return value has no duplicate paths).
+
 ### Added
 
 **`edgar.api` — `e/filing-document` exposed as public function**
@@ -65,13 +70,13 @@ All notable changes to edgarjure are documented here.
 **`edgar.schema` — `CompanyArgs` schema**
 - `[:map [:ticker-or-cik TickerOrCIK]]` — used by `e/cik`, `e/company`, `e/company-name`, `e/company-metadata`.
 
-**Offline test suite expanded from 139 to 156 tests (633 → 773 assertions)**
+**Offline test suite expanded from 139 to 157 tests (633 → 777 assertions)**
 - `company_test.clj` — `tickers-by-ticker-cache-test` (2 cases)
 - `tables_test.clj` — `row-texts-preserves-blanks-test`, `extract-table-blank-header-cell-alignment-test`, updated `layout-table-test`
 - `financials_test.clj` — `to-wide-quarterly-columns-test`, `to-wide-no-quarterly-columns-test`, `dedup-restatements-returns-flat-seq-test`, `dedup-point-in-time-returns-flat-seq-test`
 - `api_docstring_test.clj` — `e-filing-limit-passthrough-test`, `filing-document-test`, `company-functions-malli-validation-test`
 - `filings_test.clj` — `get-filing-limit-passthrough-test`, `get-quarterly-index-test`
-- `filing_test.clj` — `parse-filing-index-html-name-scoping-test`
+- `filing_test.clj` — `parse-filing-index-html-name-scoping-test`, `filing-save-all-dedup-test`
 - `extract_test.clj` — `extract-items-text-heading-exclusion-test`, updated `extract-items-plain-text-fallback-test`
 - `xbrl_test.clj` — `get-concept-frame-test` (7 cases), updated ns require
 - `schema_test.clj` — `CompanyArgs-test`
