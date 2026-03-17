@@ -99,6 +99,34 @@
      </table>
    </body></html>")
 
+(def ^:private form-index-linked-description-html
+  "Filing index fixture where the description cell (column 2) contains an <a> tag,
+   not the filename cell. This is the bug case for Issue #5: the old code used
+   (sel/select (sel/descendant :td :a) row) which would grab 'Click here' from
+   the description link instead of 'ownership.xml' from the filename cell."
+  "<html><body>
+     <div id=\"formHeader\">
+       <div id=\"formName\"><strong>Form 4</strong></div>
+     </div>
+     <table class=\"tableFile\" summary=\"Document Format Files\">
+       <tr>
+         <th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th>
+       </tr>
+       <tr>
+         <td>1</td>
+         <td><a href=\"/some-related-link\">Click here for info</a></td>
+         <td>ownership.xml</td>
+         <td>4</td><td>14442</td>
+       </tr>
+       <tr>
+         <td>2</td>
+         <td>Exhibit 99</td>
+         <td><a href=\"/Archives/edgar/data/1/000001-26-001/ex99.htm\">ex99.htm</a></td>
+         <td>EX-99</td><td>5000</td>
+       </tr>
+     </table>
+   </body></html>")
+
 (deftest parse-filing-index-html-phantom-entries-test
   (testing "phantom .html entry (nbsp size) is excluded; real .xml entry is kept"
     (let [idx (#'filing/parse-filing-index-html form4-index-html)
@@ -149,6 +177,34 @@
           ex311 (->> (:files idx) (filter #(= "EX-31.1" (:type %))) first)]
       (is (some? ex311))
       (is (= "ex311.htm" (:name ex311))))))
+
+(deftest parse-filing-index-html-name-scoping-test
+  ;; Regression test for Issue #5:
+  ;; :name was extracted via (sel/select (sel/descendant :td :a) row), which
+  ;; searched ALL <a> tags across ALL <td> cells in the row.  When the
+  ;; description cell (column 2) contained a link, that link's text was
+  ;; returned instead of the filename from the document cell (column 3).
+  ;; Fix: extract :name only from the 3rd <td> (index 2 = document column).
+  (testing "filename is taken from document cell (col 3), not description cell (col 2)"
+    (let [idx (#'filing/parse-filing-index-html form-index-linked-description-html)
+          files (:files idx)
+          primary (filing/primary-doc idx)]
+      (testing "primary doc name is 'ownership.xml', not 'Click here for info'"
+        (is (= "ownership.xml" (:name primary)))
+        (is (not= "Click here for info" (:name primary))))
+      (testing "exhibit row name is extracted from its <a> tag correctly"
+        (let [ex99 (->> files (filter #(= "EX-99" (:type %))) first)]
+          (is (= "ex99.htm" (:name ex99)))))))
+  (testing "filename cell with no <a> tag falls back to cell text content"
+    ;; ownership.xml row in fixture has no <a>, just plain text
+    (let [idx (#'filing/parse-filing-index-html form-index-linked-description-html)
+          primary (filing/primary-doc idx)]
+      (is (string? (:name primary)))
+      (is (not (str/blank? (:name primary))))))
+  (testing "existing iXBRL href fixture still returns correct filename (not /ix?... path)"
+    (let [idx (#'filing/parse-filing-index-html form10k-index-html)
+          primary (filing/primary-doc idx)]
+      (is (= "report.htm" (:name primary))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; filing-text — script/style exclusion
