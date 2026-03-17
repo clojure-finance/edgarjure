@@ -105,9 +105,23 @@
    Options:
      :taxonomy - default \"us-gaap\"
      :unit     - default \"USD\"
-   Returns a dataset with columns: accn cik entityName loc end val."
+   Returns a dataset with columns: accn cik entityName loc end val.
+
+   Handles missing :columns key in the SEC response by falling back to the
+   canonical 6-column frame schema [:accn :cik :entityName :loc :end :val].
+   For non-standard column counts, positional names :col0 :col1 ... are used."
   [concept frame & {:keys [taxonomy unit] :or {taxonomy "us-gaap" unit "USD"}}]
-  (let [resp (core/edgar-get (concept-frame-url taxonomy concept unit frame))]
-    (ds/->dataset (:data resp)
-                  {:column-names (mapv keyword (:columns resp))
-                   :dataset-name (str concept "/" frame)})))
+  (let [resp (core/edgar-get (concept-frame-url taxonomy concept unit frame))
+        raw-cols (:columns resp)
+        data (:data resp)]
+    (if (or (nil? data) (empty? data))
+      (ds/->dataset {:accn [] :cik [] :entityName [] :loc [] :end [] :val []}
+                    {:dataset-name (str concept "/" frame)})
+      (let [cols (if (seq raw-cols)
+                   (mapv keyword raw-cols)
+                   (let [n (count (first data))]
+                     (if (= 6 n)
+                       [:accn :cik :entityName :loc :end :val]
+                       (mapv #(keyword (str "col" %)) (range n)))))]
+        (ds/->dataset (map #(zipmap cols %) data)
+                      {:dataset-name (str concept "/" frame)})))))
