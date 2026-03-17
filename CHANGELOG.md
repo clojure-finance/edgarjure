@@ -2,6 +2,19 @@
 
 All notable changes to edgarjure are documented here.
 
+## [0.1.8] — 2026-03-17
+
+### Added
+
+**`edgar.financials` — quarterly and LTM derivation for 10-Q flow statements**
+- For income statement and cash flow queries with `:form "10-Q"`, `normalized-statement` now computes two additional columns: `:val-q` (single-quarter value from YTD subtraction) and `:val-ltm` (trailing twelve months as sum of four consecutive `:val-q` values).
+- Q1 `:val-q` equals the reported value (already single quarter). Q2/Q3/Q4 subtract the prior quarter's cumulative YTD. LTM sums the current plus three prior quarters, crossing fiscal year boundaries via `:fy`/`:fp`. Either column is nil when required prior-period data is missing.
+- These columns are absent for 10-K queries and for balance sheet (instant) data.
+- New private functions: `prior-quarter`, `quarter-seq`, `build-ytd-lookup`, `compute-val-q`, `compute-val-ltm`, `add-quarterly-and-ltm`.
+
+**Offline test suite expanded from 131 to 139 tests (596 → 633 assertions)**
+- `financials_test.clj` — 8 new tests: `prior-quarter-test`, `quarter-seq-test`, `build-ytd-lookup-test`, `compute-val-q-test`, `compute-val-ltm-test`, `add-quarterly-and-ltm-test`, `normalized-statement-quarterly-test`, `normalized-statement-ltm-test`.
+
 ## [0.1.7] — 2026-03-17
 
 ### Fixed

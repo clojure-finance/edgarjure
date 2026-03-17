@@ -1,32 +1,35 @@
 #!/usr/bin/env python3
 """
-Pre-commit hook: reject CHANGELOG.md entries that contain encoding artifacts.
+Pre-commit hook: reject Markdown doc files that contain encoding artifacts.
 
-The CHANGELOG uses Unicode em-dashes (—, U+2014) as separators in headings.
-Copy-pasting through non-UTF-8 channels can corrupt these to a literal ASCII
-question mark (?).  This hook catches that corruption before it lands in git.
+The CHANGELOG and PROJECT_SUMMARY use Unicode em-dashes (—, U+2014) and
+other non-ASCII characters as separators.  Shell tools like `sed` can corrupt
+these to a literal ASCII question mark (?) when inserting text via append
+commands with shell escaping.  This hook catches that corruption before it
+lands in git.
 
-Pattern detected: a word character or backtick followed by space-?-space
-followed by a letter, e.g.:  `edgar.company/ticker->cik` ? amendments
+Pattern detected: a non-whitespace character followed by space-?-space
+followed by a non-whitespace character, e.g.:
+    `edgar.financials` ? quarterly and LTM derivation
 """
 
 import subprocess
 import sys
 import re
 
-def get_staged_changelog():
-    """Return the staged content of CHANGELOG.md, or None if not staged."""
-    # Check if CHANGELOG.md is in the index at all
+CHECKED_FILES = ["CHANGELOG.md", "PROJECT_SUMMARY.md", "README.md"]
+
+def get_staged_content(filename):
+    """Return the staged content of a file, or None if not staged."""
     result = subprocess.run(
         ["git", "diff", "--cached", "--name-only"],
         capture_output=True, text=True
     )
-    if "CHANGELOG.md" not in result.stdout:
-        # Not staged — nothing to check
+    if filename not in result.stdout:
         return None
 
     result = subprocess.run(
-        ["git", "show", ":CHANGELOG.md"],
+        ["git", "show", f":{filename}"],
         capture_output=True
     )
     if result.returncode != 0:
@@ -34,18 +37,15 @@ def get_staged_changelog():
     try:
         return result.stdout.decode("utf-8")
     except UnicodeDecodeError:
-        # Can't decode — let git handle it
         return None
 
 def check_for_artifacts(text):
     """
     Return a list of (line_number, line) tuples where encoding artifacts
     were detected.  Artifacts are ASCII ? characters used as em-dash
-    substitutes in section headings.
+    substitutes.
 
     Looks for: non-whitespace, space, ?, space, non-whitespace
-    but only on lines that look like headings or bullet points
-    (i.e. lines starting with ** or - ).
     """
     artifact_pattern = re.compile(r'\S \? \S')
     bad_lines = []
@@ -55,24 +55,33 @@ def check_for_artifacts(text):
     return bad_lines
 
 def main():
-    content = get_staged_changelog()
-    if content is None:
-        # CHANGELOG.md not staged — nothing to check
+    all_bad = {}
+
+    for filename in CHECKED_FILES:
+        content = get_staged_content(filename)
+        if content is None:
+            continue
+        bad = check_for_artifacts(content)
+        if bad:
+            all_bad[filename] = bad
+
+    if not all_bad:
         sys.exit(0)
 
-    bad = check_for_artifacts(content)
-    if not bad:
-        sys.exit(0)
-
-    print("COMMIT REJECTED: CHANGELOG.md contains encoding artifacts.", file=sys.stderr)
+    print("COMMIT REJECTED: Markdown files contain encoding artifacts.", file=sys.stderr)
     print("", file=sys.stderr)
-    print("Em-dashes (—) have been corrupted to ASCII '?' in the following lines:", file=sys.stderr)
+    print("Em-dashes (\u2014) have been corrupted to ASCII '?' in the following lines:", file=sys.stderr)
     print("", file=sys.stderr)
-    for lineno, line in bad:
-        print(f"  Line {lineno}: {line}", file=sys.stderr)
-    print("", file=sys.stderr)
+    for filename, bad_lines in all_bad.items():
+        print(f"  {filename}:", file=sys.stderr)
+        for lineno, line in bad_lines:
+            print(f"    Line {lineno}: {line}", file=sys.stderr)
+        print("", file=sys.stderr)
     print("Fix: replace ' ? ' with ' \u2014 ' (U+2014 em-dash) in the affected lines.", file=sys.stderr)
     print("     Em-dash character to copy: \u2014", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Root cause: `sed -i` append commands mangle Unicode characters.", file=sys.stderr)
+    print("Prevention: use Python for all multi-line doc insertions.", file=sys.stderr)
     sys.exit(1)
 
 if __name__ == "__main__":

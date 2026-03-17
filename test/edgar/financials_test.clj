@@ -331,3 +331,188 @@
       (let [result (f facts-ds chains "10-K" :instant "2023-06-01")]
         (is (= 1 (ds/row-count result)) "only 2022 period visible before as-of")
         (is (= 90 (first (ds/column result :val))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Quarterly and LTM derivation
+;;; ---------------------------------------------------------------------------
+
+(deftest prior-quarter-test
+  (let [f #'edgar.financials/prior-quarter]
+    (testing "Q1 wraps to prior year Q4"
+      (is (= [2023 "Q4"] (f 2024 "Q1"))))
+    (testing "Q2 -> Q1 same year"
+      (is (= [2024 "Q1"] (f 2024 "Q2"))))
+    (testing "Q3 -> Q2 same year"
+      (is (= [2024 "Q2"] (f 2024 "Q3"))))
+    (testing "Q4 -> Q3 same year"
+      (is (= [2024 "Q3"] (f 2024 "Q4"))))
+    (testing "non-quarter fp returns nil"
+      (is (nil? (f 2024 "FY"))))))
+
+(deftest quarter-seq-test
+  (let [f #'edgar.financials/quarter-seq]
+    (testing "generates backward sequence crossing fiscal year boundary"
+      (is (= [[2024 "Q2"] [2024 "Q1"] [2023 "Q4"] [2023 "Q3"]]
+             (take 4 (f 2024 "Q3")))))
+    (testing "from Q1 goes to prior year"
+      (is (= [[2023 "Q4"] [2023 "Q3"] [2023 "Q2"]]
+             (take 3 (f 2024 "Q1")))))))
+
+(deftest build-ytd-lookup-test
+  (let [f #'edgar.financials/build-ytd-lookup]
+    (testing "builds lookup from rows with valid fy/fp"
+      (let [rows [{:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q1" :val 100}
+                  {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q2" :val 210}]
+            lookup (f rows)]
+        (is (= 100 (get lookup ["Revenue" "USD" 2024 "Q1"])))
+        (is (= 210 (get lookup ["Revenue" "USD" 2024 "Q2"])))))
+    (testing "skips rows with FY or nil fy"
+      (let [rows [{:line-item "Revenue" :unit "USD" :fy 2024 :fp "FY" :val 400}
+                  {:line-item "Revenue" :unit "USD" :fy nil :fp "Q1" :val 100}]
+            lookup (f rows)]
+        (is (empty? lookup))))
+    (testing "falls back to :concept when :line-item absent"
+      (let [rows [{:concept "Revenues" :unit "USD" :fy 2024 :fp "Q1" :val 100}]
+            lookup (f rows)]
+        (is (= 100 (get lookup ["Revenues" "USD" 2024 "Q1"])))))))
+
+(deftest compute-val-q-test
+  (let [f #'edgar.financials/compute-val-q
+        ytd-lookup {["Revenue" "USD" 2024 "Q1"] 100
+                    ["Revenue" "USD" 2024 "Q2"] 210
+                    ["Revenue" "USD" 2024 "Q3"] 330}]
+    (testing "Q1 returns reported value (already single quarter)"
+      (is (= 100 (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q1" :val 100}
+                    ytd-lookup))))
+    (testing "Q2 subtracts Q1 YTD"
+      (is (= 110 (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q2" :val 210}
+                    ytd-lookup))))
+    (testing "Q3 subtracts Q2 YTD"
+      (is (= 120 (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q3" :val 330}
+                    ytd-lookup))))
+    (testing "Q4 subtracts Q3 YTD"
+      (is (= 170 (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q4" :val 500}
+                    ytd-lookup))))
+    (testing "returns nil when prior YTD missing"
+      (is (nil? (f {:line-item "Revenue" :unit "USD" :fy 2025 :fp "Q2" :val 200}
+                   ytd-lookup))))
+    (testing "returns nil for FY rows"
+      (is (nil? (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "FY" :val 400}
+                   ytd-lookup))))
+    (testing "returns nil when fy is nil"
+      (is (nil? (f {:line-item "Revenue" :unit "USD" :fy nil :fp "Q1" :val 100}
+                   ytd-lookup))))))
+
+(deftest compute-val-ltm-test
+  (let [f #'edgar.financials/compute-val-ltm
+        val-q-lookup {["Revenue" "USD" 2023 "Q2"] 100
+                      ["Revenue" "USD" 2023 "Q3"] 110
+                      ["Revenue" "USD" 2023 "Q4"] 120
+                      ["Revenue" "USD" 2024 "Q1"] 130
+                      ["Revenue" "USD" 2024 "Q2"] 140}]
+    (testing "sums four consecutive quarters"
+      (is (= (+ 130 120 110 100)
+             (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q1"}
+                val-q-lookup))))
+    (testing "sums four quarters crossing fiscal year"
+      (is (= (+ 140 130 120 110)
+             (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q2"}
+                val-q-lookup))))
+    (testing "returns nil when a prior quarter is missing"
+      (is (nil? (f {:line-item "Revenue" :unit "USD" :fy 2023 :fp "Q2"}
+                   val-q-lookup))))
+    (testing "returns nil for non-quarter fp"
+      (is (nil? (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "FY"}
+                   val-q-lookup))))))
+
+(deftest add-quarterly-and-ltm-test
+  (let [f #'edgar.financials/add-quarterly-and-ltm]
+    (testing "10-K data is returned unchanged — no :val-q or :val-ltm columns"
+      (let [ds (ds/->dataset [{:line-item "Revenue" :val 400 :fy 2024 :fp "FY"
+                               :unit "USD" :end "2024-09-30"}])
+            result (f ds "10-K")]
+        (is (= ds result))
+        (is (not (some #{:val-q} (ds/column-names result))))))
+    (testing "10-Q data gets :val-q and :val-ltm columns"
+      (let [ds (ds/->dataset
+                [{:line-item "Revenue" :val 100 :fy 2024 :fp "Q1"
+                  :unit "USD" :end "2024-03-31" :concept "Revenues"}
+                 {:line-item "Revenue" :val 210 :fy 2024 :fp "Q2"
+                  :unit "USD" :end "2024-06-30" :concept "Revenues"}])
+            result (f ds "10-Q")
+            rows (vec (ds/rows result {:nil-missing? true}))]
+        (is (some #{:val-q} (ds/column-names result)))
+        (is (some #{:val-ltm} (ds/column-names result)))
+        (is (= 100 (:val-q (first rows))))
+        (is (= 110 (:val-q (second rows))))))
+    (testing "empty dataset returns empty dataset"
+      (let [result (f (ds/->dataset []) "10-Q")]
+        (is (= 0 (ds/row-count result)))))))
+
+(deftest normalized-statement-quarterly-test
+  (let [f #'edgar.financials/normalized-statement
+        facts-ds (ds/->dataset
+                  [{:concept "Revenues" :form "10-Q" :val 100
+                    :unit "USD" :start "2023-10-01" :end "2023-12-31"
+                    :filed "2024-02-01" :fy 2024 :fp "Q1" :frame nil}
+                   {:concept "Revenues" :form "10-Q" :val 210
+                    :unit "USD" :start "2023-10-01" :end "2024-03-31"
+                    :filed "2024-05-01" :fy 2024 :fp "Q2" :frame nil}
+                   {:concept "Revenues" :form "10-Q" :val 330
+                    :unit "USD" :start "2023-10-01" :end "2024-06-30"
+                    :filed "2024-08-01" :fy 2024 :fp "Q3" :frame nil}])
+        chains [["Revenue" "Revenues"]]]
+    (testing "10-Q normalized statement includes :val-q column"
+      (let [result (f facts-ds chains "10-Q" :duration nil)
+            rows (->> (ds/rows result {:nil-missing? true})
+                      (sort-by :end)
+                      vec)]
+        (is (some #{:val-q} (ds/column-names result)))
+        (is (= 100 (:val-q (nth rows 0))) "Q1 val-q = reported")
+        (is (= 110 (:val-q (nth rows 1))) "Q2 val-q = 210 - 100")
+        (is (= 120 (:val-q (nth rows 2))) "Q3 val-q = 330 - 210")))
+    (testing "10-K normalized statement does NOT include :val-q"
+      (let [facts-10k (ds/->dataset
+                       [{:concept "Revenues" :form "10-K" :val 400
+                         :unit "USD" :start "2023-10-01" :end "2024-09-30"
+                         :filed "2024-11-01" :fy 2024 :fp "FY" :frame nil}])
+            result (f facts-10k chains "10-K" :duration nil)]
+        (is (not (some #{:val-q} (ds/column-names result))))))))
+
+(deftest normalized-statement-ltm-test
+  (let [f #'edgar.financials/normalized-statement
+        facts-ds (ds/->dataset
+                  [{:concept "Revenues" :form "10-Q" :val 100
+                    :unit "USD" :start "2022-10-01" :end "2022-12-31"
+                    :filed "2023-02-01" :fy 2023 :fp "Q1" :frame nil}
+                   {:concept "Revenues" :form "10-Q" :val 210
+                    :unit "USD" :start "2022-10-01" :end "2023-03-31"
+                    :filed "2023-05-01" :fy 2023 :fp "Q2" :frame nil}
+                   {:concept "Revenues" :form "10-Q" :val 330
+                    :unit "USD" :start "2022-10-01" :end "2023-06-30"
+                    :filed "2023-08-01" :fy 2023 :fp "Q3" :frame nil}
+                   {:concept "Revenues" :form "10-Q" :val 460
+                    :unit "USD" :start "2022-10-01" :end "2023-09-30"
+                    :filed "2023-11-01" :fy 2023 :fp "Q4" :frame nil}
+                   {:concept "Revenues" :form "10-Q" :val 140
+                    :unit "USD" :start "2023-10-01" :end "2023-12-31"
+                    :filed "2024-02-01" :fy 2024 :fp "Q1" :frame nil}])
+        chains [["Revenue" "Revenues"]]]
+    (testing "LTM computed when four consecutive quarters available"
+      (let [result (f facts-ds chains "10-Q" :duration nil)
+            rows (->> (ds/rows result {:nil-missing? true})
+                      (sort-by :end)
+                      vec)
+            q4-row (nth rows 3)
+            q1-fy24-row (nth rows 4)]
+        (is (= (+ 100 110 120 130) (:val-ltm q4-row))
+            "Q4 FY2023 LTM = Q1+Q2+Q3+Q4 = 100+110+120+130")
+        (is (= (+ 140 130 120 110) (:val-ltm q1-fy24-row))
+            "Q1 FY2024 LTM = Q1(140)+Q4(130)+Q3(120)+Q2(110)")))
+    (testing "LTM is nil when prior quarters are missing"
+      (let [result (f facts-ds chains "10-Q" :duration nil)
+            rows (->> (ds/rows result {:nil-missing? true})
+                      (sort-by :end)
+                      vec)
+            q1-row (first rows)]
+        (is (nil? (:val-ltm q1-row)) "Q1 FY2023 has no prior 3 quarters")))))
