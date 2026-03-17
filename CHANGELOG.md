@@ -2,6 +2,81 @@
 
 All notable changes to edgarjure are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+**`edgar.company` — `tickers-by-ticker` map rebuilt on every call (Issue #2)**
+- Added `tickers-by-ticker-cache` atom populated once in `load-tickers!` alongside `tickers-cache`. Previously the full 13,000-entry ticker→CIK map was re-derived on every `ticker->cik` invocation.
+- `clear-cache!` resets both atoms. `tickers-by-ticker` is now a simple deref.
+
+**`edgar.dataset` — removed unused `tech.v3.dataset.rolling` require (Issue #14)**
+- `[tech.v3.dataset.rolling :as ds-roll]` was required but never referenced in any source form. Removed.
+
+**`edgar.tables` — blank header cells broke column alignment (Issue #6)**
+- `row-texts` stripped blank cells via `filterv (not blank?)`, causing headers like `["A" "" "B"]` to collapse to 2 columns and silently misalign all data rows.
+- Fixed: `row-texts` now preserves all cells. `layout-table?` and the header-finder use non-blank cell count for the ≥2 threshold.
+
+**`edgar.financials` — `:val-q` and `:val-ltm` dropped in wide format (Issue #8)**
+- `to-wide` only emitted `(:line-item r) -> (:val r)`, silently discarding the `:val-q` and `:val-ltm` columns present in 10-Q flow statement output.
+- Fixed: `to-wide` detects `:val-q`/`:val-ltm` on the dataset and emits `"<line-item> (Q)"` / `"<line-item> (LTM)"` columns alongside the plain YTD value.
+
+**`edgar.api` / `edgar.filings` — `e/filing` fetched all pages to return nth element (Issue #1)**
+- `e/filing` and `filings/get-filing` called `get-filings` without `:limit`, forcing full pagination even when only the nth element was needed.
+- Fixed: both now pass `:limit (inc n)` so pagination stops after the needed element.
+
+**`edgar.filing` — `parse-filing-index-html` `:name` extracted from wrong cell (Issue #5)**
+- The `:name` selector used `(sel/select (sel/descendant :td :a) row)` — searching all `<a>` tags across all cells. If the description cell had a link and the filename cell did not, the wrong text was returned.
+- Fixed: extract `:name` only from `(nth cells 2 nil)` (the document column); fall back to cell text if no `<a>` is present.
+
+**`edgar.filings` — `get-quarterly-index` fragile header skip and wrong column mapping (Issue #3)**
+- `(drop 10)` assumed exactly 10 header lines; the actual header length varies. Also `:cik` was mapped to `(nth parts 0)` when the actual column order is `company-name|form-type|date-filed|filename|cik`.
+- Fixed: replaced `(drop 10)` with `(drop-while (complement data-line?))` keyed on `YYYY-MM-DD` in field 2. All five column mappings corrected; `str/trim` added to all fields.
+
+**`edgar.extract` — `extract-items-text` included heading line in `:text` (Issue #12)**
+- The plain-text path sliced body as `(subs text :start next-start)` — `:start` being the beginning of the `ITEM X. TITLE` match — so the heading was included. The HTML path excludes heading nodes.
+- Fixed: store `:end` (position after the heading) per match; body is now `(subs text :end next-start)`.
+
+**`edgar.xbrl` — `get-concept-frame` crashed on missing `:columns`; broke with row-vector data (Issue #13)**
+- Two bugs: (1) absent `:columns` key caused `(mapv keyword nil)` crash; (2) `ds/->dataset` does not accept row-vectors with `:column-names` — the implementation was always broken for non-empty `:data`.
+- Fixed: nil/empty `:columns` falls back to canonical `[:accn :cik :entityName :loc :end :val]` (or positional `:colN` for non-standard counts). Row-vectors converted to seq-of-maps via `(map #(zipmap cols %) data)`.
+
+**`edgar.api` — `e/exhibit` docstring referenced non-public `e/filing-document` (Issue #16)**
+- The docstring example `(e/filing-document f (:name ex))` referred to a function that was not exposed in `edgar.api`.
+- Fixed: `e/filing-document` is now a public wrapper in `edgar.api`. The `e/exhibit` docstring updated to show both `e/doc-url` and `e/filing-document` as valid patterns.
+
+**`edgar.api` / `edgar.schema` — four company functions lacked Malli validation (Issue #15)**
+- `e/cik`, `e/company`, `e/company-name`, `e/company-metadata` accepted any input without validation, inconsistent with all other `edgar.api` public functions.
+- Fixed: added `CompanyArgs` schema to `edgar.schema`; each function now calls `(schema/validate! schema/CompanyArgs ...)` at entry.
+
+**`edgar.core` — `cache-evict!` ran O(n) scan on every `cache-put!` (Issue #10)**
+- Every write to the cache triggered a full expired-entry scan, becoming expensive for large caches in long-running processes.
+- Fixed: throttled to every 100th put via `put-count` atom and `eviction-interval` (100). `clear-cache!` resets the counter so the first post-clear put always evicts.
+
+**`edgar.financials` — `dedup-restatements` and `dedup-point-in-time` used unnecessary `mapcat`+vector-wrap (Issue #11)**
+- Both functions used `(mapcat (fn [[_ g]] [(reduce ...)]) ...)` — wrapping the `reduce` result in a single-element vector `[...]` solely to unwrap it via `mapcat`. Equivalent to `map`.
+- Fixed: replaced `mapcat` + vector-wrap with `map` in both functions. `dedup-by-priority` retains `mapcat` as it genuinely emits variable-length results.
+
+### Added
+
+**`edgar.api` — `e/filing-document` exposed as public function**
+- Fetches a specific named document from a filing as a raw string. Complements `e/doc-url` and `e/exhibit`.
+
+**`edgar.schema` — `CompanyArgs` schema**
+- `[:map [:ticker-or-cik TickerOrCIK]]` — used by `e/cik`, `e/company`, `e/company-name`, `e/company-metadata`.
+
+**Offline test suite expanded from 139 to 156 tests (633 → 773 assertions)**
+- `company_test.clj` — `tickers-by-ticker-cache-test` (2 cases)
+- `tables_test.clj` — `row-texts-preserves-blanks-test`, `extract-table-blank-header-cell-alignment-test`, updated `layout-table-test`
+- `financials_test.clj` — `to-wide-quarterly-columns-test`, `to-wide-no-quarterly-columns-test`, `dedup-restatements-returns-flat-seq-test`, `dedup-point-in-time-returns-flat-seq-test`
+- `api_docstring_test.clj` — `e-filing-limit-passthrough-test`, `filing-document-test`, `company-functions-malli-validation-test`
+- `filings_test.clj` — `get-filing-limit-passthrough-test`, `get-quarterly-index-test`
+- `filing_test.clj` — `parse-filing-index-html-name-scoping-test`
+- `extract_test.clj` — `extract-items-text-heading-exclusion-test`, updated `extract-items-plain-text-fallback-test`
+- `xbrl_test.clj` — `get-concept-frame-test` (7 cases), updated ns require
+- `schema_test.clj` — `CompanyArgs-test`
+- `core_test.clj` — `cache-eviction-throttled-test`
+
 ## [0.1.8] — 2026-03-17
 
 ### Added
