@@ -96,6 +96,31 @@
             result (vec (f unique-rows))]
         (is (= 2 (count result)))))))
 
+(deftest dedup-restatements-returns-flat-seq-test
+  ;; Regression clarity test for Issue #11:
+  ;; The old code used (mapcat (fn [[_ g]] [(reduce ...)]) ...) — wrapping
+  ;; the reduce result in a vector purely to unwrap it via mapcat.
+  ;; Fixed to (map (fn [[_ g]] (reduce ...)) ...) — same result, clearer intent.
+  ;; This test explicitly verifies the output is a flat seq of maps, not a
+  ;; seq of single-element vectors.
+  (let [f #'edgar.financials/dedup-restatements
+        rows [{:concept "Assets" :unit "USD" :start nil :end "2023-09-30"
+               :filed "2023-11-03" :val 100}
+              {:concept "Assets" :unit "USD" :start nil :end "2023-09-30"
+               :filed "2024-01-15" :val 105}
+              {:concept "Liabilities" :unit "USD" :start nil :end "2023-09-30"
+               :filed "2023-11-03" :val 50}]
+        result (vec (f rows))]
+    (testing "result is a seq of plain maps, not a seq of vectors"
+      (is (every? map? result)
+          "each element must be a plain map, not a single-element vector"))
+    (testing "count is one per unique [concept unit start end] group"
+      (is (= 2 (count result))))
+    (testing "values are accessible directly as map keys (not via first)"
+      (let [assets-row (first (filter #(= "Assets" (:concept %)) result))]
+        (is (= 105 (:val assets-row))
+            "latest-filed value must be accessible directly via :val")))))
+
 (deftest dedup-by-priority-test
   (let [f #'edgar.financials/dedup-by-priority
         concept->label {"CashAndCashEquivalentsAtCarryingValue" "Cash and Equivalents"
@@ -166,6 +191,28 @@
                   {:concept "Revenue" :unit "USD" :start "2023-01-01" :end "2023-09-30" :filed "2023-11-03" :val 900}]
             result (vec (f rows "2024-01-01"))]
         (is (= 2 (count result)) "3-month and 9-month windows must not be collapsed")))))
+
+(deftest dedup-point-in-time-returns-flat-seq-test
+  ;; Same class of fix as dedup-restatements — verifies flat seq output.
+  (let [f #'edgar.financials/dedup-point-in-time
+        rows [{:concept "Assets" :unit "USD" :start nil :end "2023-09-30"
+               :filed "2023-11-03" :val 100}
+              {:concept "Assets" :unit "USD" :start nil :end "2023-09-30"
+               :filed "2024-01-15" :val 105}
+              {:concept "Liabilities" :unit "USD" :start nil :end "2023-09-30"
+               :filed "2023-11-03" :val 50}]
+        result (vec (f rows nil))]
+    (testing "result (as-of nil path) is a seq of plain maps"
+      (is (every? map? result)))
+    (testing "count is one per group"
+      (is (= 2 (count result))))
+    (testing "values accessible directly"
+      (is (= 105 (:val (first (filter #(= "Assets" (:concept %)) result))))))
+    (testing "result (as-of path) is also a seq of plain maps"
+      (let [result (vec (f rows "2023-12-31"))]
+        (is (every? map? result))
+        (is (= 2 (count result)))
+        (is (= 100 (:val (first (filter #(= "Assets" (:concept %)) result)))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; to-wide

@@ -183,8 +183,8 @@
   [rows]
   (->> rows
        (group-by (juxt :concept :unit :start :end))
-       (mapcat (fn [[_ group]]
-                 [(reduce #(if (pos? (compare (:filed %1) (:filed %2))) %1 %2) group)]))))
+       (map (fn [[_ group]]
+              (reduce #(if (pos? (compare (:filed %1) (:filed %2))) %1 %2) group)))))
 
 (defn- dedup-point-in-time
   "Point-in-time (look-ahead-safe) restatement deduplication.
@@ -204,8 +204,8 @@
     (->> rows
          (filter #(not (pos? (compare (:filed %) as-of-date))))
          (group-by (juxt :concept :unit :start :end))
-         (mapcat (fn [[_ group]]
-                   [(reduce #(if (pos? (compare (:filed %1) (:filed %2))) %1 %2) group)])))))
+         (map (fn [[_ group]]
+                (reduce #(if (pos? (compare (:filed %1) (:filed %2))) %1 %2) group))))))
 
 (defn- dedup-by-priority
   "Within each [line-item unit start end] group, keep only the row whose
