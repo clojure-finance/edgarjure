@@ -9,17 +9,21 @@
 ;;; ---------------------------------------------------------------------------
 
 (def ^:private tickers-cache (atom nil))
+(def ^:private tickers-by-ticker-cache (atom nil))
 
 (defn- load-tickers! []
   (when-not @tickers-cache
-    (reset! tickers-cache
-            (core/edgar-get core/tickers-url)))
+    (let [data (core/edgar-get core/tickers-url)]
+      (reset! tickers-cache data)
+      (reset! tickers-by-ticker-cache
+              (into {}
+                    (map (fn [[_ v]] [(str/upper-case (:ticker v)) v]))
+                    data))))
   @tickers-cache)
 
 (defn- tickers-by-ticker []
-  (into {}
-        (map (fn [[_ v]] [(str/upper-case (:ticker v)) v]))
-        (load-tickers!)))
+  (load-tickers!)
+  @tickers-by-ticker-cache)
 
 (defn ticker->cik
   "Resolve a ticker symbol to a CIK string (zero-padded to 10 digits).

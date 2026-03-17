@@ -190,3 +190,43 @@
                                         :inc_states ["CA"]}}]}})]
       (let [results (company/search-companies "apple" :limit 10)]
         (is (= 1 (count results)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; tickers-by-ticker-cache — populated once alongside tickers-cache
+;;; ---------------------------------------------------------------------------
+
+(deftest tickers-by-ticker-cache-test
+  (testing "tickers-by-ticker-cache is populated on first load-tickers! call"
+    (let [call-count (atom 0)
+          fake-data {0 {:cik_str "320193" :ticker "AAPL"}
+                     1 {:cik_str "789019" :ticker "MSFT"}}]
+      (with-redefs [edgar.core/edgar-get
+                    (fn [_]
+                      (swap! call-count inc)
+                      fake-data)]
+        ;; Reset both caches so load-tickers! will fetch
+        (reset! (var-get #'edgar.company/tickers-cache) nil)
+        (reset! (var-get #'edgar.company/tickers-by-ticker-cache) nil)
+        ;; First call populates both caches
+        (#'edgar.company/load-tickers!)
+        (is (= 1 @call-count) "edgar-get called exactly once")
+        (let [cache @(var-get #'edgar.company/tickers-by-ticker-cache)]
+          (is (map? cache))
+          (is (contains? cache "AAPL"))
+          (is (contains? cache "MSFT")))
+        ;; Second call must not re-fetch
+        (#'edgar.company/load-tickers!)
+        (is (= 1 @call-count) "edgar-get not called again on second load-tickers!"))))
+  (testing "tickers-by-ticker returns the cached map on repeated calls"
+    (let [call-count (atom 0)
+          fake-data {0 {:cik_str "320193" :ticker "AAPL"}}]
+      (with-redefs [edgar.core/edgar-get
+                    (fn [_]
+                      (swap! call-count inc)
+                      fake-data)]
+        (reset! (var-get #'edgar.company/tickers-cache) nil)
+        (reset! (var-get #'edgar.company/tickers-by-ticker-cache) nil)
+        (let [m1 (#'edgar.company/tickers-by-ticker)
+              m2 (#'edgar.company/tickers-by-ticker)]
+          (is (identical? m1 m2) "same map object returned on repeated calls")
+          (is (= 1 @call-count) "edgar-get called only once across both calls"))))))
