@@ -87,7 +87,40 @@
     (testing "table with multi-cell rows is not a layout table"
       (is (not (f [["a" "b"] ["1" "2"] ["3" "4"]]))))
     (testing "empty rows is a layout table"
-      (is (f [])))))
+      (is (f [])))
+    (testing "rows with one populated cell and one blank are still single-cell (layout)"
+      ;; ["a" ""] has 1 non-blank cell → layout
+      (is (f [["a" ""] ["b" ""]])))
+    (testing "rows with 2+ non-blank cells are not layout even if blanks present"
+      ;; ["a" "" "b"] has 2 non-blank cells → not layout
+      (is (not (f [["a" "" "b"] ["1" "" "2"]]))))))
+
+;;; ---------------------------------------------------------------------------
+;;; row-texts — preserves blank cells for column alignment
+;;; ---------------------------------------------------------------------------
+
+(deftest row-texts-preserves-blanks-test
+  (let [f #'edgar.tables/row-texts]
+    (testing "blank cells are preserved (not filtered out)"
+      (let [tr {:type :element :tag :tr :attrs {}
+                :content [{:type :element :tag :td :attrs {} :content ["A"]}
+                          {:type :element :tag :td :attrs {} :content [""]}
+                          {:type :element :tag :td :attrs {} :content ["B"]}]}]
+        (let [result (f tr)]
+          (is (= 3 (count result)) "all three cells returned including blank")
+          (is (= "A" (first result)))
+          (is (str/blank? (second result)) "middle blank cell is preserved")
+          (is (= "B" (nth result 2))))))
+    (testing "fully empty row returns vector of blank strings (one per cell)"
+      (let [tr {:type :element :tag :tr :attrs {}
+                :content [{:type :element :tag :td :attrs {} :content [""]}
+                          {:type :element :tag :td :attrs {} :content [""]}]}]
+        (let [result (f tr)]
+          (is (= 2 (count result)))
+          (is (every? str/blank? result)))))
+    (testing "no cells returns empty vector"
+      (let [tr {:type :element :tag :tr :attrs {} :content []}]
+        (is (= [] (f tr)))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; matrix->dataset
@@ -253,6 +286,34 @@
         table-node (first (sel/select (sel/tag :table) tree))]
     (testing "layout table returns nil"
       (is (nil? (f table-node 0))))))
+
+(deftest extract-table-blank-header-cell-alignment-test
+  ;; Regression test for Issue #6:
+  ;; Header row ["A" "" "B"] was previously stripped to ["A" "B"] (2 cols),
+  ;; misaligning 3-column data rows and silently dropping the middle column.
+  (let [f #'edgar.tables/extract-table
+        html "<table>
+          <tr><th>Company</th><th></th><th>Revenue</th></tr>
+          <tr><td>AAPL</td><td>2024</td><td>394328</td></tr>
+          <tr><td>MSFT</td><td>2024</td><td>211915</td></tr>
+        </table>"
+        tree (hickory/as-hickory (hickory/parse html))
+        table-node (first (sel/select (sel/tag :table) tree))
+        result (f table-node 0)]
+    (testing "returns a dataset"
+      (is (instance? tech.v3.dataset.impl.dataset.Dataset result)))
+    (testing "3 columns preserved even though middle header cell is blank"
+      (is (= 3 (ds/column-count result))))
+    (testing "Revenue column is at index 2, not index 1"
+      (let [col-names (mapv name (ds/column-names result))]
+        (is (= "Revenue" (nth col-names 2)))))
+    (testing "Revenue data is not shifted — contains 394328 and 211915"
+      (let [rev-col (ds/column result "Revenue")]
+        (is (= #{394328 211915} (set rev-col)))))
+    (testing "middle column (auto-named col_1) contains the year values 2024"
+      ;; blank header → auto-named "col_1"
+      (let [col-names (set (map name (ds/column-names result)))]
+        (is (contains? col-names "col_1"))))))
 
 (deftest extract-table-nested-no-double-count-test
   (let [f #'edgar.tables/extract-table
