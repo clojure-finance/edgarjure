@@ -37,7 +37,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ```clojure
 ;; deps.edn
-{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.1.8"}}}
+{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.1.9"}}}
 ```
 
 ## Getting Started
