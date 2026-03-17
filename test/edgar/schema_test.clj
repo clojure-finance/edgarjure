@@ -32,6 +32,24 @@
 ;;; FilingArgs — optional fields and required fields
 ;;; ---------------------------------------------------------------------------
 
+(deftest CompanyArgs-test
+  (testing "valid with a ticker string"
+    (is (nil? (schema/validate! schema/CompanyArgs {:ticker-or-cik "AAPL"}))))
+  (testing "valid with a numeric CIK string"
+    (is (nil? (schema/validate! schema/CompanyArgs {:ticker-or-cik "0000320193"}))))
+  (testing "throws when :ticker-or-cik is blank"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (schema/validate! schema/CompanyArgs {:ticker-or-cik ""}))))
+  (testing "throws when :ticker-or-cik is missing"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (schema/validate! schema/CompanyArgs {}))))
+  (testing "throws when :ticker-or-cik is nil"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (schema/validate! schema/CompanyArgs {:ticker-or-cik nil}))))
+  (testing "throws when :ticker-or-cik is not a string"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (schema/validate! schema/CompanyArgs {:ticker-or-cik 320193})))))
+
 (deftest FilingArgs-required-fields
   (testing "valid with all fields"
     (is (nil? (schema/validate! schema/FilingArgs

@@ -60,6 +60,10 @@
   [:map
    [:name-and-email NonBlankString]])
 
+(def CompanyArgs
+  [:map
+   [:ticker-or-cik TickerOrCIK]])
+
 (def FilingsArgs
   [:map
    [:ticker-or-cik TickerOrCIK]
