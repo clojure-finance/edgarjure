@@ -424,7 +424,7 @@ SEC enforces a `User-Agent` header and a rate limit of ~10 requests/second. edga
 # Start REPL on port 7888
 clj -M:nrepl
 
-# Run offline unit tests (129 tests, 584 assertions, no network)
+# Run offline unit tests (131 tests, 596 assertions, no network)
 clj -M:test
 
 # Run live integration tests (manual only, requires network)
