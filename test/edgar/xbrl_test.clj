@@ -1,6 +1,8 @@
 (ns edgar.xbrl-test
   (:require [clojure.test :refer [deftest is testing]]
-            [edgar.xbrl :as xbrl]))
+            [edgar.core :as core]
+            [edgar.xbrl :as xbrl]
+            [tech.v3.dataset :as ds]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; concept-frame-url
@@ -36,6 +38,65 @@
     (is (clojure.string/includes?
          (xbrl/concept-frame-url "us-gaap" "Assets" "USD" "CY2023Q4I")
          "/USD/"))))
+
+(deftest get-concept-frame-test
+  ;; All cases use with-redefs on core/edgar-get to avoid network calls.
+  (let [normal-resp {:taxonomy "us-gaap"
+                     :tag "Assets"
+                     :columns ["accn" "cik" "entityName" "loc" "end" "val"]
+                     :data [["acc1" "320193" "Apple Inc." "US-CA" "2023-09-30" 352583000000]
+                            ["acc2" "789019" "Microsoft" "US-WA" "2023-06-30" 411976000000]]}]
+    (testing "normal response — :columns present — returns correct dataset"
+      (with-redefs [core/edgar-get (fn [_] normal-resp)]
+        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")
+              cols (set (map name (ds/column-names result)))]
+          (is (= 2 (ds/row-count result)))
+          (is (contains? cols "accn"))
+          (is (contains? cols "cik"))
+          (is (contains? cols "entityName"))
+          (is (contains? cols "loc"))
+          (is (contains? cols "end"))
+          (is (contains? cols "val")))))
+
+    (testing "missing :columns key — falls back to canonical column names"
+      ;; Regression for Issue #13: (mapv keyword nil) crashed with ClassCastException
+      (with-redefs [core/edgar-get (fn [_] (dissoc normal-resp :columns))]
+        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")
+              cols (set (map name (ds/column-names result)))]
+          (is (= 2 (ds/row-count result))
+              "data rows must still be returned when :columns is absent")
+          (is (= #{"accn" "cik" "entityName" "loc" "end" "val"} cols)
+              "canonical column names used as fallback"))))
+
+    (testing "empty :columns vector — falls back to canonical column names"
+      (with-redefs [core/edgar-get (fn [_] (assoc normal-resp :columns []))]
+        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")
+              cols (set (map name (ds/column-names result)))]
+          (is (= 2 (ds/row-count result)))
+          (is (= #{"accn" "cik" "entityName" "loc" "end" "val"} cols)))))
+
+    (testing "empty :data — returns empty dataset with canonical columns"
+      (with-redefs [core/edgar-get (fn [_] (assoc normal-resp :data []))]
+        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")]
+          (is (= 0 (ds/row-count result)))
+          (is (contains? (set (map name (ds/column-names result))) "val")))))
+
+    (testing "nil :data — returns empty dataset with canonical columns"
+      (with-redefs [core/edgar-get (fn [_] {:columns ["accn" "cik" "entityName" "loc" "end" "val"] :data nil})]
+        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")]
+          (is (= 0 (ds/row-count result))))))
+
+    (testing "non-standard column count — uses positional :col0 :col1 ... names"
+      (with-redefs [core/edgar-get (fn [_] {:data [["a" "b" "c"] ["d" "e" "f"]]})]
+        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")
+              cols (set (map name (ds/column-names result)))]
+          (is (= 2 (ds/row-count result)))
+          (is (= #{"col0" "col1" "col2"} cols)))))
+
+    (testing "dataset-name is set to concept/frame"
+      (with-redefs [core/edgar-get (fn [_] normal-resp)]
+        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")]
+          (is (= "Assets/CY2023Q4I" (ds/dataset-name result))))))))
 
 (def ^:private stub-facts-map
   {:entityName "Test Corp"
