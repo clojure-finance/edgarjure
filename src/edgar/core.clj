@@ -56,6 +56,19 @@
 
 (def ^:private cache (atom {}))
 
+(def ^:private eviction-interval
+  "Number of cache-put! calls between full expired-entry sweeps.
+   Between sweeps the O(n) scan is skipped to avoid a linear cost on every put
+   in long-running processes. clear-cache! resets the counter to
+   (dec eviction-interval) so the very next put after a clear always evicts."
+  100)
+
+(def ^:private put-count
+  "Counts cache-put! calls mod eviction-interval.
+   Initialised to (dec eviction-interval) so tests that call clear-cache!
+   first will trigger an eviction sweep on their first subsequent put."
+  (atom (dec eviction-interval)))
+
 (def ^:private cache-ttl-metadata
   "TTL in milliseconds for metadata responses (submissions, tickers, search)."
   (* 5 60 1000))
@@ -85,15 +98,18 @@
                                     m))))))
 
 (defn- cache-put! [url value]
-  (cache-evict!)
+  (when (zero? (swap! put-count #(mod (inc %) eviction-interval)))
+    (cache-evict!))
   (let [ttl (cache-ttl-for url)
         expires-at (.plusMillis (java.time.Instant/now) ttl)]
     (swap! cache assoc url {:value value :expires-at expires-at})))
 
 (defn clear-cache!
-  "Clear the in-memory HTTP response cache."
+  "Clear the in-memory HTTP response cache and reset the eviction counter.
+   After calling this, the next cache-put! will perform a full eviction sweep."
   []
-  (reset! cache {}))
+  (reset! cache {})
+  (reset! put-count (dec eviction-interval)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; HTTP GET helpers (with exponential backoff retry)

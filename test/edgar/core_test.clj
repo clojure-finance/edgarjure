@@ -150,3 +150,49 @@
       (is (contains? cache-contents "https://example.com/valid")
           "non-expired entry must survive eviction sweep")
       (is (contains? cache-contents "https://example.com/another")))))
+
+(deftest cache-eviction-throttled-test
+  (testing "eviction is skipped for puts 2..N (not every put is O(n))"
+    (core/clear-cache!)
+    ;; After clear, put-count is at (dec eviction-interval).
+    ;; First put triggers eviction (counter wraps to 0).
+    ;; Subsequent puts 2..N should NOT trigger eviction — counter is 1..N-1.
+    (let [eviction-call-count (atom 0)
+          real-evict! (var-get #'edgar.core/cache-evict!)]
+      (with-redefs [hato.client/get (fn [_url _opts] {:status 200 :body "\"v\""})
+                    edgar.core/throttle! (fn [] nil)
+                    edgar.core/cache-evict! (fn []
+                                              (swap! eviction-call-count inc)
+                                              (real-evict!))]
+        (core/set-identity! "Test test@example.com")
+        ;; Put 1 — triggers eviction (put-count wraps 99→0)
+        (core/edgar-get "https://example.com/p1")
+        (is (= 1 @eviction-call-count) "put 1 must trigger eviction")
+        ;; Puts 2..5 — must NOT trigger eviction
+        (doseq [i (range 2 6)]
+          (core/edgar-get (str "https://example.com/p" i)))
+        (is (= 1 @eviction-call-count)
+            "puts 2-5 must not trigger eviction (counter not yet at interval)"))))
+  (testing "eviction fires again after exactly eviction-interval further puts"
+    (core/clear-cache!)
+    (let [eviction-call-count (atom 0)
+          interval (var-get #'edgar.core/eviction-interval)
+          real-evict! (var-get #'edgar.core/cache-evict!)]
+      (with-redefs [hato.client/get (fn [_url _opts] {:status 200 :body "\"v\""})
+                    edgar.core/throttle! (fn [] nil)
+                    edgar.core/cache-evict! (fn []
+                                              (swap! eviction-call-count inc)
+                                              (real-evict!))]
+        (core/set-identity! "Test test@example.com")
+        ;; First put triggers eviction (put-count: 99→0)
+        (core/edgar-get "https://example.com/first")
+        (is (= 1 @eviction-call-count))
+        ;; Do exactly (dec interval) more puts — counter goes 1..(interval-1), no eviction
+        (doseq [i (range 1 interval)]
+          (core/edgar-get (str "https://example.com/mid" i)))
+        (is (= 1 @eviction-call-count)
+            "no further eviction after (dec interval) puts")
+        ;; One more put — counter wraps back to 0, eviction fires
+        (core/edgar-get "https://example.com/last")
+        (is (= 2 @eviction-call-count)
+            "eviction fires again after exactly eviction-interval further puts")))))
