@@ -419,6 +419,7 @@ edgar.core            HTTP client, TTL cache, retry, rate limiter
 - **Form parsers must be required** — `(require '[edgar.forms])` loads all at once
 - **Download results are structured envelopes** — `{:status :ok/:skipped/:error ...}`
 - **All `edgar.api` functions are Malli-validated** — bad args throw `ex-info` with `:type ::edgar.schema/invalid-args`
+- **Financial statements are designed for standard industrial filers** — bank and insurance companies (e.g. JPM, BRK-A) use industry-specific XBRL line items that don't appear in the default concept chains, so `e/income` and friends will return fewer rows for these filers
 
 ## Rate Limits and Caching
 
