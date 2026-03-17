@@ -203,6 +203,53 @@
         (is (contains? cols "Total Assets"))
         (is (contains? cols "Current Assets"))))))
 
+(deftest to-wide-quarterly-columns-test
+  (let [f #'edgar.financials/to-wide
+        ;; Simulate 10-Q long output: two periods, two line items, with :val-q and :val-ltm
+        rows [{:end "2024-03-31" :line-item "Revenue" :val 210 :val-q 110 :val-ltm 460}
+              {:end "2024-03-31" :line-item "Net Income" :val 42 :val-q 22 :val-ltm 90}
+              {:end "2023-12-31" :line-item "Revenue" :val 100 :val-q 100 :val-ltm nil}
+              {:end "2023-12-31" :line-item "Net Income" :val 20 :val-q 20 :val-ltm nil}]
+        long-ds (ds/->dataset rows)
+        result (f long-ds)
+        col-names (set (map name (ds/column-names result)))]
+    (testing "one row per period"
+      (is (= 2 (ds/row-count result))))
+    (testing "plain :val columns present"
+      (is (contains? col-names "Revenue"))
+      (is (contains? col-names "Net Income")))
+    (testing ":val-q columns present as \"<line-item> (Q)\""
+      (is (contains? col-names "Revenue (Q)"))
+      (is (contains? col-names "Net Income (Q)")))
+    (testing ":val-ltm columns present as \"<line-item> (LTM)\""
+      (is (contains? col-names "Revenue (LTM)"))
+      (is (contains? col-names "Net Income (LTM)")))
+    (testing "correct values in wide rows"
+      (let [rows-out (->> (ds/rows result {:nil-missing? true})
+                          (sort-by :end #(compare %2 %1))
+                          vec)
+            latest (first rows-out)]
+        (is (= 210 (get latest "Revenue")))
+        (is (= 110 (get latest "Revenue (Q)")))
+        (is (= 460 (get latest "Revenue (LTM)")))))))
+
+(deftest to-wide-no-quarterly-columns-test
+  (let [f #'edgar.financials/to-wide
+        ;; 10-K long output: no :val-q or :val-ltm columns
+        rows [{:end "2024-09-30" :line-item "Revenue" :val 400}
+              {:end "2024-09-30" :line-item "Net Income" :val 100}
+              {:end "2023-09-30" :line-item "Revenue" :val 350}
+              {:end "2023-09-30" :line-item "Net Income" :val 90}]
+        long-ds (ds/->dataset rows)
+        result (f long-ds)
+        col-names (set (map name (ds/column-names result)))]
+    (testing "no spurious (Q) or (LTM) columns when source has none"
+      (is (not (some #(clojure.string/ends-with? % " (Q)") col-names)))
+      (is (not (some #(clojure.string/ends-with? % " (LTM)") col-names))))
+    (testing "plain columns still present"
+      (is (contains? col-names "Revenue"))
+      (is (contains? col-names "Net Income")))))
+
 (deftest concepts-in-data-test
   (let [f #'edgar.financials/concepts-in-data]
     (testing "returns set of concept strings"
