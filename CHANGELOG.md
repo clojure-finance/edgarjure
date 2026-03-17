@@ -2,6 +2,25 @@
 
 All notable changes to edgarjure are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+**`edgar.financials/normalized-statement` — overlapping chain candidates produced duplicate rows per period**
+- When a company filed multiple XBRL concepts from the same fallback chain for the same period (e.g. Google filing both `CashAndCashEquivalentsAtCarryingValue` and `CashCashEquivalentsAndShortTermInvestments` for "Cash and Equivalents"), both survived `dedup-restatements` and appeared as duplicate `:line-item` rows in the output.
+- Fixed: added `dedup-by-priority` step after restatement dedup. Groups by `[line-item unit start end]` and keeps only the concept with the lowest chain index (= highest priority). Chain ordering encodes preference: index 0 is most specific/preferred. Temporally non-overlapping substitutes (e.g. old XBRL tag pre-2018, new tag post-2018) are unaffected since they occupy different periods.
+
+### Changed
+
+**`edgar.financials/balance-sheet-concepts` — "Long-Term Debt" chain reordered**
+- `LongTermDebtNoncurrent` is now index 0 (preferred) ahead of `LongTermDebt`. Standard balance sheets report the noncurrent portion under long-term liabilities; `LongTermDebt` includes current maturities that belong in Current Liabilities. Confirmed with Google ($10.9B noncurrent vs $12.0B total) and Apple ($85.8B vs $96.7B).
+
+**`edgar.financials/income-statement-concepts` — "Operating Expenses" / "CostsAndExpenses" split into separate line items**
+- `CostsAndExpenses` (total costs *including* COGS) was bundled as a fallback for `OperatingExpenses` (opex *excluding* COGS). These are semantically different quantities — Google reports $238B in `CostsAndExpenses` while Apple reports $57B in `OperatingExpenses`. They are now two separate line items: "Operating Expenses" (`OperatingExpenses`) and "Total Costs and Expenses" (`CostsAndExpenses`).
+
+**`edgar.financials/cash-flow-concepts` — "Net Change in Cash" chain reordered**
+- `CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect` (ASU 2016-18 tag, includes restricted cash + FX) is now index 0 (preferred) ahead of `CashAndCashEquivalentsPeriodIncreaseDecrease` (legacy, cash only). All filers use the new tag exclusively post-2018. During the 2017–2019 transition period, both tags co-existed — BRK-A showed a ~$154M difference (restricted cash + FX adjustment). The new tag is the GAAP-required figure.
+
 ## [0.1.6] — 2026-03-16
 
 ### Fixed

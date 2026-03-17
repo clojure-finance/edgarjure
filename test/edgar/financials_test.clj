@@ -96,6 +96,46 @@
             result (vec (f unique-rows))]
         (is (= 2 (count result)))))))
 
+(deftest dedup-by-priority-test
+  (let [f #'edgar.financials/dedup-by-priority
+        concept->label {"CashAndCashEquivalentsAtCarryingValue" "Cash and Equivalents"
+                        "CashCashEquivalentsAndShortTermInvestments" "Cash and Equivalents"
+                        "LongTermDebt" "Long-Term Debt"
+                        "LongTermDebtNoncurrent" "Long-Term Debt"}
+        concept->priority {"CashAndCashEquivalentsAtCarryingValue" 0
+                           "CashCashEquivalentsAndShortTermInvestments" 1
+                           "LongTermDebt" 0
+                           "LongTermDebtNoncurrent" 1}]
+    (testing "keeps highest-priority concept when both co-exist for same period"
+      (let [rows [{:concept "CashAndCashEquivalentsAtCarryingValue"
+                   :unit "USD" :start nil :end "2023-12-31" :filed "2024-02-01" :val 100}
+                  {:concept "CashCashEquivalentsAndShortTermInvestments"
+                   :unit "USD" :start nil :end "2023-12-31" :filed "2024-02-01" :val 300}]
+            result (vec (f rows concept->label concept->priority))]
+        (is (= 1 (count result)))
+        (is (= "CashAndCashEquivalentsAtCarryingValue" (:concept (first result))))
+        (is (= 100 (:val (first result))))))
+    (testing "different line items are not collapsed"
+      (let [rows [{:concept "CashAndCashEquivalentsAtCarryingValue"
+                   :unit "USD" :start nil :end "2023-12-31" :filed "2024-02-01" :val 100}
+                  {:concept "LongTermDebt"
+                   :unit "USD" :start nil :end "2023-12-31" :filed "2024-02-01" :val 500}]
+            result (vec (f rows concept->label concept->priority))]
+        (is (= 2 (count result)))))
+    (testing "single-concept groups pass through unchanged"
+      (let [rows [{:concept "CashAndCashEquivalentsAtCarryingValue"
+                   :unit "USD" :start nil :end "2023-12-31" :filed "2024-02-01" :val 100}]
+            result (vec (f rows concept->label concept->priority))]
+        (is (= 1 (count result)))
+        (is (= 100 (:val (first result))))))
+    (testing "different periods for same chain are kept separately"
+      (let [rows [{:concept "CashAndCashEquivalentsAtCarryingValue"
+                   :unit "USD" :start nil :end "2023-12-31" :filed "2024-02-01" :val 100}
+                  {:concept "CashCashEquivalentsAndShortTermInvestments"
+                   :unit "USD" :start nil :end "2022-12-31" :filed "2023-02-01" :val 250}]
+            result (vec (f rows concept->label concept->priority))]
+        (is (= 2 (count result)) "different periods must both survive")))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; dedup-point-in-time
 ;;; ---------------------------------------------------------------------------
@@ -266,3 +306,28 @@
                              (filter #(= "2023-09-30" (:end %)))
                              (map :line-item))]
         (is (= (sort period-2023) period-2023))))))
+
+(deftest normalized-statement-overlapping-concepts-test
+  (let [f #'edgar.financials/normalized-statement
+        facts-ds (ds/->dataset
+                  [{:concept "CashAndCashEquivalentsAtCarryingValue" :form "10-K" :val 100
+                    :unit "USD" :start nil :end "2023-12-31" :filed "2024-02-01" :frame nil}
+                   {:concept "CashCashEquivalentsAndShortTermInvestments" :form "10-K" :val 300
+                    :unit "USD" :start nil :end "2023-12-31" :filed "2024-02-01" :frame nil}
+                   {:concept "CashAndCashEquivalentsAtCarryingValue" :form "10-K" :val 90
+                    :unit "USD" :start nil :end "2022-12-31" :filed "2023-02-01" :frame nil}
+                   {:concept "CashCashEquivalentsAndShortTermInvestments" :form "10-K" :val 270
+                    :unit "USD" :start nil :end "2022-12-31" :filed "2023-02-01" :frame nil}])
+        chains [["Cash and Equivalents"
+                 "CashAndCashEquivalentsAtCarryingValue"
+                 "CashCashEquivalentsAndShortTermInvestments"]]]
+    (testing "only the primary (index 0) concept survives when both are present"
+      (let [result (f facts-ds chains "10-K" :instant nil)]
+        (is (= 2 (ds/row-count result)) "one row per period, not two")
+        (is (= #{100 90} (set (ds/column result :val)))
+            "values come from CashAndCashEquivalentsAtCarryingValue only")
+        (is (= #{"Cash and Equivalents"} (set (ds/column result :line-item))))))
+    (testing "works with :as-of too"
+      (let [result (f facts-ds chains "10-K" :instant "2023-06-01")]
+        (is (= 1 (ds/row-count result)) "only 2022 period visible before as-of")
+        (is (= 90 (first (ds/column result :val))))))))

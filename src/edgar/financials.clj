@@ -39,7 +39,8 @@
    ["Gross Profit"
     "GrossProfit"]
    ["Operating Expenses"
-    "OperatingExpenses"
+    "OperatingExpenses"]
+   ["Total Costs and Expenses"
     "CostsAndExpenses"]
    ["R&D Expense"
     "ResearchAndDevelopmentExpense"]
@@ -97,8 +98,8 @@
    ["Current Liabilities"
     "LiabilitiesCurrent"]
    ["Long-Term Debt"
-    "LongTermDebt"
     "LongTermDebtNoncurrent"
+    "LongTermDebt"
     "LongTermNotesPayable"]
    ["Non-Current Liabilities"
     "LiabilitiesNoncurrent"]
@@ -139,8 +140,8 @@
    ["LT Debt Repaid"
     "RepaymentsOfLongTermDebt"]
    ["Net Change in Cash"
-    "CashAndCashEquivalentsPeriodIncreaseDecrease"
-    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect"]])
+    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect"
+    "CashAndCashEquivalentsPeriodIncreaseDecrease"]])
 
 ;;; ---------------------------------------------------------------------------
 ;;; Internal helpers
@@ -200,6 +201,29 @@
          (mapcat (fn [[_ group]]
                    [(reduce #(if (pos? (compare (:filed %1) (:filed %2))) %1 %2) group)])))))
 
+(defn- dedup-by-priority
+  "Within each [line-item unit start end] group, keep only the row whose
+   concept has the lowest priority index in its fallback chain.
+
+   This resolves the case where a company files multiple concepts from the
+   same chain for the same period (e.g. both CashAndCashEquivalentsAtCarryingValue
+   and CashCashEquivalentsAndShortTermInvestments). The chain ordering defines
+   preference: index 0 = most preferred."
+  [rows concept->label concept->priority]
+  (->> rows
+       (group-by (fn [row]
+                   [(get concept->label (:concept row) (:concept row))
+                    (:unit row) (:start row) (:end row)]))
+       (mapcat (fn [[_ group]]
+                 (if (= 1 (count group))
+                   group
+                   [(reduce (fn [best row]
+                              (if (< (get concept->priority (:concept row) Integer/MAX_VALUE)
+                                     (get concept->priority (:concept best) Integer/MAX_VALUE))
+                                row
+                                best))
+                            group)])))))
+
 (defn- filter-by-duration-type [rows duration-type]
   (case duration-type
     :instant (filter instant? rows)
@@ -230,27 +254,33 @@
 
    Steps:
      1. Resolve fallback chains -> collect ALL present candidates per line item
-     2. Build a concept->label map covering every present candidate
+     2. Build concept->label and concept->priority maps
      3. Filter facts to all winning concepts + form type
      4. Filter to the correct duration type (instant vs duration)
-     5. Deduplicate via dedup-point-in-time:
-          as-of nil  => latest restated value (as-reported)
-          as-of date => point-in-time; excludes filings filed after as-of
-     6. Add :line-item column
-     7. Sort :end descending, :line-item ascending within each period
+     5. Deduplicate restatements via dedup-point-in-time
+     6. Deduplicate overlapping chain candidates via dedup-by-priority:
+          When multiple concepts from the same chain co-exist for a period,
+          keep only the highest-priority (lowest chain index) concept
+     7. Add :line-item column
+     8. Sort :end descending, :line-item ascending within each period
 
-   Note on multi-candidate resolution (Step 1-2):
-     A company may have used SalesRevenueNet pre-2018 and Revenues post-2018.
-     Both are present in the facts data. We include ALL present candidates so
-     that historical rows are not silently dropped. The dedup step then picks
-     the right survivor per [concept unit start end] group."
+   Multi-candidate handling:
+     All present candidates are fetched so that historical periods using
+     older XBRL tags are not dropped. The dedup-by-priority step then
+     resolves any same-period overlaps using the chain ordering."
   [facts-ds chains form duration-type as-of]
   (let [available (concepts-in-data facts-ds)
         resolved (resolve-all-chains chains available)
         concept->label (into {} (mapcat (fn [[label winners]]
                                           (map (fn [w] [w label]) winners))
                                         resolved))
-        winning-concepts (set (keys concept->label))]
+        winning-concepts (set (keys concept->label))
+        concept->priority (into {}
+                                (for [chain chains
+                                      :let [candidates (rest chain)]
+                                      [idx concept] (map-indexed vector candidates)
+                                      :when (contains? winning-concepts concept)]
+                                  [concept idx]))]
     (if (empty? winning-concepts)
       (ds/->dataset [])
       (let [filtered (-> facts-ds
@@ -259,7 +289,8 @@
                          (ds/rows {:nil-missing? true}))
             duration-filtered (filter-by-duration-type filtered duration-type)
             deduped (dedup-point-in-time duration-filtered as-of)
-            result-ds (ds/->dataset (vec deduped))]
+            priority-deduped (dedup-by-priority deduped concept->label concept->priority)
+            result-ds (ds/->dataset (vec priority-deduped))]
         (if (zero? (ds/row-count result-ds))
           result-ds
           (-> result-ds
