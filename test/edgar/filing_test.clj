@@ -251,6 +251,64 @@
                   edgar.filing/primary-doc (fn [_] nil)]
       (is (nil? (filing/filing-save! {} "/tmp"))))))
 
+;;; ---------------------------------------------------------------------------
+;;; filing-save-all! — duplicate filename deduplication (Issue #9)
+;;; ---------------------------------------------------------------------------
+
+(deftest filing-save-all-dedup-test
+  ;; Regression test for Issue #9:
+  ;; The SEC filing index HTML can (rarely) contain duplicate :name entries.
+  ;; Without dedup, filing-save-all! would download and overwrite the same
+  ;; file twice, which is wasteful and could clobber a good file with a bad one.
+  ;; Fix: deduplicate (:files idx) by :name before the for loop.
+  (testing "duplicate filenames in the index are downloaded only once"
+    (let [download-calls (atom [])
+          idx {:files [{:name "primary.htm" :type "10-K" :sequence "1" :size "10000"}
+                       {:name "exhibit.pdf" :type "EX-21" :sequence "2" :size "5000"}
+                       {:name "primary.htm" :type "10-K" :sequence "1" :size "10000"}]}
+          tmp-dir (java.io.File/createTempFile "edgar-test-" "")
+          _ (do (.delete tmp-dir) (.mkdirs tmp-dir))]
+      (try
+        (with-redefs [edgar.filing/filing-index (fn [_] idx)
+                      edgar.filing/filing-doc-url (fn [_ n] (str "https://sec.gov/" n))
+                      edgar.core/edgar-get (fn [url & _]
+                                             (swap! download-calls conj url)
+                                             "<html/>")
+                      edgar.core/edgar-get-bytes (fn [url]
+                                                   (swap! download-calls conj url)
+                                                   (byte-array []))]
+          (filing/filing-save-all! {:cik "320193"
+                                    :accessionNumber "0000320193-24-000001"
+                                    :form "10-K"}
+                                   (.getAbsolutePath tmp-dir)))
+        (is (= 2 (count @download-calls))
+            "exactly 2 downloads — primary.htm once, exhibit.pdf once (not 3)")
+        (is (= 2 (count (distinct @download-calls)))
+            "no URL downloaded twice")
+        (finally
+          (doseq [f (file-seq tmp-dir)]
+            (.delete f))))))
+
+  (testing "return value has no duplicate paths"
+    (let [idx {:files [{:name "doc.htm" :type "10-K" :sequence "1" :size "1000"}
+                       {:name "doc.htm" :type "10-K" :sequence "1" :size "1000"}
+                       {:name "ex.htm" :type "EX-21" :sequence "2" :size "500"}]}
+          tmp-dir (java.io.File/createTempFile "edgar-test-" "")
+          _ (do (.delete tmp-dir) (.mkdirs tmp-dir))]
+      (try
+        (with-redefs [edgar.filing/filing-index (fn [_] idx)
+                      edgar.filing/filing-doc-url (fn [_ n] (str "https://sec.gov/" n))
+                      edgar.core/edgar-get (fn [& _] "<html/>")]
+          (let [paths (filing/filing-save-all! {:cik "320193"
+                                                :accessionNumber "0000320193-24-000001"
+                                                :form "10-K"}
+                                               (.getAbsolutePath tmp-dir))]
+            (is (= 2 (count paths)) "2 paths returned — not 3")
+            (is (= (count paths) (count (distinct paths))) "no duplicate paths")))
+        (finally
+          (doseq [f (file-seq tmp-dir)]
+            (.delete f)))))))
+
 (deftest binary-filename-test
   (let [f #'edgar.filing/binary-filename?]
     (testing "known binary extensions are recognised"

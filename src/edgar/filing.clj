@@ -172,16 +172,18 @@
 
 (defn filing-save-all!
   "Download all documents in a filing to a directory.
+   Duplicate filenames in the index are deduplicated (last entry wins).
    Returns a seq of saved file paths."
   [filing dir]
   (let [idx (filing-index filing)
         cik (:cik filing)
         acc (:accessionNumber filing)
         form (:form filing)
-        out-dir (fs/path dir form cik acc)]
+        out-dir (fs/path dir form cik acc)
+        unique-docs (vals (into {} (map (juxt :name identity) (:files idx))))]
     (fs/create-dirs out-dir)
     (doall
-     (for [doc (:files idx)
+     (for [doc unique-docs
            :when (:name doc)]
        (let [out-file (fs/path out-dir (:name doc))]
          (save-doc! filing doc out-file)
