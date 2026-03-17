@@ -62,6 +62,29 @@
     (is (= {:accessionNumber "0000320193-23-000064" :form "10-K" :filingDate "2023-11-03"}
            (filings/latest-filing filings-seq)))))
 
+(deftest get-filing-limit-passthrough-test
+  (testing "get-filing passes :limit (inc n) to get-filings — avoids fetching all pages"
+    (let [captured-opts (atom nil)
+          fake-filings [{:form "10-K" :filingDate "2023-11-03" :accessionNumber "A"}
+                        {:form "10-K" :filingDate "2022-10-28" :accessionNumber "B"}
+                        {:form "10-K" :filingDate "2021-10-29" :accessionNumber "C"}]]
+      (with-redefs [edgar.filings/get-filings
+                    (fn [_ & opts]
+                      (reset! captured-opts (apply hash-map opts))
+                      fake-filings)]
+        (testing "n=0 → :limit 1"
+          (filings/get-filing "AAPL" :form "10-K" :n 0)
+          (is (= 1 (:limit @captured-opts))))
+        (testing "n=1 → :limit 2"
+          (filings/get-filing "AAPL" :form "10-K" :n 1)
+          (is (= 2 (:limit @captured-opts))))
+        (testing "n=2 → :limit 3"
+          (filings/get-filing "AAPL" :form "10-K" :n 2)
+          (is (= 3 (:limit @captured-opts))))
+        (testing "correct filing is returned for n=1"
+          (let [result (filings/get-filing "AAPL" :form "10-K" :n 1)]
+            (is (= "B" (:accessionNumber result)))))))))
+
 (deftest accession-normalization-test
   (let [f #'edgar.filings/accession->str]
     (testing "18-digit undashed string gets dashes inserted"

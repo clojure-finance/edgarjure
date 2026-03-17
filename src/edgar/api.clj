@@ -119,7 +119,7 @@
                                        :form form
                                        :n n
                                        :include-amends? include-amends?})
-  (nth (filings/get-filings ticker-or-cik :form form :include-amends? include-amends?) n nil))
+  (nth (filings/get-filings ticker-or-cik :form form :include-amends? include-amends? :limit (inc n)) n nil))
 
 (defn latest-effective-filing
   "Return the most recent effective filing for a company and form type.

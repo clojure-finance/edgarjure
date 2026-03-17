@@ -106,3 +106,26 @@
                                   :form "10-K"}))
             ex21 (first (filter #(= "EX-21" (:type %)) result))]
         (is (= "ex21.htm" (:name ex21)))))))
+
+(deftest e-filing-limit-passthrough-test
+  (testing "e/filing passes :limit (inc n) to filings/get-filings — avoids eager pagination"
+    (let [captured-opts (atom nil)
+          fake-filings [{:form "10-K" :filingDate "2023-11-03" :accessionNumber "A"}
+                        {:form "10-K" :filingDate "2022-10-28" :accessionNumber "B"}
+                        {:form "10-K" :filingDate "2021-10-29" :accessionNumber "C"}]]
+      (with-redefs [edgar.filings/get-filings
+                    (fn [_ & opts]
+                      (reset! captured-opts (apply hash-map opts))
+                      fake-filings)]
+        (testing "n=0 (default) → :limit 1"
+          (e/filing "AAPL" :form "10-K")
+          (is (= 1 (:limit @captured-opts))))
+        (testing "n=1 → :limit 2"
+          (e/filing "AAPL" :form "10-K" :n 1)
+          (is (= 2 (:limit @captured-opts))))
+        (testing "n=2 → :limit 3"
+          (e/filing "AAPL" :form "10-K" :n 2)
+          (is (= 3 (:limit @captured-opts))))
+        (testing "correct filing is returned for n=1"
+          (let [result (e/filing "AAPL" :form "10-K" :n 1)]
+            (is (= "B" (:accessionNumber result)))))))))
