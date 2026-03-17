@@ -4,8 +4,10 @@
    mismatches early."
   (:require [clojure.test :refer [deftest is testing]]
             [edgar.api :as e]
+            [edgar.company :as edgar.company]
             [edgar.extract :as extract]
-            [edgar.filing :as filing]))
+            [edgar.filing :as filing]
+            [edgar.schema :as schema]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; items — docstring says "item-id → {:title :text :method}"
@@ -169,3 +171,33 @@
               url (e/doc-url mock-filing (:name ex))]
           (is (string? url))
           (is (clojure.string/ends-with? url "ex21.htm")))))))
+
+(deftest company-functions-malli-validation-test
+  ;; Regression for Issue #15: e/cik, e/company, e/company-name, e/company-metadata
+  ;; were missing Malli validation at the API boundary. All other public edgar.api
+  ;; functions already validated. Fix: add (schema/validate! schema/CompanyArgs ...)
+  ;; at the top of each function; add CompanyArgs schema to edgar.schema.
+  (doseq [[fn-name f] [["e/cik" e/cik]
+                       ["e/company" e/company]
+                       ["e/company-name" e/company-name]
+                       ["e/company-metadata" e/company-metadata]]]
+    (testing (str fn-name " throws ::schema/invalid-args on blank ticker-or-cik")
+      (let [ex (try (f "") nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? ex) (str fn-name " must throw for blank input"))
+        (is (= ::schema/invalid-args (:type (ex-data ex)))
+            (str fn-name " must throw with ::invalid-args type"))))
+    (testing (str fn-name " throws ::schema/invalid-args on nil ticker-or-cik")
+      (let [ex (try (f nil) nil
+                    (catch Exception e e))]
+        (is (some? ex) (str fn-name " must throw for nil input"))))
+    (testing (str fn-name " does not throw for valid ticker string")
+      ;; Stub out the inner company function to avoid a network call
+      (with-redefs [edgar.company/company-cik (fn [_] "0000320193")
+                    edgar.company/get-company (fn [_] {:name "Apple"})
+                    edgar.company/company-name (fn [_] "Apple Inc.")
+                    edgar.company/company-metadata (fn [_] {:name "Apple"})]
+        (is (nil? (try (f "AAPL") nil
+                       (catch clojure.lang.ExceptionInfo e
+                         (when (= ::schema/invalid-args (:type (ex-data e))) e))))
+            (str fn-name " must not throw schema error for valid input"))))))

@@ -39,17 +39,20 @@
   "Resolve a ticker to a zero-padded 10-digit CIK string, or normalise a CIK.
    (e/cik \"AAPL\") => \"0000320193\""
   [ticker-or-cik]
+  (schema/validate! schema/CompanyArgs {:ticker-or-cik ticker-or-cik})
   (company/company-cik ticker-or-cik))
 
 (defn company
   "Return full SEC submissions metadata map for a company.
    Accepts ticker or CIK."
   [ticker-or-cik]
+  (schema/validate! schema/CompanyArgs {:ticker-or-cik ticker-or-cik})
   (company/get-company ticker-or-cik))
 
 (defn company-name
   "Return the company name string for a ticker or CIK."
   [ticker-or-cik]
+  (schema/validate! schema/CompanyArgs {:ticker-or-cik ticker-or-cik})
   (company/company-name ticker-or-cik))
 
 (defn company-metadata
@@ -70,6 +73,7 @@
      ;                :mailing  {:street1 ... :city ... :state ... :zip ...}}
      ;    :former-names []}"
   [ticker-or-cik]
+  (schema/validate! schema/CompanyArgs {:ticker-or-cik ticker-or-cik})
   (company/company-metadata ticker-or-cik))
 
 (defn search
