@@ -230,6 +230,11 @@ filtering thousands of filers that way may take a few minutes at the SEC's
 (e/exhibit f "EX-21")       ; subsidiaries exhibit, or nil
 (e/xbrl-docs f)             ; XBRL instance, schema, and linkbase files
 
+;; Fetch exhibit content — two equivalent patterns:
+(def ex (e/exhibit f "EX-21"))
+(e/filing-document f (:name ex))   ; raw content string
+(e/doc-url f (:name ex))           ; SEC archives URL
+
 ;; Structured parse via form-specific parser (e.g., Form 4 → insider trade map)
 (e/obj f)
 
@@ -431,7 +436,7 @@ SEC enforces a `User-Agent` header and a rate limit of ~10 requests/second. edga
 # Start REPL on port 7888
 clj -M:nrepl
 
-# Run offline unit tests (139 tests, 633 assertions, no network)
+# Run offline unit tests (156 tests, 773 assertions, no network)
 clj -M:test
 
 # Run live integration tests (manual only, requires network)
