@@ -15,7 +15,10 @@
               "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"]}
   {:label "Short-Term Investments"
    :concepts ["ShortTermInvestments"
-              "AvailableForSaleSecuritiesCurrent"]}
+              "MarketableSecuritiesCurrent"
+              "AvailableForSaleSecuritiesCurrent"
+              "AvailableForSaleSecuritiesDebtSecuritiesCurrent"
+              "OtherShortTermInvestments"]}
   {:label "Accounts Receivable"
    :concepts ["AccountsReceivableNetCurrent"
               "ReceivablesNetCurrent"]}
@@ -34,6 +37,16 @@
    :concepts ["Liabilities"]}
   {:label "Current Liabilities"
    :concepts ["LiabilitiesCurrent"]}
+  {:label "Accounts Payable"
+   :concepts ["AccountsPayableCurrent"
+              "AccountsPayableTradeCurrent"]}
+  {:label "Current Debt"
+   :concepts ["DebtCurrent"
+              "LongTermDebtCurrent"
+              "ShortTermBorrowings"]}
+  {:label "Income Taxes Payable"
+   :concepts ["AccruedIncomeTaxesCurrent"
+              "TaxesPayableCurrent"]}
   {:label "Long-Term Debt"
    :concepts ["LongTermDebtNoncurrent"
               "LongTermDebt"
@@ -47,6 +60,12 @@
    :concepts ["RetainedEarningsAccumulatedDeficit"]}
   {:label "Common Stock"
    :concepts ["CommonStockValue"]}
+  {:label "Preferred Stock"
+   :concepts ["PreferredStockValue"]}
+  {:label "Noncontrolling Interest"
+   :concepts ["MinorityInterest"]}
+  {:label "Total Equity"
+   :concepts ["StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]}
   {:label "Total Liabilities and Equity"
    :concepts ["LiabilitiesAndStockholdersEquity"
               "LiabilitiesAndStockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]}]}
