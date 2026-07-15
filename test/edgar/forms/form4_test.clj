@@ -131,10 +131,11 @@
                     edgar.filing/filing-document
                     (fn [_ name & _] (str "fetched:" name))]
         (is (= "fetched:ownership.xml" (f {})))))
-    (testing "falls back to first doc when no qualifying xml exists"
+    (testing "returns nil when no qualifying xml exists — never feeds HTML to the XML parser"
       (with-redefs [edgar.filing/filing-index
                     (fn [_] {:files [{:name "primary.htm" :type "4" :sequence "1"}]
                              :formType "4"})
                     edgar.filing/filing-document
                     (fn [_ name & _] (str "fetched:" name))]
-        (is (= "fetched:primary.htm" (f {})))))))
+        (is (nil? (f {}))
+            "falling back to an HTML doc would crash xml/parse downstream")))))

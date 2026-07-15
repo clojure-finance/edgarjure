@@ -1,0 +1,50 @@
+{:statement :balance-sheet
+ :industry :standard
+ :taxonomy "us-gaap"
+ :version "2026-07-15"
+ :notes "Concept fallback chains for the balance sheet (instant observations)."
+ :line-items
+ [{:label "Total Assets"
+   :concepts ["Assets"]}
+  {:label "Current Assets"
+   :concepts ["AssetsCurrent"]}
+  {:label "Cash and Equivalents"
+   :concepts ["CashAndCashEquivalentsAtCarryingValue"
+              "CashCashEquivalentsAndShortTermInvestments"]}
+  {:label "Short-Term Investments"
+   :concepts ["ShortTermInvestments"
+              "AvailableForSaleSecuritiesCurrent"]}
+  {:label "Accounts Receivable"
+   :concepts ["AccountsReceivableNetCurrent"
+              "ReceivablesNetCurrent"]}
+  {:label "Inventory"
+   :concepts ["InventoryNet"]}
+  {:label "Non-Current Assets"
+   :concepts ["AssetsNoncurrent"]}
+  {:label "PP&E Net"
+   :concepts ["PropertyPlantAndEquipmentNet"]}
+  {:label "Goodwill"
+   :concepts ["Goodwill"]}
+  {:label "Intangibles"
+   :concepts ["IntangibleAssetsNetExcludingGoodwill"
+              "FiniteLivedIntangibleAssetsNet"]}
+  {:label "Total Liabilities"
+   :concepts ["Liabilities"]}
+  {:label "Current Liabilities"
+   :concepts ["LiabilitiesCurrent"]}
+  {:label "Long-Term Debt"
+   :concepts ["LongTermDebtNoncurrent"
+              "LongTermDebt"
+              "LongTermNotesPayable"]}
+  {:label "Non-Current Liabilities"
+   :concepts ["LiabilitiesNoncurrent"]}
+  {:label "Stockholders Equity"
+   :concepts ["StockholdersEquity"
+              "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]}
+  {:label "Retained Earnings"
+   :concepts ["RetainedEarningsAccumulatedDeficit"]}
+  {:label "Common Stock"
+   :concepts ["CommonStockValue"]}
+  {:label "Total Liabilities and Equity"
+   :concepts ["LiabilitiesAndStockholdersEquity"
+              "LiabilitiesAndStockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]}]}

@@ -42,16 +42,24 @@
 ;;; ---------------------------------------------------------------------------
 
 (defn- fetch-extra-filings
-  "Fetch additional submission chunks listed in [:filings :files] and return
-   a seq of raw (un-enriched) filing maps."
+  "Return a lazy seq of raw (un-enriched) filing maps from the additional
+   submission chunks listed in [:filings :files].
+
+   Each chunk is fetched only when the seq is consumed that far, so callers
+   that stop within the ~1000 filings of the :recent block (the common case —
+   e.g. (e/filing \"AAPL\")) never trigger the extra HTTP requests.
+
+   Chunks are ordered by :filingTo descending so the concatenation with the
+   newest-first :recent block stays date-descending overall."
   [company]
-  (let [extra-files (get-in company [:filings :files])]
-    (when (seq extra-files)
-      (mapcat (fn [file-entry]
-                (let [url (str core/submissions-url "/" (:name file-entry))
-                      chunk (core/edgar-get url)]
-                  (parse-filings-recent chunk)))
-              extra-files))))
+  (letfn [(fetch-chunks [entries]
+            (lazy-seq
+             (when-let [[entry & more] (seq entries)]
+               (let [url (str core/submissions-url "/" (:name entry))]
+                 (concat (parse-filings-recent (core/edgar-get url))
+                         (fetch-chunks more))))))]
+    (fetch-chunks (->> (get-in company [:filings :files])
+                       (sort-by :filingTo #(compare %2 %1))))))
 
 (defn- amended? [filing]
   (str/ends-with? (str (:form filing)) "/A"))
@@ -129,36 +137,38 @@
   "Fetch and parse the full quarterly index for year/quarter.
    Returns a seq of maps with :cik :company-name :form-type :date-filed :filename.
 
-   The SEC quarterly index header has a variable number of lines before the
-   first data row.  Rather than dropping a fixed number of lines (fragile),
-   we skip until we find the first line whose third pipe-delimited field
-   looks like a date (YYYY-MM-DD) — a property unique to data rows.
+   Uses master.idx, the pipe-delimited variant of the quarterly index.
+   (company.idx and form.idx are fixed-width files; master.idx carries the
+   same rows in a machine-friendly format.)
 
-   Column order in company.idx:
-     0  Company Name
-     1  Form Type
-     2  Date Filed
-     3  Filename
-     4  CIK"
+   The index header has a variable number of lines before the first data
+   row.  Rather than dropping a fixed number of lines (fragile), we skip
+   until we find the first line whose fourth pipe-delimited field looks
+   like a date (YYYY-MM-DD) — a property unique to data rows.
+
+   Column order in master.idx:
+     0  CIK
+     1  Company Name
+     2  Form Type
+     3  Date Filed
+     4  Filename"
   [year quarter]
-  (let [raw (core/edgar-get (full-index-url year quarter "company") :raw? true)
+  (let [raw (core/edgar-get (full-index-url year quarter "master") :raw? true)
         lines (str/split-lines raw)
         data-line? (fn [line]
                      (let [parts (str/split line #"\|")]
                        (and (= 5 (count parts))
                             (re-matches #"\d{4}-\d{2}-\d{2}"
-                                        (str/trim (nth parts 2))))))]
+                                        (str/trim (nth parts 3))))))]
     (->> lines
-         (drop-while (complement data-line?))
+         (filter data-line?)
          (map (fn [line]
                 (let [parts (str/split line #"\|")]
-                  (when (= 5 (count parts))
-                    {:company-name (str/trim (nth parts 0))
-                     :form-type (str/trim (nth parts 1))
-                     :date-filed (str/trim (nth parts 2))
-                     :filename (str/trim (nth parts 3))
-                     :cik (str/trim (nth parts 4))}))))
-         (remove nil?))))
+                  {:cik (str/trim (nth parts 0))
+                   :company-name (str/trim (nth parts 1))
+                   :form-type (str/trim (nth parts 2))
+                   :date-filed (str/trim (nth parts 3))
+                   :filename (str/trim (nth parts 4))}))))))
 
 (defn get-quarterly-index-by-form
   "Like get-quarterly-index but pre-filtered to a specific form type."
@@ -175,16 +185,27 @@
      :forms       - vector of form types e.g. [\"10-K\" \"10-Q\"]
      :start-date  - \"YYYY-MM-DD\"
      :end-date    - \"YYYY-MM-DD\"
-     :limit       - max results (default 10)"
+     :limit       - max results (default 10)
+
+   Lazily pages through the EFTS search-index with from= offsets, so :limit
+   may exceed the EFTS page size. Note that EFTS itself caps result offsets
+   at 10,000 — narrow the query or date range for exhaustive sweeps."
   [query & {:keys [forms start-date end-date limit] :or {limit 10}}]
-  (let [params (cond-> (str "?q=" (java.net.URLEncoder/encode query "UTF-8"))
-                 forms (str "&forms=" (str/join "," forms))
-                 start-date (str "&dateRange=custom&startdt=" start-date)
-                 end-date (str "&enddt=" end-date))
-        resp (core/edgar-get (str core/efts-url params))]
-    (->> (get-in resp [:hits :hits])
-         (take limit)
-         (map :_source))))
+  (let [base-params (cond-> (str "?q=" (java.net.URLEncoder/encode query "UTF-8"))
+                      forms (str "&forms=" (str/join "," forms))
+                      start-date (str "&dateRange=custom&startdt=" start-date)
+                      end-date (str "&enddt=" end-date))]
+    (letfn [(fetch-page [from]
+              (lazy-seq
+               (let [resp (core/edgar-get (str core/efts-url base-params "&from=" from))
+                     hits (get-in resp [:hits :hits])
+                     total (get-in resp [:hits :total :value] 0)]
+                 (if (or (empty? hits) (>= (+ from (count hits)) total))
+                   hits
+                   (concat hits (fetch-page (+ from (count hits))))))))]
+      (->> (fetch-page 0)
+           (take limit)
+           (map :_source)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Daily filing index

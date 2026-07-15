@@ -22,8 +22,8 @@
 
  :aliases
  {:nrepl
-  {:extra-deps {nrepl/nrepl {:mvn/version "1.6.0"}}
-   :main-opts ["-m" "nrepl.cmdline" "--port" "7888"]
+  {:extra-deps {nrepl/nrepl {:mvn/version "1.7.0"}}
+   :main-opts ["-m" "nrepl.cmdline" "--port" "0"]
    :extra-paths ["test"]}
 
   :test

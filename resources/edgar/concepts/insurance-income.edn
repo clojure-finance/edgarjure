@@ -1,0 +1,39 @@
+{:statement :income-statement
+ :industry :insurance
+ :taxonomy "us-gaap"
+ :version "2026-07-15"
+ :notes "Income statement chains for insurers (SIC 6300-6399, 6411). Verified against MetLife company facts. Coverage is partial — see roadmap 4.1d."
+ :line-items
+ [{:label "Premiums Earned"
+   :concepts ["PremiumsEarnedNet"]}
+  {:label "Net Investment Income"
+   :concepts ["NetInvestmentIncome"]}
+  {:label "Realized Investment Gains"
+   :concepts ["RealizedInvestmentGainsLosses"
+              "GainLossOnInvestments"]}
+  {:label "Total Revenue"
+   :concepts ["Revenues"]}
+  {:label "Policyholder Benefits and Claims"
+   :concepts ["PolicyholderBenefitsAndClaimsIncurredNet"
+              "IncurredClaimsPropertyCasualtyAndLiability"]}
+  {:label "Interest Credited to Policyholders"
+   :concepts ["InterestCreditedToPolicyholdersAccountBalances"]}
+  {:label "Policyholder Dividends"
+   :concepts ["PolicyholderDividends"]}
+  {:label "Acquisition Cost Amortization"
+   :concepts ["DeferredPolicyAcquisitionCostAmortizationExpense"]}
+  {:label "Total Benefits and Expenses"
+   :concepts ["BenefitsLossesAndExpenses"]}
+  {:label "Pre-Tax Income"
+   :concepts ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"
+              "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"]}
+  {:label "Income Tax Expense"
+   :concepts ["IncomeTaxExpenseBenefit"]}
+  {:label "Net Income"
+   :concepts ["NetIncomeLoss"
+              "ProfitLoss"
+              "NetIncomeLossAvailableToCommonStockholdersBasic"]}
+  {:label "EPS Basic"
+   :concepts ["EarningsPerShareBasic"]}
+  {:label "EPS Diluted"
+   :concepts ["EarningsPerShareDiluted"]}]}

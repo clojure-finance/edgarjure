@@ -98,6 +98,34 @@
         (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")]
           (is (= "Assets/CY2023Q4I" (ds/dataset-name result))))))))
 
+(deftest get-concept-frame-real-format-test
+  ;; The REAL SEC frames response: no :columns key, :data is a seq of MAPS
+  ;; with a numeric :cik. The old vector/zipmap parser produced garbage rows
+  ;; (every cell a misaligned MapEntry) against this format.
+  (let [real-resp {:taxonomy "us-gaap"
+                   :tag "Assets"
+                   :ccp "CY2023Q4I"
+                   :uom "USD"
+                   :pts 2
+                   :data [{:accn "0001104659-23-128321" :cik 1750
+                           :entityName "AAR CORP" :loc "US-IL"
+                           :end "2023-11-30" :val 1965600000}
+                          {:accn "0000320193-24-000006" :cik 320193
+                           :entityName "Apple Inc." :loc "US-CA"
+                           :end "2023-12-30" :val 353514000000}]}]
+    (with-redefs [core/edgar-get (fn [_] real-resp)]
+      (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")
+            rows (vec (ds/rows result {:nil-missing? true}))]
+        (testing "rows parse into properly keyed columns (not MapEntries)"
+          (is (= 2 (ds/row-count result)))
+          (is (every? number? (map :val rows)))
+          (is (every? string? (map :entityName rows))))
+        (testing ":cik is zero-padded to the 10-digit string used library-wide"
+          (is (= #{"0000001750" "0000320193"} (set (map :cik rows)))))
+        (testing "sorted by :val descending"
+          (is (= "Apple Inc." (:entityName (first rows))))
+          (is (= 353514000000 (:val (first rows)))))))))
+
 (def ^:private stub-facts-map
   {:entityName "Test Corp"
    :facts

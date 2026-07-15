@@ -1,0 +1,35 @@
+{:statement :cash-flow
+ :industry :standard
+ :taxonomy "us-gaap"
+ :version "2026-07-15"
+ :notes "Concept fallback chains for the cash flow statement (duration observations)."
+ :line-items
+ [{:label "Operating Cash Flow"
+   :concepts ["NetCashProvidedByUsedInOperatingActivities"]}
+  {:label "D&A"
+   :concepts ["DepreciationDepletionAndAmortization"
+              "DepreciationAndAmortization"]}
+  {:label "Investing Cash Flow"
+   :concepts ["NetCashProvidedByUsedInInvestingActivities"]}
+  {:label "Capex"
+   :concepts ["PaymentsToAcquirePropertyPlantAndEquipment"
+              "PaymentsToAcquireProductiveAssets"
+              "PaymentsForProceedsFromProductiveAssets"
+              "PaymentsForCapitalImprovements"]}
+  {:label "Acquisitions"
+   :concepts ["PaymentsToAcquireBusinessesNetOfCashAcquired"
+              "PaymentsToAcquireBusinessesGross"]}
+  {:label "Financing Cash Flow"
+   :concepts ["NetCashProvidedByUsedInFinancingActivities"]}
+  {:label "Share Buybacks"
+   :concepts ["PaymentsForRepurchaseOfCommonStock"]}
+  {:label "Dividends Paid"
+   :concepts ["PaymentsOfDividends"
+              "PaymentsOfDividendsCommonStock"]}
+  {:label "LT Debt Issued"
+   :concepts ["ProceedsFromIssuanceOfLongTermDebt"]}
+  {:label "LT Debt Repaid"
+   :concepts ["RepaymentsOfLongTermDebt"]}
+  {:label "Net Change in Cash"
+   :concepts ["CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect"
+              "CashAndCashEquivalentsPeriodIncreaseDecrease"]}]}

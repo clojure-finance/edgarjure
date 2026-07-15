@@ -134,14 +134,17 @@
 ;;; XML document locator
 ;;; ---------------------------------------------------------------------------
 
-(defn- form4-xml [filing]
+(defn- form4-xml
+  "Locate and fetch the Form 4 XML document. Returns nil when the filing has
+   no XML attachment (falling back to a non-XML document would only hand
+   HTML to the XML parser)."
+  [filing]
   (let [idx (filing/filing-index filing)
         docs (:files idx)
-        xml-doc (or (first (filter (fn [{:keys [name]}]
-                                     (and (str/ends-with? (str name) ".xml")
-                                          (not (str/ends-with? (str name) "_htm.xml"))))
-                                   docs))
-                    (first docs))]
+        xml-doc (first (filter (fn [{:keys [name]}]
+                                 (and (str/ends-with? (str name) ".xml")
+                                      (not (str/ends-with? (str name) "_htm.xml"))))
+                               docs))]
     (when xml-doc
       (filing/filing-document filing (:name xml-doc) :raw? true))))
 

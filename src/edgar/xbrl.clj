@@ -99,29 +99,48 @@
   (str core/data-url "/api/xbrl/frames/"
        taxonomy "/" concept "/" unit "/" frame ".json"))
 
+(defn- shape-frame-row
+  "Normalise one frames :data entry. The SEC returns :cik as a plain number;
+   pad it to the 10-digit string used everywhere else in the library."
+  [row]
+  (if (:cik row)
+    (update row :cik
+            #(cond
+               (number? %) (format "%010d" (long %))
+               (and (string? %) (re-matches #"\d+" %)) (format "%010d" (Long/parseLong %))
+               :else %))
+    row))
+
 (defn get-concept-frame
   "Fetch cross-sectional data for a concept across all companies for a period.
    frame examples: \"CY2023Q4I\" (instant) or \"CY2023Q4\" (duration)
    Options:
      :taxonomy - default \"us-gaap\"
      :unit     - default \"USD\"
-   Returns a dataset with columns: accn cik entityName loc end val.
+   Returns a dataset sorted by :val descending with columns
+   :accn :cik :entityName :loc :end :val (:start for duration frames).
+   :cik is zero-padded to the 10-digit string form used across the library.
 
-   Handles missing :columns key in the SEC response by falling back to the
-   canonical 6-column frame schema [:accn :cik :entityName :loc :end :val].
-   For non-standard column counts, positional names :col0 :col1 ... are used."
+   The SEC frames endpoint returns :data as a sequence of maps; a legacy
+   :columns + vector-of-vectors shape is also accepted for robustness."
   [concept frame & {:keys [taxonomy unit] :or {taxonomy "us-gaap" unit "USD"}}]
   (let [resp (core/edgar-get (concept-frame-url taxonomy concept unit frame))
         raw-cols (:columns resp)
-        data (:data resp)]
+        data (:data resp)
+        name-opt {:dataset-name (str concept "/" frame)}]
     (if (or (nil? data) (empty? data))
       (ds/->dataset {:accn [] :cik [] :entityName [] :loc [] :end [] :val []}
-                    {:dataset-name (str concept "/" frame)})
-      (let [cols (if (seq raw-cols)
-                   (mapv keyword raw-cols)
-                   (let [n (count (first data))]
-                     (if (= 6 n)
-                       [:accn :cik :entityName :loc :end :val]
-                       (mapv #(keyword (str "col" %)) (range n)))))]
-        (ds/->dataset (map #(zipmap cols %) data)
-                      {:dataset-name (str concept "/" frame)})))))
+                    name-opt)
+      (let [rows (if (map? (first data))
+                   (map shape-frame-row data)
+                   (let [cols (if (seq raw-cols)
+                                (mapv keyword raw-cols)
+                                (let [n (count (first data))]
+                                  (if (= 6 n)
+                                    [:accn :cik :entityName :loc :end :val]
+                                    (mapv #(keyword (str "col" %)) (range n)))))]
+                     (map #(shape-frame-row (zipmap cols %)) data)))]
+        (let [result (ds/->dataset rows name-opt)]
+          (if (some #{:val} (ds/column-names result))
+            (ds/sort-by-column result :val #(compare %2 %1))
+            result))))))

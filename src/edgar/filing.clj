@@ -231,10 +231,15 @@
 (defn filing-by-accession
   "Hydrate a filing map from an accession number string.
    Accepts dashed format: \"XXXXXXXXXX-YY-ZZZZZZ\"
-   The first 10 digits of the accession number are the filer's CIK.
    Returns a filing map with :cik :accessionNumber :form :primaryDocument,
    ready for filing-html, filing-text, filing-obj, extract-items, etc.
-   Throws ex-info with ::not-found if the accession number does not exist."
+   Throws ex-info with ::not-found if the accession number does not exist.
+
+   Caveat: the first 10 digits of an accession number are the CIK of the
+   SUBMITTER, which for agent-filed documents (e.g. 0001193125... = Donnelley)
+   is a filing agent, not the subject company. Content URLs still resolve —
+   EDGAR indexes filings under every associated CIK — but the :cik in the
+   returned map may not be the company the filing is about."
   [accession-number]
   (let [digits (str/replace accession-number "-" "")
         cik (str (Long/parseLong (subs digits 0 10)))
