@@ -2,6 +2,12 @@
 
 All notable changes to edgarjure are documented here.
 
+## [Unreleased]
+
+### Changed
+- **License switched from EPL-2.0 to Apache-2.0** (LICENSE file, README, and the pom metadata in build.clj). Applies from the next published version onward; artifacts through 0.2.1 were published under EPL-2.0.
+- Added CONTRIBUTING.md (no pull requests at this time; bug reports via GitHub issues welcome).
+
 ## [0.2.1] — 2026-07-15
 
 ### Added
