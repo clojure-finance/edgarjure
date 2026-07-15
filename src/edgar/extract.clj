@@ -72,7 +72,16 @@
 ;;; ---------------------------------------------------------------------------
 
 (def item-pattern
-  #"(?i)^\s*item\s+((?:[IVXivx]+\s*[-\s]\s*)?\d{1,2}[AB]?(?:\.\d{2})?)\s*[.:\-\u2014]?\s*(.{0,80})")
+  #"(?i)^\s*item\s+((?:[IVXivx]+\s*[-\s]\s*)?\d{1,2}[AB]?(?:\.\d{2})?)\s*[.:\-\u2014]?\s*(.{0,160})")
+
+(defn- clean-title
+  "Trim a captured heading title; when the regex capture hit its length cap,
+   drop the trailing partial word so titles never end mid-word."
+  [s]
+  (let [t (str/trim (str s))]
+    (if (>= (count t) 160)
+      (str/trim (str/replace t #"\s+\S*$" ""))
+      t)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Hickory tree utilities
@@ -130,9 +139,24 @@
 
 (def ^:private heading-tags #{:h1 :h2 :h3 :h4 :p :div :span :td})
 
+(defn- subtree-node-count
+  "Number of nodes (elements and strings) a node contributes to the
+   flattened document-order sequence — itself plus all descendants."
+  [node]
+  (if (map? node)
+    (reduce + 1 (map subtree-node-count (:content node)))
+    1))
+
 (defn- find-item-boundaries
-  "Returns a seq of {:item-id :title :node-index} sorted by :node-index.
-   Deduplicates by taking the *last* match per item-id to skip TOC entries."
+  "Returns a seq of {:item-id :title :node-index :body-start} sorted by
+   :node-index. Deduplicates by taking the *last* match per item-id to skip
+   TOC entries.
+
+   :body-start is where the section body begins in the flat node sequence.
+   For a genuine heading node (short text) the heading's own subtree is
+   skipped so its text is not repeated at the start of the body; when the
+   matching node is a large wrapper that contains the whole section, only
+   the node itself is skipped."
   [flat-nodes]
   (let [candidates
         (keep-indexed
@@ -144,8 +168,11 @@
                                str/trim
                                (str/replace #"\s*[-\s]\s*(?=\d)" "-")
                                str/upper-case)
-                  :title (str/trim (nth m 2))
-                  :node-index idx}))))
+                  :title (clean-title (nth m 2))
+                  :node-index idx
+                  :body-start (if (< (count text) 200)
+                                (+ idx (subtree-node-count node))
+                                (inc idx))}))))
          flat-nodes)]
     ;; keep last occurrence of each item-id (body heading, not TOC)
     (->> candidates
@@ -175,12 +202,14 @@
         all-count (count all-boundaries)]
     (into {}
           (keep-indexed
-           (fn [i {:keys [item-id title node-index]}]
+           (fn [i {:keys [item-id title body-start]}]
              (when (target-ids item-id)
                (let [next-idx (when (< (inc i) all-count)
                                 (:node-index (nth all-boundaries (inc i))))
                      end-idx (or next-idx (count flat))
-                     body-nodes (subvec (vec flat) (inc node-index) end-idx)
+                     body-nodes (subvec (vec flat)
+                                        (min body-start end-idx)
+                                        end-idx)
                      text (text-from-node-slice body-nodes)]
                  [item-id {:title title
                            :text text

@@ -319,35 +319,35 @@
     (testing ":any keeps all rows"
       (is (= rows (vec (f rows :any)))))))
 
-(deftest add-line-item-col-test
-  (let [f #'edgar.financials/add-line-item-col
-        input-ds (ds/->dataset [{:concept "Assets" :val 100}
-                                {:concept "Liabilities" :val 50}
-                                {:concept "Unknown" :val 10}])
-        concept->label {"Assets" "Total Assets" "Liabilities" "Total Liabilities"}
-        result (f input-ds concept->label)]
-    (testing "adds :line-item column"
-      (is (contains? (set (ds/column-names result)) :line-item)))
-    (testing "maps known concepts to labels"
-      (is (= ["Total Assets" "Total Liabilities" "Unknown"]
-             (vec (ds/column result :line-item)))))))
-
-(deftest raw-statement-test
-  (let [f #'edgar.financials/raw-statement
-        facts-ds (ds/->dataset [{:concept "Assets" :form "10-K" :val 100}
-                                {:concept "Liabilities" :form "10-K" :val 50}
-                                {:concept "Revenue" :form "10-K" :val 200}
-                                {:concept "Assets" :form "10-Q" :val 90}])
+(deftest as-reported-statement-test
+  (let [f #'edgar.financials/as-reported-statement
+        facts-ds (ds/->dataset [{:concept "Assets" :form "10-K" :val 100 :start nil}
+                                {:concept "Liabilities" :form "10-K" :val 50 :start nil}
+                                {:concept "Revenue" :form "10-K" :val 200 :start nil}
+                                {:concept "Assets" :form "10-Q" :val 90 :start nil}])
         concepts [["Total Assets" "Assets"] ["Total Liabilities" "Liabilities"]]]
     (testing "filters to matching concepts and form"
-      (let [result (f facts-ds concepts "10-K")]
+      (let [result (f facts-ds concepts "10-K" :any)]
         (is (= 2 (ds/row-count result)))
         (is (every? #{"Assets" "Liabilities"} (ds/column result :concept)))))
     (testing "excludes non-matching form"
-      (let [result (f facts-ds concepts "10-K")]
+      (let [result (f facts-ds concepts "10-K" :any)]
         (is (every? #{"10-K"} (ds/column result :form)))))
+    (testing "does not map labels or add :line-item / :method"
+      (let [result (f facts-ds concepts "10-K" :any)
+            cols (set (ds/column-names result))]
+        (is (not (contains? cols :line-item)))
+        (is (not (contains? cols :method)))))
+    (testing "does NOT deduplicate restatements — all filed rows survive"
+      (let [dup-ds (ds/->dataset [{:concept "Assets" :form "10-K" :val 100 :start nil
+                                   :unit "USD" :end "2023-09-30" :filed "2023-11-01"}
+                                  {:concept "Assets" :form "10-K" :val 105 :start nil
+                                   :unit "USD" :end "2023-09-30" :filed "2024-11-01"}])
+            result (f dup-ds concepts "10-K" :instant)]
+        (is (= 2 (ds/row-count result))
+            "as-reported view keeps both the original and the restated row")))
     (testing "returns empty dataset when no concepts match"
-      (is (= 0 (ds/row-count (f facts-ds [["X" "NonExistentConcept"]] "10-K")))))))
+      (is (= 0 (ds/row-count (f facts-ds [["X" "NonExistentConcept"]] "10-K" :any)))))))
 
 (deftest normalized-statement-multi-candidate-test
   (let [f #'edgar.financials/normalized-statement
@@ -360,10 +360,10 @@
                     :filed "2021-02-01" :frame nil}])
         chains [["Revenue" "Revenues" "SalesRevenueNet" "SalesRevenueGoodsNet"]]]
     (testing "both present candidates are included — no historical periods dropped"
-      (let [result (f facts-ds chains "10-K" :duration nil)]
+      (let [result (f facts-ds chains "10-K" :duration nil nil)]
         (is (= 2 (ds/row-count result)) "pre-2018 SalesRevenueNet and post-2018 Revenues must both appear")))
     (testing "both rows carry the same :line-item label"
-      (let [result (f facts-ds chains "10-K" :duration nil)
+      (let [result (f facts-ds chains "10-K" :duration nil nil)
             labels (set (ds/column result :line-item))]
         (is (= #{"Revenue"} labels))))))
 
@@ -373,7 +373,7 @@
                                  :end "2023-09-30" :filed "2023-11-01" :start nil}])
         chains [["Missing" "ConceptNotInData"]]]
     (testing "returns empty dataset when no chains resolve"
-      (let [result (f facts-ds chains "10-K" :instant nil)]
+      (let [result (f facts-ds chains "10-K" :instant nil nil)]
         (is (= 0 (ds/row-count result)))))))
 
 (deftest normalized-statement-sort-order-test
@@ -389,7 +389,7 @@
                     :end "2023-09-30" :filed "2023-11-03" :start nil :frame nil}])
         chains [["Total Assets" "Assets"]
                 ["Current Liabilities" "LiabilitiesCurrent"]]
-        result (f facts-ds chains "10-K" :instant nil)
+        result (f facts-ds chains "10-K" :instant nil nil)
         ends (vec (ds/column result :end))
         labels (vec (ds/column result :line-item))]
     (testing "most recent period comes first (:end descending)"
@@ -416,132 +416,104 @@
                  "CashAndCashEquivalentsAtCarryingValue"
                  "CashCashEquivalentsAndShortTermInvestments"]]]
     (testing "only the primary (index 0) concept survives when both are present"
-      (let [result (f facts-ds chains "10-K" :instant nil)]
+      (let [result (f facts-ds chains "10-K" :instant nil nil)]
         (is (= 2 (ds/row-count result)) "one row per period, not two")
         (is (= #{100 90} (set (ds/column result :val)))
             "values come from CashAndCashEquivalentsAtCarryingValue only")
         (is (= #{"Cash and Equivalents"} (set (ds/column result :line-item))))))
     (testing "works with :as-of too"
-      (let [result (f facts-ds chains "10-K" :instant "2023-06-01")]
+      (let [result (f facts-ds chains "10-K" :instant "2023-06-01" nil)]
         (is (= 1 (ds/row-count result)) "only 2022 period visible before as-of")
         (is (= 90 (first (ds/column result :val))))))))
 
+
 ;;; ---------------------------------------------------------------------------
-;;; Quarterly and LTM derivation
+;;; Quarterly and LTM derivation — date-window based
+;;; The SEC :fy/:fp fields describe the filing, not the observation period,
+;;; so the derivation works purely from :start/:end dates.
 ;;; ---------------------------------------------------------------------------
 
-(deftest prior-quarter-test
-  (let [f #'edgar.financials/prior-quarter]
-    (testing "Q1 wraps to prior year Q4"
-      (is (= [2023 "Q4"] (f 2024 "Q1"))))
-    (testing "Q2 -> Q1 same year"
-      (is (= [2024 "Q1"] (f 2024 "Q2"))))
-    (testing "Q3 -> Q2 same year"
-      (is (= [2024 "Q2"] (f 2024 "Q3"))))
-    (testing "Q4 -> Q3 same year"
-      (is (= [2024 "Q3"] (f 2024 "Q4"))))
-    (testing "non-quarter fp returns nil"
-      (is (nil? (f 2024 "FY"))))))
-
-(deftest quarter-seq-test
-  (let [f #'edgar.financials/quarter-seq]
-    (testing "generates backward sequence crossing fiscal year boundary"
-      (is (= [[2024 "Q2"] [2024 "Q1"] [2023 "Q4"] [2023 "Q3"]]
-             (take 4 (f 2024 "Q3")))))
-    (testing "from Q1 goes to prior year"
-      (is (= [[2023 "Q4"] [2023 "Q3"] [2023 "Q2"]]
-             (take 3 (f 2024 "Q1")))))))
-
-(deftest build-ytd-lookup-test
-  (let [f #'edgar.financials/build-ytd-lookup]
-    (testing "builds lookup from rows with valid fy/fp"
-      (let [rows [{:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q1" :val 100}
-                  {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q2" :val 210}]
-            lookup (f rows)]
-        (is (= 100 (get lookup ["Revenue" "USD" 2024 "Q1"])))
-        (is (= 210 (get lookup ["Revenue" "USD" 2024 "Q2"])))))
-    (testing "skips rows with FY or nil fy"
-      (let [rows [{:line-item "Revenue" :unit "USD" :fy 2024 :fp "FY" :val 400}
-                  {:line-item "Revenue" :unit "USD" :fy nil :fp "Q1" :val 100}]
-            lookup (f rows)]
-        (is (empty? lookup))))
-    (testing "falls back to :concept when :line-item absent"
-      (let [rows [{:concept "Revenues" :unit "USD" :fy 2024 :fp "Q1" :val 100}]
-            lookup (f rows)]
-        (is (= 100 (get lookup ["Revenues" "USD" 2024 "Q1"])))))))
-
-(deftest compute-val-q-test
-  (let [f #'edgar.financials/compute-val-q
-        ytd-lookup {["Revenue" "USD" 2024 "Q1"] 100
-                    ["Revenue" "USD" 2024 "Q2"] 210
-                    ["Revenue" "USD" 2024 "Q3"] 330}]
-    (testing "Q1 returns reported value (already single quarter)"
-      (is (= 100 (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q1" :val 100}
-                    ytd-lookup))))
-    (testing "Q2 subtracts Q1 YTD"
-      (is (= 110 (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q2" :val 210}
-                    ytd-lookup))))
-    (testing "Q3 subtracts Q2 YTD"
-      (is (= 120 (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q3" :val 330}
-                    ytd-lookup))))
-    (testing "Q4 subtracts Q3 YTD"
-      (is (= 170 (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q4" :val 500}
-                    ytd-lookup))))
-    (testing "returns nil when prior YTD missing"
-      (is (nil? (f {:line-item "Revenue" :unit "USD" :fy 2025 :fp "Q2" :val 200}
-                   ytd-lookup))))
-    (testing "returns nil for FY rows"
-      (is (nil? (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "FY" :val 400}
-                   ytd-lookup))))
-    (testing "returns nil when fy is nil"
-      (is (nil? (f {:line-item "Revenue" :unit "USD" :fy nil :fp "Q1" :val 100}
-                   ytd-lookup))))))
-
-(deftest compute-val-ltm-test
-  (let [f #'edgar.financials/compute-val-ltm
-        val-q-lookup {["Revenue" "USD" 2023 "Q2"] 100
-                      ["Revenue" "USD" 2023 "Q3"] 110
-                      ["Revenue" "USD" 2023 "Q4"] 120
-                      ["Revenue" "USD" 2024 "Q1"] 130
-                      ["Revenue" "USD" 2024 "Q2"] 140}]
-    (testing "sums four consecutive quarters"
-      (is (= (+ 130 120 110 100)
-             (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q1"}
-                val-q-lookup))))
-    (testing "sums four quarters crossing fiscal year"
-      (is (= (+ 140 130 120 110)
-             (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "Q2"}
-                val-q-lookup))))
-    (testing "returns nil when a prior quarter is missing"
-      (is (nil? (f {:line-item "Revenue" :unit "USD" :fy 2023 :fp "Q2"}
-                   val-q-lookup))))
-    (testing "returns nil for non-quarter fp"
-      (is (nil? (f {:line-item "Revenue" :unit "USD" :fy 2024 :fp "FY"}
-                   val-q-lookup))))))
+(deftest duration-months-test
+  (let [f #'edgar.financials/duration-months]
+    (testing "classifies calendar quarters"
+      (is (= 3 (f {:start "2023-01-01" :end "2023-03-31"}))))
+    (testing "classifies 13-week fiscal quarters (e.g. Apple)"
+      (is (= 3 (f {:start "2025-09-28" :end "2025-12-27"}))))
+    (testing "classifies 6/9/12-month YTD windows"
+      (is (= 6 (f {:start "2023-01-01" :end "2023-06-30"})))
+      (is (= 9 (f {:start "2023-01-01" :end "2023-09-30"})))
+      (is (= 12 (f {:start "2023-01-01" :end "2023-12-31"})))
+      (is (= 12 (f {:start "2024-09-29" :end "2025-09-27"})) "52-week fiscal year"))
+    (testing "nil for instant rows"
+      (is (nil? (f {:end "2023-03-31"})))
+      (is (nil? (f {:start nil :end "2023-03-31"}))))
+    (testing "nil for windows that are not whole quarters"
+      (is (nil? (f {:start "2023-01-01" :end "2023-01-31"}))))))
 
 (deftest add-quarterly-and-ltm-test
   (let [f #'edgar.financials/add-quarterly-and-ltm]
     (testing "10-K data is returned unchanged — no :val-q or :val-ltm columns"
-      (let [ds (ds/->dataset [{:line-item "Revenue" :val 400 :fy 2024 :fp "FY"
-                               :unit "USD" :end "2024-09-30"}])
-            result (f ds "10-K")]
+      (let [ds (ds/->dataset [{:line-item "Revenue" :val 400
+                               :unit "USD" :start "2023-10-01" :end "2024-09-30"}])
+            result (f ds "10-K" nil)]
         (is (= ds result))
         (is (not (some #{:val-q} (ds/column-names result))))))
-    (testing "10-Q data gets :val-q and :val-ltm columns"
+    (testing "10-Q data gets :duration-months, :val-q and :val-ltm columns"
       (let [ds (ds/->dataset
-                [{:line-item "Revenue" :val 100 :fy 2024 :fp "Q1"
-                  :unit "USD" :end "2024-03-31" :concept "Revenues"}
-                 {:line-item "Revenue" :val 210 :fy 2024 :fp "Q2"
-                  :unit "USD" :end "2024-06-30" :concept "Revenues"}])
-            result (f ds "10-Q")
-            rows (vec (ds/rows result {:nil-missing? true}))]
+                [{:line-item "Revenue" :val 100 :unit "USD" :concept "Revenues"
+                  :start "2024-01-01" :end "2024-03-31"}
+                 {:line-item "Revenue" :val 210 :unit "USD" :concept "Revenues"
+                  :start "2024-01-01" :end "2024-06-30"}])
+            result (f ds "10-Q" nil)
+            rows (->> (ds/rows result {:nil-missing? true}) (sort-by :end) vec)]
+        (is (some #{:duration-months} (ds/column-names result)))
         (is (some #{:val-q} (ds/column-names result)))
         (is (some #{:val-ltm} (ds/column-names result)))
-        (is (= 100 (:val-q (first rows))))
-        (is (= 110 (:val-q (second rows))))))
+        (is (= 100 (:val-q (first rows))) "3-month row: val-q = val")
+        (is (= 110 (:val-q (second rows))) "6-month YTD row: val-q = 210 - 100")))
     (testing "empty dataset returns empty dataset"
-      (let [result (f (ds/->dataset []) "10-Q")]
+      (let [result (f (ds/->dataset []) "10-Q" nil)]
         (is (= 0 (ds/row-count result)))))))
+
+(deftest val-q-comparative-period-safety-test
+  ;; Regression test for the fy/fp collision bug: a Q2 10-Q carries current
+  ;; 3-month, current YTD, AND prior-year comparative rows, all sharing the
+  ;; same :fy/:fp. The old fy/fp-keyed derivation mixed the windows and
+  ;; produced garbage (negative revenue). Date-window keying must not.
+  (let [f #'edgar.financials/add-quarterly-and-ltm
+        rows [;; current-year Q1
+              {:line-item "Revenue" :val 190 :unit "USD"
+               :start "2023-10-01" :end "2023-12-31" :fy 2024 :fp "Q1"}
+              ;; current 3-month Q2
+              {:line-item "Revenue" :val 210 :unit "USD"
+               :start "2024-01-01" :end "2024-03-31" :fy 2024 :fp "Q2"}
+              ;; current 6-month YTD — same fy/fp as the 3-month row
+              {:line-item "Revenue" :val 400 :unit "USD"
+               :start "2023-10-01" :end "2024-03-31" :fy 2024 :fp "Q2"}
+              ;; prior-year comparative 3-month — ALSO fy 2024 fp Q2
+              {:line-item "Revenue" :val 110 :unit "USD"
+               :start "2023-01-01" :end "2023-03-31" :fy 2024 :fp "Q2"}
+              ;; prior-year comparative 6-month — ALSO fy 2024 fp Q2
+              {:line-item "Revenue" :val 210 :unit "USD"
+               :start "2022-10-01" :end "2023-03-31" :fy 2024 :fp "Q2"}
+              ;; prior-year Q1 (from last year's Q1 filing)
+              {:line-item "Revenue" :val 100 :unit "USD"
+               :start "2022-10-01" :end "2022-12-31" :fy 2023 :fp "Q1"}]
+        result (f (ds/->dataset rows) "10-Q" nil)
+        by-window (into {} (map (fn [r] [[(str (:start r)) (str (:end r))] (:val-q r)])
+                                (ds/rows result {:nil-missing? true})))]
+    (testing "current 3-month row keeps its own value"
+      (is (= 210 (get by-window ["2024-01-01" "2024-03-31"]))))
+    (testing "current YTD row derives the same quarter via differencing"
+      (is (= 210 (get by-window ["2023-10-01" "2024-03-31"]))
+          "400 YTD - 190 Q1 = 210, not corrupted by comparative rows"))
+    (testing "comparative 3-month row keeps its own (prior-year) value"
+      (is (= 110 (get by-window ["2023-01-01" "2023-03-31"]))))
+    (testing "comparative YTD row derives prior-year quarter correctly"
+      (is (= 110 (get by-window ["2022-10-01" "2023-03-31"]))
+          "210 prior YTD - 100 prior Q1 = 110"))
+    (testing "no negative quarterly revenue anywhere (the old failure mode)"
+      (is (every? #(or (nil? %) (pos? %)) (vals by-window))))))
 
 (deftest normalized-statement-quarterly-test
   (let [f #'edgar.financials/normalized-statement
@@ -557,26 +529,29 @@
                     :filed "2024-08-01" :fy 2024 :fp "Q3" :frame nil}])
         chains [["Revenue" "Revenues"]]]
     (testing "10-Q normalized statement includes :val-q column"
-      (let [result (f facts-ds chains "10-Q" :duration nil)
+      (let [result (f facts-ds chains "10-Q" :duration nil nil)
             rows (->> (ds/rows result {:nil-missing? true})
                       (sort-by :end)
                       vec)]
         (is (some #{:val-q} (ds/column-names result)))
-        (is (= 100 (:val-q (nth rows 0))) "Q1 val-q = reported")
-        (is (= 110 (:val-q (nth rows 1))) "Q2 val-q = 210 - 100")
+        (is (= 100 (:val-q (nth rows 0))) "Q1 val-q = reported (3-month window)")
+        (is (= 110 (:val-q (nth rows 1))) "Q2 val-q = 210 - 100 (YTD differencing)")
         (is (= 120 (:val-q (nth rows 2))) "Q3 val-q = 330 - 210")))
     (testing "10-K normalized statement does NOT include :val-q"
       (let [facts-10k (ds/->dataset
                        [{:concept "Revenues" :form "10-K" :val 400
                          :unit "USD" :start "2023-10-01" :end "2024-09-30"
                          :filed "2024-11-01" :fy 2024 :fp "FY" :frame nil}])
-            result (f facts-10k chains "10-K" :duration nil)]
+            result (f facts-10k chains "10-K" :duration nil nil)]
         (is (not (some #{:val-q} (ds/column-names result))))))))
 
 (deftest normalized-statement-ltm-test
+  ;; LTM requires a fiscal Q4, which never appears in 10-Q filings.
+  ;; The 10-K FY row must participate: Q4 = FY - 9M YTD.
   (let [f #'edgar.financials/normalized-statement
         facts-ds (ds/->dataset
-                  [{:concept "Revenues" :form "10-Q" :val 100
+                  [;; FY2023 quarters via 10-Q filings
+                   {:concept "Revenues" :form "10-Q" :val 100
                     :unit "USD" :start "2022-10-01" :end "2022-12-31"
                     :filed "2023-02-01" :fy 2023 :fp "Q1" :frame nil}
                    {:concept "Revenues" :form "10-Q" :val 210
@@ -585,28 +560,199 @@
                    {:concept "Revenues" :form "10-Q" :val 330
                     :unit "USD" :start "2022-10-01" :end "2023-06-30"
                     :filed "2023-08-01" :fy 2023 :fp "Q3" :frame nil}
-                   {:concept "Revenues" :form "10-Q" :val 460
+                   ;; FY2023 annual — 10-K (only source of Q4 information)
+                   {:concept "Revenues" :form "10-K" :val 460
                     :unit "USD" :start "2022-10-01" :end "2023-09-30"
-                    :filed "2023-11-01" :fy 2023 :fp "Q4" :frame nil}
+                    :filed "2023-11-15" :fy 2023 :fp "FY" :frame nil}
+                   ;; FY2024 Q1 10-Q
                    {:concept "Revenues" :form "10-Q" :val 140
                     :unit "USD" :start "2023-10-01" :end "2023-12-31"
                     :filed "2024-02-01" :fy 2024 :fp "Q1" :frame nil}])
         chains [["Revenue" "Revenues"]]]
-    (testing "LTM computed when four consecutive quarters available"
-      (let [result (f facts-ds chains "10-Q" :duration nil)
+    (testing "LTM computed across the fiscal Q4 using the 10-K annual row"
+      (let [result (f facts-ds chains "10-Q" :duration nil nil)
             rows (->> (ds/rows result {:nil-missing? true})
                       (sort-by :end)
                       vec)
-            q4-row (nth rows 3)
-            q1-fy24-row (nth rows 4)]
-        (is (= (+ 100 110 120 130) (:val-ltm q4-row))
-            "Q4 FY2023 LTM = Q1+Q2+Q3+Q4 = 100+110+120+130")
-        (is (= (+ 140 130 120 110) (:val-ltm q1-fy24-row))
-            "Q1 FY2024 LTM = Q1(140)+Q4(130)+Q3(120)+Q2(110)")))
-    (testing "LTM is nil when prior quarters are missing"
-      (let [result (f facts-ds chains "10-Q" :duration nil)
+            q1-fy24-row (last rows)]
+        (is (= "2023-12-31" (str (:end q1-fy24-row))))
+        (is (= 500 (:val-ltm q1-fy24-row))
+            "Q1 FY24 LTM = 140 + Q4(460-330=130) + Q3(120) + Q2(110) = 500")))
+    (testing "10-K annual rows are NOT included as output rows of the 10-Q statement"
+      (let [result (f facts-ds chains "10-Q" :duration nil nil)]
+        (is (= 4 (ds/row-count result))
+            "only the four 10-Q observations appear")))
+    (testing "LTM is nil when the trailing window is incomplete"
+      (let [result (f facts-ds chains "10-Q" :duration nil nil)
             rows (->> (ds/rows result {:nil-missing? true})
                       (sort-by :end)
-                      vec)
-            q1-row (first rows)]
-        (is (nil? (:val-ltm q1-row)) "Q1 FY2023 has no prior 3 quarters")))))
+                      vec)]
+        (is (nil? (:val-ltm (first rows)))
+            "Q1 FY2023 has no prior three quarters")))))
+
+(deftest to-wide-ytd-preference-test
+  ;; When a 3-month and a YTD row share the same [end line-item], the wide
+  ;; pivot must deterministically use the YTD (longest duration) row for the
+  ;; plain value, and the period-level :val-q from whichever row has it.
+  (let [f #'edgar.financials/to-wide
+        rows [{:end "2024-03-31" :line-item "Revenue" :val 210
+               :duration-months 3 :val-q 210 :val-ltm nil}
+              {:end "2024-03-31" :line-item "Revenue" :val 400
+               :duration-months 6 :val-q 210 :val-ltm nil}]
+        result (f (ds/->dataset rows))
+        row (first (ds/rows result {:nil-missing? true}))]
+    (testing "one output row for the period"
+      (is (= 1 (ds/row-count result))))
+    (testing "plain value comes from the YTD (6-month) row"
+      (is (= 400 (get row "Revenue"))))
+    (testing "(Q) value is the derived quarter"
+      (is (= 210 (get row "Revenue (Q)"))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Derived line items (imputation) — :view :standardized
+;;; ---------------------------------------------------------------------------
+
+(deftest apply-identities-test
+  (let [f #'edgar.financials/apply-identities
+        base {:unit "USD" :start "2023-01-01" :end "2023-12-31"
+              :filed "2024-02-01" :method :direct}]
+    (testing "derives Gross Profit = Revenue - Cost of Revenue when absent"
+      (let [rows [(assoc base :line-item "Revenue" :val 100 :concept "Revenues")
+                  (assoc base :line-item "Cost of Revenue" :val 60 :concept "CostOfRevenue")]
+            result (vec (f rows fin/income-statement-identities))
+            gp (first (filter #(= "Gross Profit" (:line-item %)) result))]
+        (is (some? gp) "Gross Profit row must be synthesized")
+        (is (= 40 (:val gp)))
+        (is (= :derived (:method gp)))
+        (is (= ["Revenue" "Cost of Revenue"] (:derived-from gp)))
+        (is (nil? (:concept gp)))))
+    (testing "does not derive when the target is already present"
+      (let [rows [(assoc base :line-item "Revenue" :val 100)
+                  (assoc base :line-item "Cost of Revenue" :val 60)
+                  (assoc base :line-item "Gross Profit" :val 39)]
+            result (vec (f rows fin/income-statement-identities))
+            gps (filter #(= "Gross Profit" (:line-item %)) result)]
+        (is (= 1 (count gps)))
+        (is (= 39 (:val (first gps))) "reported value wins over the identity")))
+    (testing "does not derive when an operand is missing"
+      (let [rows [(assoc base :line-item "Revenue" :val 100)]
+            result (vec (f rows fin/income-statement-identities))]
+        (is (not (some #(= "Gross Profit" (:line-item %)) result)))))
+    (testing "periods are independent — no cross-period mixing"
+      (let [rows [(assoc base :line-item "Revenue" :val 100)
+                  (assoc base :line-item "Cost of Revenue" :val 60
+                         :end "2022-12-31" :start "2022-01-01")]
+            result (vec (f rows fin/income-statement-identities))]
+        (is (not (some #(= "Gross Profit" (:line-item %)) result))
+            "operands from different periods must not combine")))
+    (testing ":= identity copies the operand (Total Assets from L+E)"
+      (let [rows [{:unit "USD" :start nil :end "2023-12-31" :method :direct
+                   :line-item "Total Liabilities and Equity" :val 500}]
+            result (vec (f rows fin/balance-sheet-identities))
+            ta (first (filter #(= "Total Assets" (:line-item %)) result))]
+        (is (= 500 (:val ta)))
+        (is (= :derived (:method ta)))))
+    (testing "Free Cash Flow = OCF - Capex"
+      (let [rows [(assoc base :line-item "Operating Cash Flow" :val 80)
+                  (assoc base :line-item "Capex" :val 30)]
+            result (vec (f rows fin/cash-flow-identities))
+            fcf (first (filter #(= "Free Cash Flow" (:line-item %)) result))]
+        (is (= 50 (:val fcf)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Industry routing
+;;; ---------------------------------------------------------------------------
+
+(deftest industry-for-sic-test
+  (testing "banks: SIC 6000-6199 and 6712"
+    (is (= :bank (fin/industry-for-sic "6021")))
+    (is (= :bank (fin/industry-for-sic 6022)))
+    (is (= :bank (fin/industry-for-sic "6712"))))
+  (testing "insurers: SIC 6300-6399 and 6411"
+    (is (= :insurance (fin/industry-for-sic "6311")))
+    (is (= :insurance (fin/industry-for-sic "6411"))))
+  (testing "REITs: SIC 6500-6553"
+    (is (= :reit (fin/industry-for-sic "6500")))
+    (is (= :reit (fin/industry-for-sic "6552"))))
+  (testing "everything else is :standard"
+    (is (= :standard (fin/industry-for-sic "3571")))
+    (is (= :standard (fin/industry-for-sic "6200"))) ; brokers, no chains yet
+    (is (= :standard (fin/industry-for-sic nil)))
+    (is (= :standard (fin/industry-for-sic "not-a-sic")))))
+
+;;; ---------------------------------------------------------------------------
+;;; EDN concept files
+;;; ---------------------------------------------------------------------------
+
+(deftest concept-chains-loaded-from-edn-test
+  (testing "standard chains have the expected shape [[label c1 c2 ...] ...]"
+    (is (vector? fin/income-statement-concepts))
+    (is (every? vector? fin/income-statement-concepts))
+    (is (every? #(and (string? (first %)) (every? string? (rest %)))
+                fin/income-statement-concepts)))
+  (testing "standard income chains include Revenue with fallbacks"
+    (let [rev (first (filter #(= "Revenue" (first %)) fin/income-statement-concepts))]
+      (is (some? rev))
+      (is (some #{"Revenues"} (rest rev)))))
+  (testing "bank chains include bank-specific line items"
+    (let [labels (set (map first fin/bank-income-concepts))]
+      (is (contains? labels "Net Interest Income"))
+      (is (contains? labels "Noninterest Income"))))
+  (testing "insurance chains include insurance-specific line items"
+    (let [labels (set (map first fin/insurance-income-concepts))]
+      (is (contains? labels "Premiums Earned"))))
+  (testing "concept maps carry metadata"
+    (is (= :bank (:industry fin/bank-income-concept-map)))
+    (is (string? (:version fin/income-statement-concept-map)))))
+
+(deftest concepts-for-test
+  (testing "returns chains and metadata for each statement"
+    (let [{:keys [chains meta]} (fin/concepts-for :income)]
+      (is (= fin/income-statement-concepts chains))
+      (is (= :standard (:industry meta)))))
+  (testing "industry variants"
+    (is (= fin/bank-income-concepts
+           (:chains (fin/concepts-for :income :industry :bank))))
+    (is (= fin/insurance-income-concepts
+           (:chains (fin/concepts-for :income :industry :insurance)))))
+  (testing "balance and cash-flow"
+    (is (= fin/balance-sheet-concepts (:chains (fin/concepts-for :balance))))
+    (is (= fin/cash-flow-concepts (:chains (fin/concepts-for :cash-flow))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Unmapped concept logging
+;;; ---------------------------------------------------------------------------
+
+(deftest unmapped-concepts-test
+  (fin/clear-unmapped-concepts!)
+  (let [record! #'edgar.financials/record-unmapped!
+        facts-ds (ds/->dataset
+                  [{:taxonomy "us-gaap" :concept "Revenues" :form "10-K" :val 1}
+                   {:taxonomy "us-gaap" :concept "SomeExoticConcept" :form "10-K" :val 2}
+                   {:taxonomy "us-gaap" :concept "OtherFormConcept" :form "10-Q" :val 3}
+                   {:taxonomy "dei" :concept "EntityCommonStockSharesOutstanding"
+                    :form "10-K" :val 4}])
+        chains [["Revenue" "Revenues"]]]
+    (record! "0000000001" facts-ds chains "10-K")
+    (let [reg (fin/unmapped-concepts)]
+      (testing "unmatched us-gaap concept for the form is recorded"
+        (is (contains? reg "SomeExoticConcept"))
+        (is (= 1 (get-in reg ["SomeExoticConcept" :count])))
+        (is (contains? (get-in reg ["SomeExoticConcept" :example-ciks]) "0000000001")))
+      (testing "chain-matched concepts are not recorded"
+        (is (not (contains? reg "Revenues"))))
+      (testing "other-form concepts are not recorded"
+        (is (not (contains? reg "OtherFormConcept"))))
+      (testing "non-us-gaap taxonomies are not recorded"
+        (is (not (contains? reg "EntityCommonStockSharesOutstanding")))))
+    (record! "0000000002" facts-ds chains "10-K")
+    (testing "repeat sightings increment :count and collect example CIKs"
+      (let [entry (get (fin/unmapped-concepts) "SomeExoticConcept")]
+        (is (= 2 (:count entry)))
+        (is (= #{"0000000001" "0000000002"} (:example-ciks entry)))))
+    (testing ":top returns most frequent first"
+      (let [top (fin/unmapped-concepts :top 1)]
+        (is (= "SomeExoticConcept" (ffirst top)))))
+    (fin/clear-unmapped-concepts!)
+    (testing "clear! empties the registry"
+      (is (empty? (fin/unmapped-concepts))))))

@@ -13,6 +13,8 @@
             edgar.schema-test
             edgar.dataset-test
             edgar.download-test
+            edgar.validation-test
+            edgar.fsds-test
             edgar.api-docstring-test))
 
 (defn -main [& _]
@@ -29,5 +31,7 @@
                             'edgar.schema-test
                             'edgar.dataset-test
                             'edgar.download-test
+                            'edgar.validation-test
+                            'edgar.fsds-test
                             'edgar.api-docstring-test)]
     (System/exit (if (= 0 (:fail result) (:error result)) 0 1))))

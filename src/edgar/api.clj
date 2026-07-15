@@ -388,7 +388,10 @@
 
 (defn frame
   "Fetch cross-sectional data for a concept across all companies for a period.
-   Returns a tech.ml.dataset sorted by :val descending.
+   Returns a tech.ml.dataset sorted by :val descending, with columns
+   :accn :cik :entityName :loc :end :val. :cik is a zero-padded 10-digit
+   string (matching e/cik), so results join directly against other
+   edgarjure output.
    Required:
      concept - GAAP concept string e.g. \"Assets\" \"NetIncomeLoss\"
      period  - frame string e.g. \"CY2023Q4I\" \"CY2023\"
@@ -417,53 +420,117 @@
 (defn income
   "Return income statement as a long-format tech.ml.dataset.
    Options:
-     :form  - \"10-K\" (default) or \"10-Q\"
-     :shape - :long (default) or :wide
-     :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
-               When set, only filings where :filed <= as-of-date are used
-               (point-in-time / look-ahead-safe mode)."
-  [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
-  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape :as-of as-of})
-  (financials/income-statement ticker-or-cik :form form :shape shape :as-of as-of))
+     :form     - \"10-K\" (default) or \"10-Q\"
+     :shape    - :long (default) or :wide
+     :view     - :normalized (default) | :as-reported | :standardized
+                 :as-reported = raw rows, no dedup or label mapping;
+                 :standardized = normalized plus line items imputed from
+                 arithmetic identities (rows carry :method :derived)
+     :industry - :standard | :bank | :insurance. Auto-detected from the
+                 company's SIC code when omitted (banks/insurers get
+                 industry-specific concept chains)
+     :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
+                 When set, only filings where :filed <= as-of-date are used
+                 (point-in-time / look-ahead-safe mode).
+   For 10-Q queries, long format includes :duration-months, :val-q
+   (single quarter) and :val-ltm (trailing twelve months) columns."
+  [ticker-or-cik & {:keys [form shape as-of view industry]
+                    :or {form "10-K" shape :long}}]
+  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape
+                                          :as-of as-of :view view :industry industry})
+  (financials/income-statement ticker-or-cik :form form :shape shape :as-of as-of
+                               :view (or view :normalized) :industry industry))
 
 (defn balance
   "Return balance sheet as a long-format tech.ml.dataset.
    Options:
      :form  - \"10-K\" (default) or \"10-Q\"
      :shape - :long (default) or :wide
+     :view  - :normalized (default) | :as-reported | :standardized
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode)."
-  [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
-  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape :as-of as-of})
-  (financials/balance-sheet ticker-or-cik :form form :shape shape :as-of as-of))
+  [ticker-or-cik & {:keys [form shape as-of view]
+                    :or {form "10-K" shape :long}}]
+  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape
+                                          :as-of as-of :view view})
+  (financials/balance-sheet ticker-or-cik :form form :shape shape :as-of as-of
+                            :view (or view :normalized)))
 
 (defn cashflow
   "Return cash flow statement as a long-format tech.ml.dataset.
    Options:
      :form  - \"10-K\" (default) or \"10-Q\"
      :shape - :long (default) or :wide
+     :view  - :normalized (default) | :as-reported | :standardized
+              (:standardized adds a derived \"Free Cash Flow\" line item)
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                When set, only filings where :filed <= as-of-date are used
-               (point-in-time / look-ahead-safe mode)."
-  [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
-  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape :as-of as-of})
-  (financials/cash-flow ticker-or-cik :form form :shape shape :as-of as-of))
+               (point-in-time / look-ahead-safe mode).
+   For 10-Q queries, long format includes :duration-months, :val-q and
+   :val-ltm columns."
+  [ticker-or-cik & {:keys [form shape as-of view]
+                    :or {form "10-K" shape :long}}]
+  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape
+                                          :as-of as-of :view view})
+  (financials/cash-flow ticker-or-cik :form form :shape shape :as-of as-of
+                        :view (or view :normalized)))
 
 (defn financials
   "Return all three financial statements for a company.
    Returns {:income ds :balance ds :cashflow ds}
    Options:
-     :form  - \"10-K\" (default) or \"10-Q\"
-     :shape - :long (default) or :wide
-     :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
-               All three statements use point-in-time deduplication."
-  [ticker-or-cik & {:keys [form shape as-of] :or {form "10-K" shape :long}}]
-  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape :as-of as-of})
-  (let [stmts (financials/get-financials ticker-or-cik :form form :shape shape :as-of as-of)]
+     :form     - \"10-K\" (default) or \"10-Q\"
+     :shape    - :long (default) or :wide
+     :view     - :normalized (default) | :as-reported | :standardized
+     :industry - :standard | :bank | :insurance (income statement only)
+     :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
+                 All three statements use point-in-time deduplication."
+  [ticker-or-cik & {:keys [form shape as-of view industry]
+                    :or {form "10-K" shape :long}}]
+  (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape
+                                          :as-of as-of :view view :industry industry})
+  (let [stmts (financials/get-financials ticker-or-cik :form form :shape shape :as-of as-of
+                                         :view (or view :normalized) :industry industry)]
     {:income (:income-statement stmts)
      :balance (:balance-sheet stmts)
      :cashflow (:cash-flow stmts)}))
+
+;;; ---------------------------------------------------------------------------
+;;; Standardization introspection
+;;; ---------------------------------------------------------------------------
+
+(defn concepts-for
+  "Return the active concept chains (and their EDN metadata) for a statement.
+   statement: :income | :balance | :cash-flow
+   Options:
+     :industry - :standard (default) | :bank | :insurance (income only)
+   Example: (e/concepts-for :income :industry :bank)"
+  [statement & {:keys [industry] :or {industry :standard}}]
+  (financials/concepts-for statement :industry industry))
+
+(defn unmapped-concepts
+  "Return the registry of us-gaap concepts seen in company facts that no
+   active concept chain matched, accumulated across statement calls this
+   session: {concept {:count n :first-seen date :example-ciks #{...}}}
+   Options:
+     :top - only the n most frequent, as [concept info] pairs
+   Grow chain coverage by reviewing this and extending the EDN concept files."
+  [& {:keys [top]}]
+  (financials/unmapped-concepts :top top))
+
+(defn clear-unmapped-concepts!
+  "Reset the unmapped-concept registry."
+  []
+  (financials/clear-unmapped-concepts!))
+
+(defn save-unmapped-concepts!
+  "Write the unmapped-concept registry as EDN.
+   Options:
+     :path - output file (default ~/.edgarjure/unmapped-concepts.edn)
+   Returns the path written."
+  [& {:keys [path]}]
+  (financials/save-unmapped-concepts! :path path))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Panel datasets

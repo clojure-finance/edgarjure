@@ -135,32 +135,51 @@
 ;;; Company search via EFTS full-text search
 ;;; ---------------------------------------------------------------------------
 
+(defn- shape-search-hit [hit]
+  (let [src (:_source hit)
+        cik (first (:ciks src))
+        display (first (:display_names src))]
+    (when (and cik display)
+      {:entity-name (-> display
+                        (str/replace #"\s*\(CIK [^)]+\)" "")
+                        (str/replace #"\s*\([^)]+\)\s*$" "")
+                        str/trim)
+       :cik cik
+       :location (first (:biz_locations src))
+       :inc-states (vec (:inc_states src))})))
+
 (defn search-companies
   "Search EDGAR for companies matching a name query string.
    Returns a seq of shaped result maps with keys:
      :entity-name - company display name (parsed from display_names)
      :cik         - zero-padded 10-digit CIK
      :location    - business location string or nil
-     :inc-states  - vector of incorporation state codes"
+     :inc-states  - vector of incorporation state codes
+
+   Results are deduplicated by CIK. Pages through the EFTS search-index
+   until :limit distinct companies are collected or results are exhausted."
   [query & {:keys [limit] :or {limit 10}}]
-  (let [resp (core/edgar-get (str core/efts-url
-                                  "?q=" (java.net.URLEncoder/encode query "UTF-8")
-                                  "&hits.hits._source=display_names,ciks,biz_locations,inc_states"))
-        hits (get-in resp [:hits :hits])
-        shaped (keep (fn [hit]
-                       (let [src (:_source hit)
-                             cik (first (:ciks src))
-                             display (first (:display_names src))]
-                         (when (and cik display)
-                           {:entity-name (-> display
-                                             (str/replace #"\s*\(CIK [^)]+\)" "")
-                                             (str/replace #"\s*\([^)]+\)\s*$" "")
-                                             str/trim)
-                            :cik cik
-                            :location (first (:biz_locations src))
-                            :inc-states (vec (:inc_states src))})))
-                     hits)
-        deduped (vals (reduce (fn [acc m] (if (contains? acc (:cik m)) acc (assoc acc (:cik m) m)))
-                              {}
-                              shaped))]
-    (take limit deduped)))
+  (let [base-url (str core/efts-url
+                      "?q=" (java.net.URLEncoder/encode query "UTF-8")
+                      "&hits.hits._source=display_names,ciks,biz_locations,inc_states")]
+    (loop [from 0
+           seen #{}
+           results []]
+      (let [resp (core/edgar-get (str base-url "&from=" from))
+            hits (get-in resp [:hits :hits])
+            total (get-in resp [:hits :total :value] 0)
+            {seen' :seen results' :results}
+            (reduce (fn [{:keys [seen results] :as acc} m]
+                      (if (or (contains? seen (:cik m))
+                              (>= (count results) limit))
+                        acc
+                        {:seen (conj seen (:cik m))
+                         :results (conj results m)}))
+                    {:seen seen :results results}
+                    (keep shape-search-hit hits))
+            from' (+ from (count hits))]
+        (if (or (>= (count results') limit)
+                (empty? hits)
+                (>= from' total))
+          results'
+          (recur from' seen' results'))))))

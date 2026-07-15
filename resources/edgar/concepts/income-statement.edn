@@ -1,0 +1,47 @@
+{:statement :income-statement
+ :industry :standard
+ :taxonomy "us-gaap"
+ :version "2026-07-15"
+ :notes "Concept fallback chains for standard industrial filers. Each line item lists candidate XBRL concepts tried in order; the first present in the company's facts wins per period."
+ :line-items
+ [{:label "Revenue"
+   :concepts ["RevenueFromContractWithCustomerExcludingAssessedTax"
+              "Revenues"
+              "SalesRevenueNet"
+              "SalesRevenueGoodsNet"
+              "RevenueFromContractWithCustomerIncludingAssessedTax"]}
+  {:label "Cost of Revenue"
+   :concepts ["CostOfRevenue"
+              "CostOfGoodsSold"
+              "CostOfGoodsAndServicesSold"]}
+  {:label "Gross Profit"
+   :concepts ["GrossProfit"]}
+  {:label "Operating Expenses"
+   :concepts ["OperatingExpenses"]}
+  {:label "Total Costs and Expenses"
+   :concepts ["CostsAndExpenses"]}
+  {:label "R&D Expense"
+   :concepts ["ResearchAndDevelopmentExpense"]}
+  {:label "SG&A Expense"
+   :concepts ["SellingGeneralAndAdministrativeExpense"]}
+  {:label "Operating Income"
+   :concepts ["OperatingIncomeLoss"]}
+  {:label "Non-Operating Income"
+   :concepts ["NonoperatingIncomeExpense"]}
+  {:label "Pre-Tax Income"
+   :concepts ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"
+              "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"]}
+  {:label "Income Tax Expense"
+   :concepts ["IncomeTaxExpenseBenefit"]}
+  {:label "Net Income"
+   :concepts ["NetIncomeLoss"
+              "ProfitLoss"
+              "NetIncomeLossAvailableToCommonStockholdersBasic"]}
+  {:label "EPS Basic"
+   :concepts ["EarningsPerShareBasic"]}
+  {:label "EPS Diluted"
+   :concepts ["EarningsPerShareDiluted"]}
+  {:label "Shares Basic"
+   :concepts ["WeightedAverageNumberOfSharesOutstandingBasic"]}
+  {:label "Shares Diluted"
+   :concepts ["WeightedAverageNumberOfDilutedSharesOutstanding"]}]}

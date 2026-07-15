@@ -95,11 +95,11 @@
 ;;; ---------------------------------------------------------------------------
 
 (defn add-market-cap-rank
-  "Add a :rank column (1 = largest) based on a market-cap or size column."
+  "Sort descending by col and add a :rank column (1 = largest)."
   [ds col]
-  (let [sorted (ds/sort-by-column ds col {:comparator compare :reverse? true})
-        ranks (range 1 (inc (ds/row-count sorted)))]
-    (ds/add-column sorted :rank ranks)))
+  (let [sorted (ds/sort-by-column ds col #(compare %2 %1))]
+    (ds/add-or-update-column sorted :rank
+                             (vec (range 1 (inc (ds/row-count sorted)))))))
 
 (defn filter-form
   "Filter a facts dataset to a specific form type."

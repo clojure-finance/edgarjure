@@ -86,12 +86,22 @@
    [:concept {:optional true} [:maybe ConceptArg]]
    [:form {:optional true} [:maybe FormType]]])
 
+(def ViewKw
+  [:enum {:error/message "must be :as-reported, :normalized or :standardized"}
+   :as-reported :normalized :standardized])
+
+(def IndustryKw
+  [:enum {:error/message "must be :standard, :bank, :insurance or :reit"}
+   :standard :bank :insurance :reit])
+
 (def StatementArgs
   [:map
    [:ticker-or-cik TickerOrCIK]
    [:form FormType]
    [:shape ShapeKw]
-   [:as-of {:optional true} [:maybe ISODate]]])
+   [:as-of {:optional true} [:maybe ISODate]]
+   [:view {:optional true} [:maybe ViewKw]]
+   [:industry {:optional true} [:maybe IndustryKw]]])
 
 (def FrameArgs
   [:map

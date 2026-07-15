@@ -4,6 +4,7 @@
             [clojure.java.io :as io]
             [edgar.core :as core]
             [edgar.api :as e]
+            [edgar.filings :as filings]
             [edgar.forms]
             [tech.v3.dataset :as ds]))
 
@@ -266,10 +267,32 @@
       (is (pos? (ds/row-count ds)))
       (is (contains? (set (ds/column-names ds)) :val))
       (is (contains? (set (ds/column-names ds)) :cik))))
+  (testing "frame rows are properly keyed against the REAL response format"
+    ;; Regression for the fixture-drift bug: the old parser produced rows
+    ;; where every cell was a misaligned MapEntry.
+    (let [ds (e/frame "Assets" "CY2023Q4I")
+          row (first (ds/rows ds))]
+      (is (number? (:val row)) ":val must be numeric, not a MapEntry")
+      (is (string? (:entityName row)))
+      (is (re-matches #"\d{10}" (:cik row)) ":cik must be a zero-padded string")))
+  (testing "frame is sorted by :val descending"
+    (let [vs (vec (take 100 (ds/column (e/frame "Assets" "CY2023Q4I") :val)))]
+      (is (every? true? (map >= vs (rest vs))))))
   (testing "frame :unit shares works for share count concepts"
     (let [ds (e/frame "SharesOutstanding" "CY2023Q4I" :unit "shares")]
       (is (ds/dataset? ds))
       (is (pos? (ds/row-count ds))))))
+
+(deftest quarterly-index-live-test
+  ;; Regression for the fixture-drift bug: company.idx pipe-parsing returned
+  ;; 0 rows for every quarter while the offline tests stayed green.
+  (testing "get-quarterly-index parses a real quarter (master.idx)"
+    (let [idx (filings/get-quarterly-index 2024 1)
+          row (first idx)]
+      (is (> (count idx) 100000) "a real quarter has hundreds of thousands of filings")
+      (is (re-matches #"\d+" (:cik row)))
+      (is (re-matches #"\d{4}-\d{2}-\d{2}" (:date-filed row)))
+      (is (str/starts-with? (:filename row) "edgar/data/")))))
 
 ;; ---------------------------------------------------------------------------
 ;; Financial statements
@@ -335,6 +358,72 @@
           pit (e/financials "AAPL" :as-of "2020-01-01")]
       (is (<= (ds/row-count (:income pit)) (ds/row-count (:income full))))
       (is (<= (ds/row-count (:balance pit)) (ds/row-count (:balance full)))))))
+
+(deftest quarterly-ltm-live-test
+  ;; Regression for the fy/fp collision bug: val-q produced negative revenue
+  ;; and val-ltm was nil for 100% of rows.
+  (let [q (e/income "AAPL" :form "10-Q")
+        rows (ds/rows q {:nil-missing? true})]
+    (testing "10-Q income has :duration-months, :val-q and :val-ltm columns"
+      (let [cols (set (ds/column-names q))]
+        (is (contains? cols :duration-months))
+        (is (contains? cols :val-q))
+        (is (contains? cols :val-ltm))))
+    (testing "a substantial share of rows have non-nil :val-ltm"
+      (let [n (count rows)
+            ltm (count (remove nil? (map :val-ltm rows)))]
+        (is (> ltm (* 0.5 n))
+            "LTM must be computable for most rows (10-K Q4 blending)")))
+    (testing "quarterly revenue is never negative (the old failure mode)"
+      (let [rev-q (->> rows
+                       (filter #(= "Revenue" (:line-item %)))
+                       (keep :val-q))]
+        (is (seq rev-q))
+        (is (every? pos? rev-q))))))
+
+(deftest statement-views-live-test
+  (testing ":as-reported returns raw rows without :line-item/:method"
+    (let [ds (e/income "AAPL" :view :as-reported)
+          cols (set (ds/column-names ds))]
+      (is (pos? (ds/row-count ds)))
+      (is (not (contains? cols :line-item)))
+      (is (not (contains? cols :method)))))
+  (testing ":standardized derives Gross Profit where the filer stopped tagging it"
+    ;; AMZN tagged GrossProfit directly through 2009 and never since — so the
+    ;; standardized view must contain BOTH direct (old) and derived (recent)
+    ;; rows, with reported values always winning over the identity.
+    (let [rows (ds/rows (e/income "AMZN" :view :standardized) {:nil-missing? true})
+          gp (filter #(= "Gross Profit" (:line-item %)) rows)
+          derived (filter #(= :derived (:method %)) gp)
+          latest (last (sort-by (comp str :end) gp))]
+      (is (seq gp))
+      (is (seq derived) "recent periods must be imputed")
+      (is (= :derived (:method latest)) "the most recent period is derived")
+      (is (every? #(= ["Revenue" "Cost of Revenue"] (:derived-from %)) derived))
+      (is (every? #(nil? (:derived-from %))
+                  (filter #(= :direct (:method %)) gp))
+          "directly reported rows keep :direct provenance and win over the identity")))
+  (testing ":standardized cash flow includes derived Free Cash Flow"
+    (let [rows (ds/rows (e/cashflow "AAPL" :view :standardized) {:nil-missing? true})]
+      (is (some #(= "Free Cash Flow" (:line-item %)) rows)))))
+
+(deftest industry-routing-live-test
+  (testing "JPM auto-routes to bank chains"
+    (let [items (set (ds/column (e/income "JPM") :line-item))]
+      (is (contains? items "Net Interest Income"))
+      (is (contains? items "Noninterest Income"))))
+  (testing ":industry :standard forces generic chains"
+    (let [items (set (ds/column (e/income "JPM" :industry :standard) :line-item))]
+      (is (not (contains? items "Net Interest Income"))))))
+
+(deftest unmapped-concepts-live-test
+  (testing "statement calls populate the unmapped-concept registry"
+    (e/clear-unmapped-concepts!)
+    (e/income "AAPL")
+    (let [reg (e/unmapped-concepts)]
+      (is (map? reg))
+      (is (seq reg) "AAPL facts contain many concepts outside the chains"))
+    (e/clear-unmapped-concepts!)))
 
 ;; ---------------------------------------------------------------------------
 ;; Panel datasets

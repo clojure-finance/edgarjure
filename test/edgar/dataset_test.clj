@@ -94,6 +94,21 @@
       (let [result (dataset/multi-company-facts ["AAPL"] :concept "Revenue" :form "10-Q" :as-of "2024-01-01")]
         (is (= 2 (ds/row-count result)) "3-month and 9-month windows must not be collapsed")))))
 
+(deftest add-market-cap-rank-test
+  ;; Regression: the old implementation passed an options map where a
+  ;; comparator was expected and called ds/add-column with a wrong arity —
+  ;; it threw on every invocation.
+  (let [ds-in (ds/->dataset [{:company "B" :cap 3}
+                             {:company "A" :cap 10}
+                             {:company "C" :cap 1}])
+        result (dataset/add-market-cap-rank ds-in :cap)
+        rows (vec (ds/rows result {:nil-missing? true}))]
+    (testing "sorted descending by the size column"
+      (is (= [10 3 1] (mapv :cap rows))))
+    (testing ":rank column runs 1..n with 1 = largest"
+      (is (= [1 2 3] (mapv :rank rows)))
+      (is (= "A" (:company (first rows)))))))
+
 (deftest pivot-wide-test
   (let [f dataset/pivot-wide
         rows [{:end "2023-09-30" :concept "Assets" :val 100 :frame nil :start nil}

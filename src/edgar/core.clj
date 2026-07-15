@@ -104,11 +104,54 @@
         expires-at (.plusMillis (java.time.Instant/now) ttl)]
     (swap! cache assoc url {:value value :expires-at expires-at})))
 
+;;; ---------------------------------------------------------------------------
+;;; Bounded raw-response cache
+;;;
+;;; Raw (string) responses — filing HTML, filing indexes, .idx files — can be
+;;; several MB each, so unlike the JSON cache this one is bounded by entry
+;;; count: when full, the oldest-inserted entries are evicted first.
+;;; This makes repeated REPL calls like (e/text f) → (e/items f) → (e/tables f)
+;;; hit the network once instead of re-downloading the document every time.
+;;; ---------------------------------------------------------------------------
+
+(def ^:private raw-cache-max-entries 64)
+
+(def ^:private raw-cache-ttl
+  "TTL in milliseconds for raw responses (filing documents are immutable
+   once published, so a long TTL is safe)."
+  (* 60 60 1000))
+
+(def ^:private raw-cache (atom {}))
+
+(defn- raw-cache-get [url]
+  (let [{:keys [value expires-at]} (get @raw-cache url)]
+    (when (and value (.isAfter ^java.time.Instant expires-at (java.time.Instant/now)))
+      value)))
+
+(defn- raw-cache-put! [url value]
+  (let [now (java.time.Instant/now)]
+    (swap! raw-cache
+           (fn [m]
+             (let [live (into {} (remove (fn [[_ v]]
+                                           (.isAfter now ^java.time.Instant (:expires-at v)))
+                                         m))
+                   trimmed (if (>= (count live) raw-cache-max-entries)
+                             (->> live
+                                  (sort-by (fn [[_ v]] (:inserted-at v)))
+                                  (drop (inc (- (count live) raw-cache-max-entries)))
+                                  (into {}))
+                             live)]
+               (assoc trimmed url {:value value
+                                   :expires-at (.plusMillis now raw-cache-ttl)
+                                   :inserted-at now}))))))
+
 (defn clear-cache!
-  "Clear the in-memory HTTP response cache and reset the eviction counter.
-   After calling this, the next cache-put! will perform a full eviction sweep."
+  "Clear the in-memory HTTP response caches (JSON and raw) and reset the
+   eviction counter. After calling this, the next cache-put! will perform a
+   full eviction sweep."
   []
   (reset! cache {})
+  (reset! raw-cache {})
   (reset! put-count (dec eviction-interval)))
 
 ;;; ---------------------------------------------------------------------------
@@ -156,14 +199,19 @@
   "Rate-limited GET against any SEC URL.
    Returns parsed JSON as a Clojure map, or raw body string if :raw? true.
    JSON responses are cached in memory (5 min for metadata, 1 hr for XBRL facts).
+   Raw responses are cached in a bounded cache (64 entries, 1 hr TTL) so that
+   repeated content access on the same filing does not re-download it.
    Retries on 429/5xx with exponential backoff (up to 3 attempts).
    Options:
-     :raw?  - return body as string instead of parsing JSON; skips cache (default false)"
+     :raw?  - return body as string instead of parsing JSON (default false)"
   [url & {:keys [raw?] :or {raw? false}}]
   (if raw?
-    (:body (http-get-with-retry url {:http-client @http-client
-                                     :headers (identity-header)
-                                     :as :string}))
+    (or (raw-cache-get url)
+        (let [body (:body (http-get-with-retry url {:http-client @http-client
+                                                    :headers (identity-header)
+                                                    :as :string}))]
+          (raw-cache-put! url body)
+          body))
     (if-let [cached (cache-get url)]
       cached
       (let [result (json/read-value
