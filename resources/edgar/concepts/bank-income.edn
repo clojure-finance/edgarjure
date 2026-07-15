@@ -23,8 +23,9 @@
   {:label "Noninterest Expense"
    :concepts ["NoninterestExpense"]}
   {:label "Total Revenue"
-   :concepts ["RevenuesNetOfInterestExpense"
-              "Revenues"]}
+   :concepts ["Revenues"]}
+  {:label "Total Net Revenue"
+   :concepts ["RevenuesNetOfInterestExpense"]}
   {:label "Compensation Expense"
    :concepts ["LaborAndRelatedExpense"]}
   {:label "Occupancy Expense"

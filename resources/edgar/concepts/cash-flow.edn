@@ -5,12 +5,14 @@
  :notes "Concept fallback chains for the cash flow statement (duration observations)."
  :line-items
  [{:label "Operating Cash Flow"
-   :concepts ["NetCashProvidedByUsedInOperatingActivities"]}
+   :concepts ["NetCashProvidedByUsedInOperatingActivities"
+              "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"]}
   {:label "D&A"
    :concepts ["DepreciationDepletionAndAmortization"
               "DepreciationAndAmortization"]}
   {:label "Investing Cash Flow"
-   :concepts ["NetCashProvidedByUsedInInvestingActivities"]}
+   :concepts ["NetCashProvidedByUsedInInvestingActivities"
+              "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations"]}
   {:label "Capex"
    :concepts ["PaymentsToAcquirePropertyPlantAndEquipment"
               "PaymentsToAcquireProductiveAssets"
@@ -20,7 +22,8 @@
    :concepts ["PaymentsToAcquireBusinessesNetOfCashAcquired"
               "PaymentsToAcquireBusinessesGross"]}
   {:label "Financing Cash Flow"
-   :concepts ["NetCashProvidedByUsedInFinancingActivities"]}
+   :concepts ["NetCashProvidedByUsedInFinancingActivities"
+              "NetCashProvidedByUsedInFinancingActivitiesContinuingOperations"]}
   {:label "Share Buybacks"
    :concepts ["PaymentsForRepurchaseOfCommonStock"]}
   {:label "Dividends Paid"
