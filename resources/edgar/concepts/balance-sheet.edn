@@ -10,7 +10,9 @@
    :concepts ["AssetsCurrent"]}
   {:label "Cash and Equivalents"
    :concepts ["CashAndCashEquivalentsAtCarryingValue"
-              "CashCashEquivalentsAndShortTermInvestments"]}
+              "CashAndDueFromBanks"
+              "CashCashEquivalentsAndShortTermInvestments"
+              "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"]}
   {:label "Short-Term Investments"
    :concepts ["ShortTermInvestments"
               "AvailableForSaleSecuritiesCurrent"]}
