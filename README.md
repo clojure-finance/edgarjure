@@ -12,7 +12,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ## What You Can Do
 
-**Pull financial statements** — income statement, balance sheet, and cash flow, with automatic line-item resolution across different XBRL tags, restatement deduplication, and long or wide output. Override the mappings for non-standard filers. For 10-Q data, quarterly and trailing-twelve-month values are derived automatically from YTD figures.
+**Pull financial statements** — income statement, balance sheet, and cash flow, with automatic line-item resolution across different XBRL tags, restatement deduplication, and long or wide output. Three views per statement: as-reported, normalized (default), and standardized — the last imputes missing line items from arithmetic identities (Gross Profit, Free Cash Flow, …) with full provenance. Banks and insurers automatically get industry-specific line items. Override the mappings for non-standard filers. For 10-Q data, quarterly and trailing-twelve-month values are derived automatically from YTD figures.
 
 **Backtest without look-ahead bias** — the `:as-of` option on every financial statement and panel query restricts data to what was actually filed on or before a given date. Essential for event studies, strategy backtests, and panel regressions.
 
@@ -37,7 +37,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ```clojure
 ;; deps.edn
-{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.1.9"}}}
+{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.2.0"}}}
 ```
 
 ## Getting Started
@@ -99,17 +99,15 @@ Every function accepts a ticker or CIK interchangeably. All arguments are keywor
 
 ### Example: Gross Margin — Apple vs. Peers
 
-`e/frame` pulls a single XBRL line item for **every SEC filer** in a given fiscal year — in one API call. That makes peer comparisons fast:
+`e/frame` pulls a single XBRL line item for **every SEC filer** in a given fiscal year — in one API call. Frames return raw tags, so pick the tag most filers use (`e/unmapped-concepts` and `e/concepts` help discover coverage):
 
 ```clojure
-;; Pull FY2023 Revenue and Gross Profit for ALL filers — just two API calls
-(def revenue  (e/frame "Revenues" "CY2023"))
+;; Pull FY2023 revenue and gross profit for ALL filers — just two API calls
+(def revenue  (e/frame "RevenueFromContractWithCustomerExcludingAssessedTax" "CY2023"))
 (def gross-pr (e/frame "GrossProfit" "CY2023"))
 
-;; Filter to a peer group
-(def peers #{"0000320193" "0000789019" "0001652044"   ; AAPL, MSFT, GOOG
-             "0001018724" "0001326801" "0000047217"   ; AMZN, META, HPQ
-             "0001571996"})                            ; DELL
+;; Filter to a peer group — :cik is a zero-padded string, same as (e/cik ...)
+(def peers #{"0000320193" "0000789019"})   ; AAPL, MSFT
 
 (def rev-peers (ds/filter-column revenue  :cik peers))
 (def gp-peers  (ds/filter-column gross-pr :cik peers))
@@ -125,18 +123,19 @@ Every function accepts a ticker or CIK interchangeably. All arguments are keywor
       (ds/select-columns [:company "Revenue" "Gross Profit" :gross-margin])))
 
 result
-;=> | :company        | Revenue        | Gross Profit   | :gross-margin |
-;   | MICROSOFT CORP  | 211915000000   | 146052000000   | 0.689         |
-;   | ALPHABET INC    | 307394000000   | 174062000000   | 0.566         |
-;   | APPLE INC       | 383285000000   | 169148000000   | 0.441         |
-;   | ...
+;=> | :company              | Revenue        | Gross Profit   | :gross-margin |
+;   | MICROSOFT CORPORATION | 211915000000   | 146052000000   | 0.689         |
+;   | Apple Inc.            | 383285000000   | 169148000000   | 0.441         |
 ```
 
 The `revenue` and `gross-pr` datasets already contain every filer — to screen
-the full universe (e.g., by SIC code) just change the filter. Note that looking
-up SIC codes via `e/company-metadata` requires one API call per company, so
-filtering thousands of filers that way may take a few minutes at the SEC's
-10 requests/second rate limit.
+the full universe (e.g., by SIC code) just change the filter. Caveats: not
+every company files every tag (Alphabet, for example, does not tag
+`GrossProfit`, so it drops out of this join — `(e/income "GOOG" :view
+:standardized)` derives it instead), and looking up SIC codes via
+`e/company-metadata` requires one API call per company, so filtering thousands
+of filers that way may take a few minutes at the SEC's 10 requests/second
+rate limit.
 
 ## The `edgar.api` Namespace
 
@@ -212,7 +211,7 @@ filtering thousands of filers that way may take a few minutes at the SEC's
 (def q (e/filing "AAPL" :form "10-Q"))
 (e/items q :only #{"I-2" "II-1A"})   ; MD&A and Risk Factors from a 10-Q
 
-;; Batch extraction across many filings — saves results to disk as JSON
+;; Batch extraction across many filings — saves results to disk as EDN
 (require '[edgar.extract :as extract])
 (extract/batch-extract! (e/filings "AAPL" :form "10-K" :limit 10)
                         "/data/extracted"
@@ -276,19 +275,63 @@ Income statement, balance sheet, and cash flow — with automatic line-item reso
 (e/financials "AAPL" :shape :wide)
 
 ;; Quarterly and LTM (10-Q income/cashflow only)
-(e/income   "AAPL" :form "10-Q")        ; adds :val-q and :val-ltm columns
+(e/income   "AAPL" :form "10-Q")        ; adds :duration-months :val-q :val-ltm
 (e/cashflow "AAPL" :form "10-Q")        ; single-quarter + trailing 12 months
 ```
 
-The library decides which XBRL tags map to "Revenue", "Net Income", etc. by looking up each label in a list of candidate tags (trying the most common one first, then falling back to alternatives). These lists are exposed as public vars, so you can inspect them or swap in your own if a company uses non-standard tags:
+### Three Views: As-Reported, Normalized, Standardized
+
+Every statement function takes a `:view` option exposing three layers of the same underlying XBRL facts:
 
 ```clojure
-edgar.financials/income-statement-concepts   ; e.g. ["Revenue" "RevenueFromContract..." "Revenues" "SalesRevenueNet"]
-edgar.financials/balance-sheet-concepts
-edgar.financials/cash-flow-concepts
+(e/income "AAPL" :view :as-reported)   ; raw rows exactly as filed — no dedup, no mapping
+(e/income "AAPL")                      ; :normalized (default) — canonical labels + restatement dedup
+(e/income "AAPL" :view :standardized)  ; + missing line items imputed from arithmetic identities
 ```
 
-For 10-Q queries on income statement and cash flow (flow variables), the long-format output includes two derived columns: `:val-q` is the single-quarter value computed by subtracting the prior cumulative YTD, and `:val-ltm` is the trailing twelve months computed as the sum of four consecutive quarter values. Both use SEC's `:fy` and `:fp` fields for fiscal year sequencing, so they handle non-calendar fiscal years correctly. Balance sheet queries and 10-K queries are unaffected.
+The standardized view fills gaps commercial databases fill by hand: if a filer doesn't tag `GrossProfit`, it is derived as Revenue − Cost of Revenue; Total Liabilities from L&E − Equity; a `"Free Cash Flow"` line item (OCF − Capex) is added to the cash flow statement. Derived rows are fully auditable — they carry `:method :derived` and `:derived-from [operand labels]`, while reported rows carry `:method :direct`.
+
+### Industry Routing
+
+Banks and insurers use fundamentally different income statement line items (Net Interest Income, Provision for Credit Losses, Premiums Earned). edgarjure auto-detects them from the company's SIC code and switches concept chains:
+
+```clojure
+(e/income "JPM")                        ; auto-routes to bank chains
+(e/income "MET")                        ; auto-routes to insurance chains
+(e/income "JPM" :industry :standard)    ; force the generic chains
+```
+
+### Concept Chains, Coverage, and Validation
+
+The library decides which XBRL tags map to "Revenue", "Net Income", etc. by looking up each label in a list of candidate tags (trying the most common one first, then falling back to alternatives). Chains live in EDN files under `resources/edgar/concepts/` and are exposed both as public vars and through an inspection API:
+
+```clojure
+edgar.financials/income-statement-concepts     ; standard chains as data
+(e/concepts-for :income :industry :bank)       ; active chains + file metadata
+(e/income "AAPL" :concepts my-custom-chains)   ; per-call override
+
+;; Coverage feedback loop: what did the chains miss?
+(e/unmapped-concepts :top 20)   ; us-gaap concepts seen in facts but unmatched
+(e/save-unmapped-concepts!)     ; persist to ~/.edgarjure/unmapped-concepts.edn
+
+;; Quantify agreement with a benchmark (Compustat extract, hand-collected)
+(require '[edgar.validation :as validation])
+(validation/compare-to-benchmark "AAPL"
+  [{:line-item "Revenue" :end "2023-09-30" :val 383285000000}])
+;=> {:match-rate 1.0 :matched [...] :mismatched [] :missing []}
+```
+
+For bulk standardization work, `edgar.fsds` downloads the SEC Financial Statement Data Sets (quarterly DERA dumps with every filer's numeric facts, statement placement, and company extension tags — things the companyfacts API lacks):
+
+```clojure
+(require '[edgar.fsds :as fsds])
+(def zip (fsds/download-quarter! 2024 1 "/data/fsds"))
+(fsds/load-table zip :num)   ; also :sub :pre :tag
+```
+
+### Quarterly and LTM Derivation
+
+For 10-Q queries on income statement and cash flow (flow variables), the long-format output includes three derived columns: `:duration-months` classifies each observation window (3/6/9/12 months, tolerant of 52/53-week fiscal calendars), `:val-q` is the single-quarter value, and `:val-ltm` is the trailing twelve months. Derivation works purely from each observation's actual `:start`/`:end` dates — deliberately not from SEC's `:fy`/`:fp` fields, which describe the filing rather than the observation and collide across the comparative periods a 10-Q contains. Quarters come from same-fiscal-year-start YTD differencing; 10-K annual rows participate so that fiscal Q4 (never filed as a 10-Q) is derived as FY − 9M YTD, which is what makes LTM windows computable. Balance sheet queries and 10-K queries are unaffected.
 
 ### Panel Datasets
 
@@ -377,21 +420,22 @@ By default, financial statements return the latest restated values — suitable 
 SEC EDGAR APIs
     │
     ▼
-edgar.core            HTTP client, TTL cache, retry, rate limiter
+edgar.core            HTTP client, JSON + raw caches, retry, rate limiter
     │
     ├── edgar.schema        Malli schemas + validation
     ├── edgar.api           Unified entry point (wraps everything below)
-    ├── edgar.company       Ticker↔CIK resolution, metadata
-    ├── edgar.filings       Filing index queries, pagination, amendments, daily index
+    ├── edgar.company       Ticker↔CIK resolution, metadata, company search
+    ├── edgar.filings       Filing index queries, pagination, amendments, daily/quarterly index
     │       └── edgar.filing        Filing content, accession lookup, exhibits
     │               ├── edgar.download      Bulk save to disk
     │               ├── edgar.extract       NLP item-section extraction
     │               ├── edgar.tables        HTML table → dataset
     │               └── edgar.forms/        Form parsers (Form 4, 13F-HR)
     ├── edgar.xbrl          Company facts → dataset, concept discovery, frames
-    │       ├── edgar.financials    Normalized financial statements
+    │       ├── edgar.financials    Statements: views, imputation, industry routing
+    │       │       └── edgar.validation    Benchmark match-rate harness
     │       └── edgar.dataset       Panel datasets, pivot, cross-sectional
-    └──
+    └── edgar.fsds          SEC Financial Statement Data Sets (bulk quarterly dumps)
 ```
 
 ## Namespace Reference
@@ -402,11 +446,13 @@ edgar.core            HTTP client, TTL cache, retry, rate limiter
 | `edgar.core` | HTTP client, TTL cache (5 min metadata / 1 hr XBRL), exponential backoff retry, Bucket4j rate limiter (10 req/s) |
 | `edgar.schema` | Malli schemas and `validate!` helper for all public API functions |
 | `edgar.company` | Ticker↔CIK resolution, company search, shaped metadata |
-| `edgar.filings` | Filing index queries, pagination for large filers, amendment handling, daily/quarterly index, EFTS search |
+| `edgar.filings` | Filing index queries, pagination for large filers, amendment handling, daily index, quarterly master.idx, EFTS search |
 | `edgar.filing` | Individual filing content, accession number lookup, save to disk, `filing-obj` multimethod, exhibit API |
 | `edgar.download` | Bulk downloader — single company and batch, structured result envelopes |
 | `edgar.xbrl` | XBRL company-facts → `tech.ml.dataset` with labels; concept discovery; cross-sectional frames |
-| `edgar.financials` | Income statement, balance sheet, cash flow; line-item resolution; restatement dedup; `:as-of` |
+| `edgar.financials` | Income statement, balance sheet, cash flow; three views; line-item resolution; imputation; industry routing; `:as-of` |
+| `edgar.validation` | Match-rate harness against benchmark datasets (Compustat extracts, hand-collected figures) |
+| `edgar.fsds` | SEC Financial Statement Data Sets (DERA quarterly dumps) — download + load as datasets |
 | `edgar.extract` | NLP item-section extraction (10-K, 10-Q, 8-K); batch mode |
 | `edgar.dataset` | Panel datasets, cross-sectional snapshots, pivot helpers |
 | `edgar.tables` | HTML table extraction → `tech.ml.dataset` |
@@ -424,19 +470,19 @@ edgar.core            HTTP client, TTL cache, retry, rate limiter
 - **Form parsers must be required** — `(require '[edgar.forms])` loads all at once
 - **Download results are structured envelopes** — `{:status :ok/:skipped/:error ...}`
 - **All `edgar.api` functions are Malli-validated** — bad args throw `ex-info` with `:type ::edgar.schema/invalid-args`
-- **Financial statements are designed for standard industrial filers** — bank and insurance companies (e.g. JPM, BRK-A) use industry-specific XBRL line items that don't appear in the default concept chains, so `e/income` and friends will return fewer rows for these filers
+- **Banks and insurers are auto-routed** — `e/income` detects SIC 6000–6199/6712 (banks) and 6300–6399/6411 (insurers) and switches to industry-specific concept chains; coverage is partial and grows via the unmapped-concepts feedback loop
 
 ## Rate Limits and Caching
 
-SEC enforces a `User-Agent` header and a rate limit of ~10 requests/second. edgarjure handles both automatically: `set-identity!` sets the header, and a Bucket4j token-bucket rate limiter paces requests. JSON responses are cached in memory (5 min for metadata, 1 hr for XBRL facts). Failed requests retry with exponential backoff on 429/5xx (up to 3 attempts, 2s → 4s → 8s).
+SEC enforces a `User-Agent` header and a rate limit of ~10 requests/second. edgarjure handles both automatically: `set-identity!` sets the header, and a Bucket4j token-bucket rate limiter paces requests. JSON responses are cached in memory (5 min for metadata, 1 hr for XBRL facts); raw documents (filing HTML, indexes) are cached in a bounded cache (64 entries, 1 hr) so repeated content access on the same filing hits the network once. Failed requests retry with exponential backoff on 429/5xx (up to 3 attempts, 2s → 4s → 8s).
 
 ## Development
 
 ```bash
-# Start REPL on port 7888
+# Start REPL (random port, written to .nrepl-port)
 clj -M:nrepl
 
-# Run offline unit tests (156 tests, 773 assertions, no network)
+# Run offline unit tests (165 tests, 858 assertions, no network)
 clj -M:test
 
 # Run live integration tests (manual only, requires network)

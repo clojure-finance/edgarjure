@@ -2,6 +2,69 @@
 
 All notable changes to edgarjure are documented here.
 
+## [0.2.0] — 2026-07-15
+
+Four features that passed the offline test suite were broken against the live SEC API (the fixtures encoded API formats that don't exist). All four are fixed, the fixtures now mirror the real formats, and the financial-statement layer gains Compustat-style standardization features.
+
+### Fixed
+
+**`edgar.xbrl` — `e/frame` returned garbage against the real frames endpoint**
+- The parser assumed a `:columns` key and `:data` as vectors-of-values. The real response has no `:columns` and `:data` is a sequence of maps; `zipmap` over a map produced rows where every cell was a misaligned MapEntry. Verified live: `(e/frame "Assets" "CY2023Q4I")` was unusable.
+- Fixed: map-shaped `:data` is used directly (legacy vector shape still accepted). `:cik` is zero-padded to the 10-digit string used library-wide (the SEC returns a bare number), so frames join directly against other edgarjure output. Results are now actually sorted by `:val` descending, as the docstring always claimed.
+
+**`edgar.filings` — `get-quarterly-index` returned zero rows**
+- The parser split `company.idx` on `|`, but company.idx is a fixed-width file — no line ever parsed. Verified live: 0 rows for any quarter.
+- Fixed: fetches `master.idx` (the pipe-delimited variant) with its real column order `CIK|Company Name|Form Type|Date Filed|Filename`. 2024 Q1 now parses 370,304 filings.
+
+**`edgar.financials` — 10-Q `:val-q` was wrong and `:val-ltm` was always nil**
+- The derivation keyed on the SEC `:fy`/`:fp` fields, which describe the *filing*, not the observation period. A Q2 10-Q carries current 3-month, current YTD, and prior-year comparative rows all tagged with the same fy/fp, so the YTD lookup collided (last-write-wins) and subtractions mixed windows — verified live producing −$13.1B "quarterly revenue" for AAPL. Separately, 10-Q data never contains a fiscal Q4, so every trailing-four-quarter window was incomplete and `:val-ltm` was nil for 100% of rows.
+- Rewritten on actual date windows: observations are classified by span (3/6/9/12 months, tolerant of 52/53-week calendars, exposed as a new `:duration-months` column); quarters derive from same-fiscal-year-start YTD differencing; 10-K annual rows participate so Q4 = FY − 9M YTD; LTM sums four consecutive derived quarters matched on period-end dates (±14 days). AAPL 10-Q income now yields non-nil LTM for 1305/1350 rows, and TTM revenue chains tie out exactly.
+- `to-wide` now deterministically prefers the longest-duration (YTD) row when a 3-month and a YTD row share the same `[end line-item]`, instead of picking arbitrarily.
+
+**`edgar.dataset` — `add-market-cap-rank` threw on every call**
+- It passed an options map where a comparator was expected and called `ds/add-column` with a wrong arity (ArityException). Fixed and covered by tests.
+
+**`edgar.forms.form4` — no-XML fallback fed HTML to the XML parser**
+- `form4-xml` fell back to the first document in the index when no `.xml` attachment existed, handing HTML to `xml/parse` (crash). Now returns nil.
+
+**Test fixtures — drift from the real SEC formats**
+- The frames and quarterly-index fixtures encoded invented formats, which is how all of the above passed 157 tests. Fixtures now mirror captured real responses.
+
+### Added
+
+**Three statement views (`:view` option on `e/income`, `e/balance`, `e/cashflow`, `e/financials`)**
+- `:as-reported` — observations exactly as filed; no dedup, no label mapping.
+- `:normalized` (default) — existing behaviour: fallback chains + restatement dedup. Rows now carry `:method :direct`.
+- `:standardized` — additionally imputes missing line items from arithmetic identities (Gross Profit = Revenue − Cost of Revenue, Total Liabilities = L&E − Equity, Free Cash Flow = OCF − Capex, …). Derived rows carry `:method :derived` and `:derived-from` for auditability.
+
+**Industry-aware concept routing (`:industry` option)**
+- Banks (SIC 6000–6199, 6712) and insurers (SIC 6300–6399, 6411) auto-route to industry-specific income statement chains (verified against JPM and MET facts). `(e/income "JPM")` now returns 280 rows of bank line items instead of a sparse generic result. Pass `:industry :standard` to force generic chains.
+
+**Externalized concept chains**
+- All fallback chains moved to EDN files under `resources/edgar/concepts/` with version/taxonomy/industry metadata, loaded at runtime and exposed as public vars. `(e/concepts-for :income :industry :bank)` returns the active chains plus metadata.
+
+**Unmapped-concept logging**
+- Statement calls record us-gaap concepts present in a company's facts that no chain matched. `(e/unmapped-concepts :top 20)`, `(e/clear-unmapped-concepts!)`, `(e/save-unmapped-concepts!)` (defaults to `~/.edgarjure/unmapped-concepts.edn`). This is the feedback loop for growing chain coverage.
+
+**`edgar.validation`**
+- `compare-to-benchmark` grades statement output against a benchmark dataset (Compustat extract, hand-collected figures) and reports match-rate, mismatches with relative diffs, and missing items.
+
+**`edgar.fsds`**
+- Access to the SEC Financial Statement Data Sets (DERA quarterly dumps): `quarter-url`, `download-quarter!`, `load-table` (`:sub`/`:num`/`:pre`/`:tag` as datasets). These sets include company extension tags and statement placement — the ingredients cross-company standardization needs that the companyfacts API lacks.
+
+**Bounded raw-response cache (`edgar.core`)**
+- Filing HTML, filing indexes and .idx files are now cached (64 entries, 1 hr TTL), so `(e/text f)` → `(e/items f)` → `(e/tables f)` hits the network once instead of re-downloading a multi-MB document per call.
+
+**EFTS pagination**
+- `e/search-filings` and `e/search` now page through the EFTS index with `from=` offsets, so `:limit` beyond one page works (EFTS caps offsets at 10,000).
+
+### Changed
+- `filings/get-filings` fetches extra submission chunks lazily (one HTTP call per chunk, only when consumed that far) and orders chunks by `:filingTo` descending, keeping the concatenation date-descending past the first ~1,000 filings.
+- Item extraction: `:title` no longer truncates mid-word, and the heading text is no longer duplicated at the start of `:text`.
+- `filing-by-accession` docstring documents that the accession prefix is the submitter's CIK (possibly a filing agent), not necessarily the subject company.
+- Capex chain extended with `PaymentsToAcquireProductiveAssets` (Amazon's tag), fixing Free Cash Flow derivation for recent AMZN periods.
+- Test suite: 165 tests, 858 assertions.
+
 ## [0.1.9] — 2026-03-17
 
 ### Fixed
