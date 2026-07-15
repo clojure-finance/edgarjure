@@ -35,9 +35,21 @@
    :concepts ["PaymentsOfDividends"
               "PaymentsOfDividendsCommonStock"]}
   {:label "LT Debt Issued"
-   :concepts ["ProceedsFromIssuanceOfLongTermDebt"]}
+   :concepts ["ProceedsFromIssuanceOfLongTermDebt"
+              "ProceedsFromIssuanceOfDebt"
+              "ProceedsFromIssuanceOfLongTermDebtAndCapitalSecuritiesNet"]}
   {:label "LT Debt Repaid"
-   :concepts ["RepaymentsOfLongTermDebt"]}
+   :concepts ["RepaymentsOfLongTermDebt"
+              "RepaymentsOfDebt"
+              "RepaymentsOfLongTermDebtAndCapitalSecurities"]}
+  {:label "Stock Issued"
+   :concepts ["ProceedsFromIssuanceOfCommonStock"
+              "ProceedsFromIssuanceOrSaleOfEquity"
+              "ProceedsFromStockPlans"
+              "ProceedsFromStockOptionsExercised"]}
+  {:label "Deferred Taxes (CF)"
+   :concepts ["DeferredIncomeTaxExpenseBenefit"
+              "DeferredIncomeTaxesAndTaxCredits"]}
   {:label "Net Change in Cash"
    :concepts ["CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect"
               "CashAndCashEquivalentsPeriodIncreaseDecrease"]}]}

@@ -34,6 +34,25 @@
        - D&A 51%: filers tagging depreciation and intangible amortization
          separately are covered by a derived identity; remaining gaps are
          Compustat DP definitional scope
+     Balance sheet / cash flow items (third pass):
+       clean: Total Liabilities and Equity 98.5%, Total Equity 94.7%
+       (derived: SE + NCI, falling back to SE), Working Capital 90%
+       (derived-only), Net Change in Cash 89.4%, Income Taxes Payable 88.6%,
+       Acquisitions 84.8%, Share Buybacks 78.1%, LT Debt Issued 75.2%,
+       Deferred Taxes (CF) 74.5%, LT Debt Repaid 70.7%.
+       Known-definitional laggards:
+       - Noncontrolling Interest 0%: Compustat MIB includes redeemable/
+         mezzanine NCI and subsidiary preferred; us-gaap:MinorityInterest is
+         the equity-section NCI only (AIG diverges by 10-30x in both
+         directions)
+       - Current Debt 44%: Compustat DLC = notes payable + commercial paper
+         + current LTD; us-gaap:DebtCurrent is the closest single tag but
+         many filers tag only components
+       - Short-Term Investments ~40%: Compustat IVST bucket vs heterogeneous
+         tags (MarketableSecuritiesCurrent may include equities)
+       - Accounts Payable 63%: banks have no AP line; some filers tag only
+         the combined payables-and-accruals value
+       - Preferred Stock 30%: Compustat PSTK is a broader construction
 
    Known matching pitfalls this study codified into the harness:
      - Compustat DATADATE is calendar month-end; XBRL :end is the exact
@@ -84,6 +103,19 @@
    ["Retained Earnings" :re 1e6] ["Long-Term Debt" :dltt 1e6]
    ["D&A" :dp 1e6] ["Investing Cash Flow" :ivncf 1e6]
    ["Financing Cash Flow" :fincf 1e6] ["Dividends Paid" :dv 1e6]])
+
+(def annual-balance-cashflow-items
+  "Third-pass FUNDA items -> edgarjure line items [line-item key scale].
+   Balance items route to :balance, cash flow items to :cash-flow."
+  [["Short-Term Investments" :ivst 1e6] ["Accounts Payable" :ap 1e6]
+   ["Current Debt" :dlc 1e6] ["Income Taxes Payable" :txp 1e6]
+   ["Preferred Stock" :pstk 1e6] ["Noncontrolling Interest" :mib 1e6]
+   ["Total Equity" :teq 1e6] ["Working Capital" :wcap 1e6]
+   ["Total Liabilities and Equity" :lse 1e6]
+   ["Net Change in Cash" :chech 1e6] ["LT Debt Issued" :dltis 1e6]
+   ["LT Debt Repaid" :dltr 1e6] ["Share Buybacks" :prstkc 1e6]
+   ["Acquisitions" :aqc 1e6] ["Stock Issued" :sstk 1e6]
+   ["Deferred Taxes (CF)" :txdc 1e6]])
 
 (def annual-reclass-items
   "Items where Compustat reclassifies (D&A stripped from COGS/XSGA, etc.).

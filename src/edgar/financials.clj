@@ -462,13 +462,19 @@
    {:target "Total Gross Revenue" :formula [:+ "Interest Income" "Noninterest Income"]}])
 
 (def balance-sheet-identities
-  "Arithmetic identities for balance sheet imputation (:view :standardized)."
+  "Arithmetic identities for balance sheet imputation (:view :standardized).
+   Working Capital is derived-only (never a reported XBRL line)."
   [{:target "Total Assets" :formula [:= "Total Liabilities and Equity"]}
    {:target "Total Liabilities and Equity" :formula [:= "Total Assets"]}
    {:target "Total Liabilities" :formula [:- "Total Liabilities and Equity" "Stockholders Equity"]}
    {:target "Stockholders Equity" :formula [:- "Total Liabilities and Equity" "Total Liabilities"]}
+   {:target "Total Equity" :formula [:+ "Stockholders Equity" "Noncontrolling Interest"]}
+   ;; ordering matters: SE+NCI fires first when NCI is tagged; otherwise
+   ;; Total Equity equals parent equity (true whenever NCI is zero/untagged)
+   {:target "Total Equity" :formula [:= "Stockholders Equity"]}
    {:target "Non-Current Assets" :formula [:- "Total Assets" "Current Assets"]}
-   {:target "Non-Current Liabilities" :formula [:- "Total Liabilities" "Current Liabilities"]}])
+   {:target "Non-Current Liabilities" :formula [:- "Total Liabilities" "Current Liabilities"]}
+   {:target "Working Capital" :formula [:- "Current Assets" "Current Liabilities"]}])
 
 (def cash-flow-identities
   "Arithmetic identities for cash flow imputation (:view :standardized).
