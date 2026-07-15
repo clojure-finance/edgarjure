@@ -426,7 +426,6 @@
         (is (= 1 (ds/row-count result)) "only 2022 period visible before as-of")
         (is (= 90 (first (ds/column result :val))))))))
 
-
 ;;; ---------------------------------------------------------------------------
 ;;; Quarterly and LTM derivation — date-window based
 ;;; The SEC :fy/:fp fields describe the filing, not the observation period,
@@ -657,7 +656,44 @@
                   (assoc base :line-item "Capex" :val 30)]
             result (vec (f rows fin/cash-flow-identities))
             fcf (first (filter #(= "Free Cash Flow" (:line-item %)) result))]
-        (is (= 50 (:val fcf)))))))
+        (is (= 50 (:val fcf)))))
+    (testing "D&A imputed from separately tagged components"
+      (let [rows [(assoc base :line-item "Depreciation" :val 40)
+                  (assoc base :line-item "Amortization of Intangibles" :val 10)]
+            result (vec (f rows fin/cash-flow-identities))
+            dna (first (filter #(= "D&A" (:line-item %)) result))]
+        (is (= 50 (:val dna)))
+        (is (= :derived (:method dna)))))
+    (testing "Total Gross Revenue = Interest Income + Noninterest Income (banks)"
+      (let [rows [(assoc base :line-item "Interest Income" :val 60)
+                  (assoc base :line-item "Noninterest Income" :val 40)]
+            result (vec (f rows fin/income-statement-identities))
+            tgr (first (filter #(= "Total Gross Revenue" (:line-item %)) result))]
+        (is (= 100 (:val tgr)))))
+    (testing "Total Equity = SE + NCI when NCI is tagged"
+      (let [rows [{:unit "USD" :start nil :end "2023-12-31" :method :direct
+                   :line-item "Stockholders Equity" :val 90}
+                  {:unit "USD" :start nil :end "2023-12-31" :method :direct
+                   :line-item "Noncontrolling Interest" :val 10}]
+            result (vec (f rows fin/balance-sheet-identities))
+            te (first (filter #(= "Total Equity" (:line-item %)) result))]
+        (is (= 100 (:val te)))
+        (is (= ["Stockholders Equity" "Noncontrolling Interest"] (:derived-from te)))))
+    (testing "Total Equity falls back to parent equity when NCI is untagged"
+      (let [rows [{:unit "USD" :start nil :end "2023-12-31" :method :direct
+                   :line-item "Stockholders Equity" :val 90}]
+            result (vec (f rows fin/balance-sheet-identities))
+            te (first (filter #(= "Total Equity" (:line-item %)) result))]
+        (is (= 90 (:val te)))
+        (is (= ["Stockholders Equity"] (:derived-from te)))))
+    (testing "Working Capital = Current Assets - Current Liabilities (derived-only)"
+      (let [rows [{:unit "USD" :start nil :end "2023-12-31" :method :direct
+                   :line-item "Current Assets" :val 70}
+                  {:unit "USD" :start nil :end "2023-12-31" :method :direct
+                   :line-item "Current Liabilities" :val 45}]
+            result (vec (f rows fin/balance-sheet-identities))
+            wc (first (filter #(= "Working Capital" (:line-item %)) result))]
+        (is (= 25 (:val wc)))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Industry routing
@@ -756,3 +792,27 @@
     (fin/clear-unmapped-concepts!)
     (testing "clear! empties the registry"
       (is (empty? (fin/unmapped-concepts))))))
+
+(deftest new-line-items-present-test
+  ;; Items added by the Compustat validation passes (2026-07).
+  (testing "balance sheet chains include the common research variables"
+    (let [labels (set (map first fin/balance-sheet-concepts))]
+      (is (contains? labels "Accounts Payable"))
+      (is (contains? labels "Current Debt"))
+      (is (contains? labels "Income Taxes Payable"))
+      (is (contains? labels "Preferred Stock"))
+      (is (contains? labels "Noncontrolling Interest"))
+      (is (contains? labels "Total Equity"))))
+  (testing "cash flow chains include issuance/deferred-tax items and D&A components"
+    (let [labels (set (map first fin/cash-flow-concepts))]
+      (is (contains? labels "Stock Issued"))
+      (is (contains? labels "Deferred Taxes (CF)"))
+      (is (contains? labels "Depreciation"))
+      (is (contains? labels "Amortization of Intangibles"))))
+  (testing "standard income chain includes Interest Expense"
+    (let [ie (first (filter #(= "Interest Expense" (first %)) fin/income-statement-concepts))]
+      (is (some? ie))
+      (is (some #{"InterestExpenseDebt"} (rest ie)))))
+  (testing "bank/insurance chains include weighted share counts"
+    (is (contains? (set (map first fin/bank-income-concepts)) "Shares Basic"))
+    (is (contains? (set (map first fin/insurance-income-concepts)) "Shares Diluted"))))

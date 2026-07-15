@@ -447,6 +447,8 @@
      :form  - \"10-K\" (default) or \"10-Q\"
      :shape - :long (default) or :wide
      :view  - :normalized (default) | :as-reported | :standardized
+              (:standardized imputes e.g. Total Liabilities, Total Equity
+              = SE + NCI, and a derived-only \"Working Capital\" item)
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode)."
@@ -463,7 +465,8 @@
      :form  - \"10-K\" (default) or \"10-Q\"
      :shape - :long (default) or :wide
      :view  - :normalized (default) | :as-reported | :standardized
-              (:standardized adds a derived \"Free Cash Flow\" line item)
+              (:standardized adds a derived \"Free Cash Flow\" line item and
+              imputes \"D&A\" from separately tagged components)
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode).
