@@ -18,6 +18,22 @@
        Gross Profit vs REVT-COGS) match only ~15-18% — this is the documented
        Compustat reclassification gap (D&A stripped out of COGS/SG&A, etc.),
        future territory for the rule engine (roadmap 4.1c).
+     Extended items (annual): Investing/Financing Cash Flow 96.2%, Goodwill
+       95.2%, Shares Basic/Diluted 89/88%, Cash 87.8%, EPS 79.5%, PP&E 77.6%.
+       Known-definitional laggards (documented, not chased):
+       - Retained Earnings 16%: Compustat RE carries treasury-stock and other
+         adjustments vs the raw RetainedEarningsAccumulatedDeficit tag
+       - Accounts Receivable 30%: Compustat RECT is total receivables; the
+         XBRL line is trade receivables
+       - Long-Term Debt 53%: Compustat DLTT includes finance leases (AMZN's
+         early years are almost entirely leases)
+       - Interest Expense 29%: XINT aggregates related expense components
+       - EPS mismatches are stock-split vintage artifacts (Compustat keeps
+         as-reported; restated XBRL is split-adjusted — align with AJEX or
+         per-year :as-of) plus discontinued-ops exclusion (EPSPX/EPSFX)
+       - D&A 51%: filers tagging depreciation and intangible amortization
+         separately are covered by a derived identity; remaining gaps are
+         Compustat DP definitional scope
 
    Known matching pitfalls this study codified into the harness:
      - Compustat DATADATE is calendar month-end; XBRL :end is the exact
@@ -54,6 +70,20 @@
    ["Current Liabilities" :lct]
    ["Operating Cash Flow" :oancf]
    ["Capex" :capx]])
+
+(def annual-extended-items
+  "Extended FUNDA items -> edgarjure line items [line-item key scale].
+   EPS is per-share (scale 1.0, split-vintage caveat above); weighted shares
+   are in millions. Route income items to :income, balance to :balance,
+   cash flow to :cash-flow."
+  [["EPS Basic" :epspx 1.0] ["EPS Diluted" :epsfx 1.0]
+   ["Shares Basic" :cshpri 1e6] ["Shares Diluted" :cshfd 1e6]
+   ["Interest Expense" :xint 1e6]
+   ["Cash and Equivalents" :ch 1e6] ["Accounts Receivable" :rect 1e6]
+   ["Inventory" :invt 1e6] ["PP&E Net" :ppent 1e6] ["Goodwill" :gdwl 1e6]
+   ["Retained Earnings" :re 1e6] ["Long-Term Debt" :dltt 1e6]
+   ["D&A" :dp 1e6] ["Investing Cash Flow" :ivncf 1e6]
+   ["Financing Cash Flow" :fincf 1e6] ["Dividends Paid" :dv 1e6]])
 
 (def annual-reclass-items
   "Items where Compustat reclassifies (D&A stripped from COGS/XSGA, etc.).

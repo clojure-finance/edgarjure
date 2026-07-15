@@ -36,4 +36,8 @@
   {:label "EPS Basic"
    :concepts ["EarningsPerShareBasic"]}
   {:label "EPS Diluted"
-   :concepts ["EarningsPerShareDiluted"]}]}
+   :concepts ["EarningsPerShareDiluted"]}
+  {:label "Shares Basic"
+   :concepts ["WeightedAverageNumberOfSharesOutstandingBasic"]}
+  {:label "Shares Diluted"
+   :concepts ["WeightedAverageNumberOfDilutedSharesOutstanding"]}]}

@@ -17,6 +17,9 @@ All notable changes to edgarjure are documented here.
 **Derived line item: bank gross revenue**
 - `"Total Gross Revenue"` = Interest Income + Noninterest Income (`:view :standardized`). This is how Compustat constructs REVT for banks; no single XBRL tag carries it. Matched 95.2% in the study.
 
+**Extended-variable validation (second pass) and resulting coverage fixes**
+- Extended the study to 16 more Compustat variables. Chain/identity fixes it produced: `"Shares Basic"`/`"Shares Diluted"` added to the bank and insurance income chains (coverage 59% → 89%); `"Interest Expense"` line item added to the standard income chain (`InterestExpense`, `InterestExpenseDebt`, `InterestExpenseNonoperating`, `InterestAndDebtExpense`); D&A chain gains `DepreciationAmortizationAndAccretionNet` plus new `"Depreciation"` / `"Amortization of Intangibles"` line items and a derived `"D&A"` identity for filers that tag the components separately (MSFT, IBM; 28% → 51%); `"Cash and Equivalents"` gains `CashAndDueFromBanks` and the ASU 2016-18 restricted-cash tag as fallbacks (77% → 88%). Investing/Financing Cash Flow validate at 96.2%, Goodwill 95.2%. Remaining laggards are Compustat definitional constructions (Retained Earnings treasury-stock adjustment, RECT total-vs-trade receivables, DLTT finance leases, XINT aggregation, EPS split-vintage) — documented in the example, not chased.
+
 ### Changed
 - Cash-flow chains: added `...ContinuingOperations` variants for operating/investing/financing cash flow (CAT, IBM, INTC, MSFT, TRV and others used them in the mid-2010s; OCF coverage in the study went from 38 missing rows to 0).
 - Income statement: added `IncomeTaxExpenseBenefitContinuingOperations` fallback to the tax chain.

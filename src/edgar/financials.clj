@@ -472,8 +472,11 @@
 
 (def cash-flow-identities
   "Arithmetic identities for cash flow imputation (:view :standardized).
-   Free Cash Flow is a derived-only item (never reported directly in XBRL)."
-  [{:target "Free Cash Flow" :formula [:- "Operating Cash Flow" "Capex"]}])
+   Free Cash Flow is a derived-only item (never reported directly in XBRL).
+   D&A is imputed for filers that tag depreciation and intangible
+   amortization separately (e.g. MSFT, IBM) instead of a combined tag."
+  [{:target "Free Cash Flow" :formula [:- "Operating Cash Flow" "Capex"]}
+   {:target "D&A" :formula [:+ "Depreciation" "Amortization of Intangibles"]}])
 
 (defn- eval-formula [op vals]
   (case op

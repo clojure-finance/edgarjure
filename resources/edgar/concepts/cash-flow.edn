@@ -9,7 +9,12 @@
               "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"]}
   {:label "D&A"
    :concepts ["DepreciationDepletionAndAmortization"
-              "DepreciationAndAmortization"]}
+              "DepreciationAndAmortization"
+              "DepreciationAmortizationAndAccretionNet"]}
+  {:label "Depreciation"
+   :concepts ["Depreciation"]}
+  {:label "Amortization of Intangibles"
+   :concepts ["AmortizationOfIntangibleAssets"]}
   {:label "Investing Cash Flow"
    :concepts ["NetCashProvidedByUsedInInvestingActivities"
               "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations"]}

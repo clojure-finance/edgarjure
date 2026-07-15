@@ -28,6 +28,11 @@
    :concepts ["OperatingIncomeLoss"]}
   {:label "Non-Operating Income"
    :concepts ["NonoperatingIncomeExpense"]}
+  {:label "Interest Expense"
+   :concepts ["InterestExpense"
+              "InterestExpenseDebt"
+              "InterestExpenseNonoperating"
+              "InterestAndDebtExpense"]}
   {:label "Pre-Tax Income"
    :concepts ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"
               "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"]}
