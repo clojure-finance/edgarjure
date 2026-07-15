@@ -6,7 +6,7 @@
 
    Headline results:
      Annual core items, FY2010-2015, vs FUNDA (2016 vintage, :as-of matched):
-       overall 89.6% (1195/1334 within 1%); Total Assets 97.7%, Net Income
+       overall 89.4% (1193/1334 within 1%; two rows moved when the incl-NCI equity tag was relabeled Total Equity); Total Assets 97.7%, Net Income
        96.2%, Stockholders Equity 94.7%, OCF 93.2%; banks' constructed gross
        revenue (Interest Income + Noninterest Income, a derived line item)
        95.2%. Weakest: insurers' Total Revenue 66.7% (Compustat excludes

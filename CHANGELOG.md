@@ -2,12 +2,12 @@
 
 All notable changes to edgarjure are documented here.
 
-## [Unreleased]
+## [0.2.1] — 2026-07-15
 
 ### Added
 
 **Compustat validation study (roadmap 4.1f) — `examples/compustat_validation.clj`**
-- Graded the standardized statements against WRDS Compustat for 19 large filers (13 industrials/tech, 3 banks, 3 insurers). Annual core items FY2010–2015 vs FUNDA: **89.6%** within 1% (Total Assets 97.7%, Net Income 96.2%, Equity 94.7%, OCF 93.2%). Quarterly vs FUNDQ (2022+): single-quarter income values (`:val-q` vs SALEQ/NIQ) **98.6%**, quarterly Total Assets **100%** — independent confirmation of the 0.2.0 date-window quarterly engine. Reclassification-sensitive items (COGS/SG&A/R&D/Operating Income) match ~15–18% as expected — the documented Compustat reclassification gap, target for a future rule engine.
+- Graded the standardized statements against WRDS Compustat for 19 large filers (13 industrials/tech, 3 banks, 3 insurers), ~45 line items over three passes. Annual core items FY2010–2015 vs FUNDA: **89.4%** within 1% (Total Assets 97.7%, Net Income 96.2%, Equity 94.7%, OCF 93.2%). Quarterly vs FUNDQ (2022+): single-quarter income values (`:val-q` vs SALEQ/NIQ) **98.6%**, quarterly Total Assets **100%** — independent confirmation of the 0.2.0 date-window quarterly engine. Reclassification-sensitive items (COGS/SG&A/R&D/Operating Income) match ~15–18% as expected — the documented Compustat reclassification gap, target for a future rule engine.
 
 **`edgar.validation/compare-to-benchmark` options the study necessitated**
 - `:date-tolerance-days` — Compustat normalises fiscal period ends to calendar month-end while XBRL carries exact 52/53-week dates (2015-09-30 vs Apple's 2015-09-26). Exact matches always win; otherwise closest date within tolerance.
@@ -29,7 +29,7 @@ All notable changes to edgarjure are documented here.
 - Cash-flow chains: added `...ContinuingOperations` variants for operating/investing/financing cash flow (CAT, IBM, INTC, MSFT, TRV and others used them in the mid-2010s; OCF coverage in the study went from 38 missing rows to 0).
 - Income statement: added `IncomeTaxExpenseBenefitContinuingOperations` fallback to the tax chain.
 - Bank income chains: `"Total Revenue"` is now the gross `Revenues` tag; the net-of-interest-expense headline (`RevenuesNetOfInterestExpense`) is a separate `"Total Net Revenue"` line item.
-- Test suite: 168 tests, 866 assertions.
+- Test suite: 169 tests, 888 assertions.
 
 ## [0.2.0] — 2026-07-15
 

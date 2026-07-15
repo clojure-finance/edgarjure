@@ -709,6 +709,8 @@
      :concepts - override balance-sheet-concepts
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
+                 (:standardized imputes e.g. Total Liabilities, Total Equity
+                 = SE + NCI, and a derived-only \"Working Capital\" item)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, excludes filings where :filed > as-of-date,
                  giving point-in-time / look-ahead-safe results."
@@ -723,7 +725,9 @@
      :concepts - override cash-flow-concepts
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
-                 (:standardized adds a derived \"Free Cash Flow\" line item)
+                 (:standardized adds a derived \"Free Cash Flow\" line item
+                 and imputes \"D&A\" for filers tagging depreciation and
+                 intangible amortization separately)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, excludes filings where :filed > as-of-date,
                  giving point-in-time / look-ahead-safe results.

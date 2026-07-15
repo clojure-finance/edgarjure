@@ -37,7 +37,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ```clojure
 ;; deps.edn
-{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.2.0"}}}
+{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.2.1"}}}
 ```
 
 ## Getting Started
@@ -325,12 +325,15 @@ edgar.financials/income-statement-concepts     ; standard chains as data
 How close is the standardized view to a commercial database? A 19-firm study
 against Compustat (13 industrials/tech, 3 banks, 3 insurers — method in
 `examples/compustat_validation.clj`) found annual core line items match within
-1% at **89.6%** overall (Total Assets 97.7%, Net Income 96.2%, Stockholders
+1% at **89.4%** overall (Total Assets 97.7%, Net Income 96.2%, Stockholders
 Equity 94.7%, Operating Cash Flow 93.2%), and quarterly derived values match
 Compustat's single-quarter items at **98.6%** (quarterly Total Assets 100%).
+Across ~45 line items on all three statements, the strongest secondary items
+are Total Liabilities & Equity (98.5%), Investing/Financing Cash Flow (96.2%),
+Goodwill (95.2%), derived Total Equity (94.7%) and Working Capital (90%).
 Expense-classification items (COGS, SG&A, R&D, Operating Income) diverge by
 construction — Compustat reclassifies them (e.g. D&A stripped out) — and are
-not yet standardized.
+not yet standardized; per-share items need split-vintage alignment (AJEX).
 
 For bulk standardization work, `edgar.fsds` downloads the SEC Financial Statement Data Sets (quarterly DERA dumps with every filer's numeric facts, statement placement, and company extension tags — things the companyfacts API lacks):
 
@@ -493,7 +496,7 @@ SEC enforces a `User-Agent` header and a rate limit of ~10 requests/second. edga
 # Start REPL (random port, written to .nrepl-port)
 clj -M:nrepl
 
-# Run offline unit tests (168 tests, 866 assertions, no network)
+# Run offline unit tests (169 tests, 888 assertions, no network)
 clj -M:test
 
 # Run live integration tests (manual only, requires network)
