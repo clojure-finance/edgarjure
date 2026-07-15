@@ -455,7 +455,11 @@
    {:target "Operating Income" :formula [:- "Gross Profit" "Operating Expenses"]}
    {:target "Operating Expenses" :formula [:- "Gross Profit" "Operating Income"]}
    {:target "Pre-Tax Income" :formula [:+ "Net Income" "Income Tax Expense"]}
-   {:target "Net Income" :formula [:- "Pre-Tax Income" "Income Tax Expense"]}])
+   {:target "Net Income" :formula [:- "Pre-Tax Income" "Income Tax Expense"]}
+   ;; Banks (operands only exist on bank chains). Gross revenue — interest
+   ;; income plus noninterest income — is how Compustat constructs REVT for
+   ;; banks; no single XBRL tag carries it.
+   {:target "Total Gross Revenue" :formula [:+ "Interest Income" "Noninterest Income"]}])
 
 (def balance-sheet-identities
   "Arithmetic identities for balance sheet imputation (:view :standardized)."

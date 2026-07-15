@@ -32,7 +32,8 @@
    :concepts ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"
               "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"]}
   {:label "Income Tax Expense"
-   :concepts ["IncomeTaxExpenseBenefit"]}
+   :concepts ["IncomeTaxExpenseBenefit"
+              "IncomeTaxExpenseBenefitContinuingOperations"]}
   {:label "Net Income"
    :concepts ["NetIncomeLoss"
               "ProfitLoss"
