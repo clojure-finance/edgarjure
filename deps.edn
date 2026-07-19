@@ -15,7 +15,7 @@
         babashka/fs {:mvn/version "0.5.22"}
 
         ;; Data
-        techascent/tech.ml.dataset {:mvn/version "7.030"}
+        techascent/tech.ml.dataset {:mvn/version "8.024"}
 
         ;; Schema validation
         metosin/malli {:mvn/version "0.16.4"}}
