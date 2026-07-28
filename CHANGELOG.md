@@ -12,6 +12,7 @@ All notable changes to edgarjure are documented here.
 - Engine semantics: formula ops `:=`/`:+`/`:-`/`:neg-sum` with `[:opt x]` optional operands; guards `[:lt a b]`, `[:gt a b]`, `[:concept-not-in item #{...}]`; rules apply sequentially in order (a rule's output is immediately visible to later rules), first rule per target wins, iterated to fixpoint (capped at 4 passes). For 10-Q data, reclassified rows get `:val-q`/`:val-ltm` like any other duration line item.
 - New income statement chains feeding the rules (also available in all other views): `"Selling and Marketing Expense"`, `"General and Administrative Expense"`, `"Marketing Expense"`, `"Fulfillment Expense"`, `"Other Operating Expense"`, `"Excise Taxes"`, `"Restructuring Charges"`, `"Impairment Charges"`, `"Goodwill Impairment"`, `"Acquisition-Related Costs"`, `"Litigation Settlement"`.
 - `examples/compustat_validation.clj`: new `annual-compustat-items` mapping and `validate-reclass` helper reproducing the reclassification study.
+- Out-of-sample confirmation against live WRDS `comp.funda` (FY2016+, ~190 firm-years not used for rule fitting): COGS 43% (as-reported 1%), XSGA 43% (16%), OIADP 34% (19%), DP 66% — same firm-level structure as in-sample, with misses concentrated in the documented problem filers.
 
 ### Changed
 - **License switched from EPL-2.0 to Apache-2.0** (LICENSE file, README, and the pom metadata in build.clj). Applies from the next published version onward; artifacts through 0.2.1 were published under EPL-2.0.

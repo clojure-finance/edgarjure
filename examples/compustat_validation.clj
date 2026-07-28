@@ -21,6 +21,13 @@
        shipped 2026-07) closes much of it: COGS 57%, XSGA 45%, OIADP 38%,
        Gross Profit vs REVT-COGS 59% — see annual-compustat-items and
        validate-reclass below.
+     Out-of-sample check (2026-07-28, FY2016+ vs a current-vintage WRDS
+       FUNDA extract, ~190 firm-years the rules were never fitted on):
+       COGS 43% (as-reported 1%), XSGA 43% (16%), OIADP 34% (19%), DP 66%.
+       Same firm-level structure as in-sample: near-perfect on clean filers
+       (MSFT, PEP, WMT, KO 90-100%), misses concentrated in the documented
+       problem cases (CVX, GE, HON, IBM) plus AMZN/CSCO, whose expense
+       presentation changed after 2016.
      Extended items (annual): Investing/Financing Cash Flow 96.2%, Goodwill
        95.2%, Shares Basic/Diluted 89/88%, Cash 87.8%, EPS 79.5%, PP&E 77.6%.
        Known-definitional laggards (documented, not chased):
