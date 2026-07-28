@@ -420,6 +420,18 @@ The 13D and 13G XML schemas spell their fields differently; both normalize to th
 ;    :total-value 12345678}
 ```
 
+### Guided Tour Notebook
+
+`examples/notebook.clj` is a [Clerk](https://github.com/nextjournal/clerk) notebook touring the whole library — statements and views, industry routing, quarterly/LTM derivation, point-in-time mode, panels, and ownership forms:
+
+```
+clj -M:clerk:nrepl
+;; in the REPL:
+(require '[nextjournal.clerk :as clerk])
+(clerk/serve! {:browse? true})
+(clerk/show! "examples/notebook.clj")
+```
+
 ### Disk Cache
 
 All HTTP responses are cached in memory by default. For cross-session persistence — batch jobs, repeated research runs — enable the opt-in disk cache:

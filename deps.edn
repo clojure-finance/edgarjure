@@ -39,6 +39,11 @@
           slipset/deps-deploy {:mvn/version "0.2.2"}}
    :ns-default build}
 
+  ;; Clerk notebook: clj -M:clerk then (clerk/serve! ...) — see examples/notebook.clj
+  :clerk
+  {:extra-deps {io.github.nextjournal/clerk {:mvn/version "0.17.1102"}}
+   :extra-paths ["examples"]}
+
   :future
   {:extra-deps {;; Persistence (edgar.db — not yet implemented)
                 com.github.seancorfield/next.jdbc {:mvn/version "1.3.939"}
