@@ -19,15 +19,20 @@
        documented Compustat reclassification gap (D&A stripped out of
        COGS/SG&A, etc.). The :view :compustat rule engine (roadmap 4.1c,
        shipped 2026-07) closes much of it: COGS 57%, XSGA 45%, OIADP 38%,
-       Gross Profit vs REVT-COGS 59% — see annual-compustat-items and
+       Gross Profit vs REVT-COGS 58% — see annual-compustat-items and
        validate-reclass below.
      Out-of-sample check (2026-07-28, FY2016+ vs a current-vintage WRDS
        FUNDA extract, ~190 firm-years the rules were never fitted on):
-       COGS 43% (as-reported 1%), XSGA 43% (16%), OIADP 34% (19%), DP 66%.
-       Same firm-level structure as in-sample: near-perfect on clean filers
-       (MSFT, PEP, WMT, KO 90-100%), misses concentrated in the documented
-       problem cases (CVX, GE, HON, IBM) plus AMZN/CSCO, whose expense
-       presentation changed after 2016.
+       COGS 54% (as-reported 1%), XSGA 43% (16%), OIADP 34% (19%), OIBDP
+       33%, DP 76%. Same firm-level structure as in-sample: near-perfect on
+       clean filers (MSFT, PEP, WMT, KO 90-100%), misses concentrated in
+       the documented problem cases (CVX, GE, HON, IBM). The out-of-sample
+       pass produced the :dp-components rule (Depreciation + intangible
+       amortization beats the combined cash-flow D&A tag whose scope can
+       exceed Compustat DP - AMZN's includes content amortization); AMZN's
+       Compustat XSGA/XRD need its Fulfillment and Technology & Content
+       extension tags, which the companyfacts API does not carry (FSDS
+       territory).
      Extended items (annual): Investing/Financing Cash Flow 96.2%, Goodwill
        95.2%, Shares Basic/Diluted 89/88%, Cash 87.8%, EPS 79.5%, PP&E 77.6%.
        Known-definitional laggards (documented, not chased):
@@ -140,8 +145,8 @@
 (def annual-compustat-items
   "Reclassified line items (:view :compustat) -> FUNDA keys, with the match
    rates measured on this study's industrials (FY2010-2015, 2016 vintage):
-   COGS 57%, XSGA 45%, XOPR 46%, OIADP 38%, OIBDP 29%, DP 65%, and
-   Gross Profit (Compustat) vs REVT-COGS 59%. Residual gaps are footnote-
+   COGS 57%, XSGA 45%, XOPR 45%, OIADP 38%, OIBDP 29%, DP 74%, and
+   Gross Profit (Compustat) vs REVT-COGS 58%. Residual gaps are footnote-
    level allocations (partial D&A splits, R&D embedded in COGS) and special
    items invisible to companyfacts."
   [["COGS (Compustat)" :cogs]

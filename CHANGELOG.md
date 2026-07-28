@@ -2,6 +2,11 @@
 
 All notable changes to edgarjure are documented here.
 
+## [Unreleased]
+
+### Changed
+- Reclassification ruleset: new `:dp-components` rule — `"DP (Compustat)"` now prefers Depreciation + Amortization of Intangibles (cross-statement, from the cash flow) over the combined cash-flow D&A tag, whose scope can exceed Compustat DP (AMZN's includes capitalized-content amortization: 48.7B tagged vs 30.9B DP in FY2023, which equals the component sum exactly). The COGS and OIBDP rules now consume `"DP (Compustat)"` instead of the raw D&A operand. Out-of-sample FY2016+: DP 66% → **76%**, COGS 43% → **54%**, OIBDP 21% → **33%**, XOPR 33% → 38%; in-sample DP 65% → 74% with COGS/XSGA/OIADP unchanged. Known tradeoff: filers tagging footnote-scope Depreciation values (KO, UPS) lose a few years. AMZN's remaining XSGA/XRD gap is documented as extension-tag territory (Fulfillment, Technology & Content) that the companyfacts API does not carry.
+
 ## [0.3.0] — 2026-07-28
 
 ### Added

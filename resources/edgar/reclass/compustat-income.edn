@@ -3,30 +3,44 @@
  :taxonomy "us-gaap"
  :version "2026-07-28"
  :notes "Reclassification rules approximating Compustat income statement item
-definitions (roadmap 4.1c). Derived empirically against a 2016-vintage WRDS
-FUNDA extract (18 large industrials, FY2010-2015, ~120 firm-years): match
-rates within 1% are quoted per rule as as-reported -> reclassified. Original
-line items are always preserved alongside the reclassified ones. Residual
-gaps are footnote-level allocations Compustat keys from disclosures absent in
-the companyfacts API (e.g. partial D&A splits between COGS and SG&A, R&D
-embedded in COGS, INDL-format restatements of firms with finance arms)."
- :aux {:cash-flow ["D&A"]}
+definitions (roadmap 4.1c). Derived empirically against WRDS FUNDA extracts
+(18 large industrials; fitted on FY2010-2015, checked out-of-sample on
+FY2016+): match rates within 1% are quoted per rule as as-reported ->
+reclassified. Original line items are always preserved alongside the
+reclassified ones. Residual gaps are footnote-level allocations and tags
+Compustat keys from disclosures absent in the companyfacts API (e.g. partial
+D&A splits between COGS and SG&A, R&D embedded in COGS, INDL-format
+restatements of firms with finance arms, and expense lines carried only in
+filer extension taxonomies - AMZN's Fulfillment and Technology & Content,
+which Compustat folds into XSGA/XRD, are extension tags invisible here)."
+ :aux {:cash-flow ["D&A" "Depreciation" "Amortization of Intangibles"]}
  :rules
- [{:id :dp
+ [{:id :dp-components
+   :target "DP (Compustat)"
+   :compustat "DP"
+   :formula [:+ "Depreciation" [:opt "Amortization of Intangibles"]]
+   :notes "Compustat DP = property depreciation + intangible amortization. When a
+filer tags Depreciation separately, the component sum beats the combined
+cash-flow D&A tag, whose scope can exceed Compustat DP (AMZN's includes
+capitalized-content amortization: 48.7B tagged vs 30.9B DP in 2023 =
+Depreciation 30.2B + intangible amortization 0.7B exactly). Out-of-sample
+FY2016+: DP 66% -> 76%, and COGS 43% -> 54% via the better operand, with
+no in-sample cost. Known tradeoff: KO/UPS tag partial Depreciation values
+(footnote scope) and lose a few years."}
+  {:id :dp
    :target "DP (Compustat)"
    :compustat "DP"
    :formula [:= "D&A"]
-   :notes "Depreciation and amortization. Compustat sources DP from the cash-flow
-statement; the D&A operand is the cash-flow statement's (possibly derived)
-line item. 65% within 1%; remaining gaps are DP definitional scope."}
+   :notes "Fallback when no separate Depreciation tag exists: the cash-flow
+statement's (possibly derived) D&A line item."}
   {:id :cogs-ex-da
    :target "COGS (Compustat)"
    :compustat "COGS"
-   :formula [:- "Cost of Revenue" "D&A"]
-   :guards [[:lt "D&A" "Cost of Revenue"]]
+   :formula [:- "Cost of Revenue" "DP (Compustat)"]
+   :guards [[:lt "DP (Compustat)" "Cost of Revenue"]]
    :notes "Compustat COGS excludes D&A. In the dominant filer pattern Compustat
 removes the FULL DP from COGS, none from SG&A (IBM, INTC, KO, WMT, AAPL, CAT
-all show a ~1.00 COGS fraction). 1% -> 57%."}
+all show a ~1.00 COGS fraction). 1% -> 57% in-sample."}
   {:id :xsga-plus-rd
    :target "XSGA (Compustat)"
    :compustat "XSGA"
@@ -73,7 +87,7 @@ excludes them). 24% -> 41%."}
   {:id :oibdp
    :target "OIBDP (Compustat)"
    :compustat "OIBDP"
-   :formula [:+ "OIADP (Compustat)" "D&A"]
+   :formula [:+ "OIADP (Compustat)" "DP (Compustat)"]
    :notes "Operating income before depreciation = OIADP + DP. Built top-down from
 operating income (28% within 1%) rather than bottom-up as REVT - XOPR (19%);
 as a consequence REVT - XOPR (Compustat) and OIBDP (Compustat) need not agree

@@ -172,8 +172,9 @@
       (is (= :compustat (:ruleset rs)))
       (is (= :income (:statement rs)))
       (is (string? (:version rs))))
-    (testing "cash-flow aux declares the D&A dependency"
-      (is (= ["D&A"] (get-in rs [:aux :cash-flow]))))
+    (testing "cash-flow aux declares the D&A and DP-component dependencies"
+      (is (= ["D&A" "Depreciation" "Amortization of Intangibles"]
+             (get-in rs [:aux :cash-flow]))))
     (testing "all documented targets are present"
       (is (= #{"DP (Compustat)" "COGS (Compustat)" "XSGA (Compustat)"
                "Gross Profit (Compustat)" "XOPR (Compustat)"
@@ -213,6 +214,29 @@
     (is (= 310.0 (v "OIBDP (Compustat)")) "OIADP + D&A")
     (testing "no excise taxes tagged -> no Revenue (Compustat) row"
       (is (nil? (v "Revenue (Compustat)"))))))
+
+(deftest compustat-dp-components-preference-test
+  ;; modeled on AMZN FY2023 (verified live): cash-flow D&A 48663 includes
+  ;; capitalized-content amortization, but Compustat DP = Depreciation 30225
+  ;; + intangible amortization 706 = 30931; COGS must use the component DP
+  (let [rows [(row "Cost of Revenue" 304739.0 {:concept "CostOfGoodsAndServicesSold"})]
+        aux [(row "D&A" 48663.0)
+             (row "Depreciation" 30225.0)
+             (row "Amortization of Intangibles" 706.0)]
+        result (vec (reclass/apply-ruleset rows aux reclass/compustat-income-ruleset))
+        v (fn [li] (:val (first (filter #(= li (:line-item %)) result))))
+        dp-row (first (filter #(= "DP (Compustat)" (:line-item %)) result))]
+    (testing "component sum wins over the broader combined D&A tag"
+      (is (= 30931.0 (:val dp-row)))
+      (is (= :dp-components (:rule dp-row))))
+    (testing "COGS uses the component DP"
+      (is (= 273808.0 (v "COGS (Compustat)"))))
+    (testing "falls back to := D&A when no Depreciation component exists"
+      (let [result2 (vec (reclass/apply-ruleset rows [(row "D&A" 48663.0)]
+                                                reclass/compustat-income-ruleset))
+            dp2 (first (filter #(= "DP (Compustat)" (:line-item %)) result2))]
+        (is (= 48663.0 (:val dp2)))
+        (is (= :dp (:rule dp2)))))))
 
 (deftest compustat-xsga-components-fallback-test
   (let [rows [(row "Selling and Marketing Expense" 60.0 {:concept "SellingAndMarketingExpense"})
