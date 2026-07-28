@@ -8,7 +8,7 @@
             edgar.reclass-test
             edgar.extract-test
             edgar.tables-test
-            edgar.forms.form4-test
+            edgar.forms.ownership-test
             edgar.forms.form13f-test
             edgar.xbrl-test
             edgar.schema-test
@@ -27,7 +27,7 @@
                             'edgar.reclass-test
                             'edgar.extract-test
                             'edgar.tables-test
-                            'edgar.forms.form4-test
+                            'edgar.forms.ownership-test
                             'edgar.forms.form13f-test
                             'edgar.xbrl-test
                             'edgar.schema-test

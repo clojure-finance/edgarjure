@@ -24,7 +24,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 **Read filings** — as HTML, plain text, or structured data. Extract specific sections (MD&A, Risk Factors, any 10-K/10-Q item) with full section bodies. Parse HTML tables into datasets. Pull exhibits and XBRL linkbase documents.
 
-**Parse insider trades and institutional holdings** — Form 4 and 13F-HR come back as structured maps and datasets, ready for ownership analysis.
+**Parse insider trades and institutional holdings** — Forms 3, 4, 5 (beneficial ownership, including amendments) and 13F-HR come back as structured maps and datasets, ready for ownership analysis.
 
 **Download in bulk** — single company or batch, with bounded parallelism, skip-existing, and structured result envelopes reporting success, skip, or error per filing.
 
@@ -376,7 +376,7 @@ Form-specific parsers register via the `filing-obj` multimethod and activate on 
 (require '[edgar.forms])   ; loads all built-in parsers at once
 ```
 
-**Form 4 — Insider Trades:**
+**Forms 3, 4, 5 — Beneficial Ownership (initial, changes, annual):**
 
 ```clojure
 (-> (e/filing "AAPL" :form "4") e/obj)
@@ -384,8 +384,17 @@ Form-specific parsers register via the `filing-obj` multimethod and activate on 
 ;    :issuer {:cik "0000320193" :name "Apple Inc." :ticker "AAPL"}
 ;    :reporting-owner {:name "..." :is-officer? true :officer-title "CEO" ...}
 ;    :transactions [{:type :non-derivative :coding "S" :shares 50000.0
-;                    :price 185.50 :acquired-disposed "D" ...}]}
+;                    :price 185.50 :acquired-disposed "D" ...}]
+;    :holdings []}
+
+(-> (e/filing "AAPL" :form "3") e/obj)
+;=> {:form "3" ...
+;    :transactions []
+;    :holdings [{:type :derivative :security-title "Restricted Stock Unit"
+;                :underlying-title "Common Stock" :underlying-shares 301040.0 ...}]}
 ```
+
+All three (plus their `/A` amendments) share the ownership XML schema and one parser (`edgar.forms.ownership`). Form 3 carries initial holdings, Form 4 transactions, Form 5 the annual statement with both.
 
 **13F-HR — Institutional Holdings:**
 
@@ -455,7 +464,7 @@ edgar.core            HTTP client, JSON + raw caches, retry, rate limiter
     │               ├── edgar.download      Bulk save to disk
     │               ├── edgar.extract       NLP item-section extraction
     │               ├── edgar.tables        HTML table → dataset
-    │               └── edgar.forms/        Form parsers (Form 4, 13F-HR)
+    │               └── edgar.forms/        Form parsers (Forms 3/4/5, 13F-HR)
     ├── edgar.xbrl          Company facts → dataset, concept discovery, frames
     │       ├── edgar.financials    Statements: views, imputation, industry routing
     │       │       ├── edgar.reclass       Reclassification rule engine (Compustat definitions)
@@ -484,7 +493,8 @@ edgar.core            HTTP client, JSON + raw caches, retry, rate limiter
 | `edgar.dataset` | Panel datasets, cross-sectional snapshots, pivot helpers |
 | `edgar.tables` | HTML table extraction → `tech.ml.dataset` |
 | `edgar.forms` | Central loader — `(require '[edgar.forms])` activates all built-in parsers |
-| `edgar.forms.form4` | Form 4 parser (insider trades) |
+| `edgar.forms.ownership` | Forms 3/4/5 parser (beneficial ownership: initial holdings, insider trades, annual statements; includes `/A` amendments) |
+| `edgar.forms.form4` | Historical Form 4 entry point — delegates to `edgar.forms.ownership` |
 | `edgar.forms.form13f` | 13F-HR parser (institutional holdings, XML-era post-2013Q2) |
 
 ## Conventions
