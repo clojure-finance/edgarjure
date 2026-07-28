@@ -707,7 +707,9 @@
   (testing "insurers: SIC 6300-6399 and 6411"
     (is (= :insurance (fin/industry-for-sic "6311")))
     (is (= :insurance (fin/industry-for-sic "6411"))))
-  (testing "REITs: SIC 6500-6553"
+  (testing "REITs: SIC 6798 and real estate operators 6500-6553"
+    (is (= :reit (fin/industry-for-sic "6798")))
+    (is (= :reit (fin/industry-for-sic 6798)))
     (is (= :reit (fin/industry-for-sic "6500")))
     (is (= :reit (fin/industry-for-sic "6552"))))
   (testing "everything else is :standard"
@@ -737,8 +739,18 @@
   (testing "insurance chains include insurance-specific line items"
     (let [labels (set (map first fin/insurance-income-concepts))]
       (is (contains? labels "Premiums Earned"))))
+  (testing "REIT chains include REIT-specific line items"
+    (let [labels (set (map first fin/reit-income-concepts))]
+      (is (contains? labels "Rental Revenue"))
+      (is (contains? labels "Property Operating Expense"))
+      (is (contains? labels "D&A"))
+      (is (contains? labels "Gain on Sale of Real Estate")))
+    (let [rental (first (filter #(= "Rental Revenue" (first %)) fin/reit-income-concepts))]
+      (is (some #{"OperatingLeaseLeaseIncome"} (rest rental)) "post-ASC 842 tag")
+      (is (some #{"OperatingLeasesIncomeStatementLeaseRevenue"} (rest rental)) "pre-ASC 842 tag")))
   (testing "concept maps carry metadata"
     (is (= :bank (:industry fin/bank-income-concept-map)))
+    (is (= :reit (:industry fin/reit-income-concept-map)))
     (is (string? (:version fin/income-statement-concept-map)))))
 
 (deftest concepts-for-test
@@ -750,7 +762,9 @@
     (is (= fin/bank-income-concepts
            (:chains (fin/concepts-for :income :industry :bank))))
     (is (= fin/insurance-income-concepts
-           (:chains (fin/concepts-for :income :industry :insurance)))))
+           (:chains (fin/concepts-for :income :industry :insurance))))
+    (is (= fin/reit-income-concepts
+           (:chains (fin/concepts-for :income :industry :reit)))))
   (testing "balance and cash-flow"
     (is (= fin/balance-sheet-concepts (:chains (fin/concepts-for :balance))))
     (is (= fin/cash-flow-concepts (:chains (fin/concepts-for :cash-flow))))))

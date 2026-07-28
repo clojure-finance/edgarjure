@@ -102,6 +102,11 @@
    Source: resources/edgar/concepts/insurance-income.edn"
   (load-concept-file "edgar/concepts/insurance-income.edn"))
 
+(def reit-income-concept-map
+  "Income statement concept map for REITs (SIC 6798, 6500-6553).
+   Source: resources/edgar/concepts/reit-income.edn"
+  (load-concept-file "edgar/concepts/reit-income.edn"))
+
 (def income-statement-concepts
   "Income statement fallback chains: [[label concept1 concept2 ...] ...]"
   (chains-from-map income-statement-concept-map))
@@ -122,6 +127,10 @@
   "Insurance income statement fallback chains."
   (chains-from-map insurance-income-concept-map))
 
+(def reit-income-concepts
+  "REIT income statement fallback chains."
+  (chains-from-map reit-income-concept-map))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Industry routing
 ;;; ---------------------------------------------------------------------------
@@ -130,7 +139,7 @@
   "Map a SIC code (string or number) to an industry keyword:
      :bank      - SIC 6000-6199 or 6712 (bank holding companies)
      :insurance - SIC 6300-6399 or 6411
-     :reit      - SIC 6500-6553 (no dedicated chains yet; treated as :standard)
+     :reit      - SIC 6798 (REITs) or 6500-6553 (real estate operators)
      :standard  - everything else (or unknown SIC)"
   [sic]
   (let [n (when sic
@@ -139,7 +148,7 @@
       (nil? n) :standard
       (or (<= 6000 n 6199) (= n 6712)) :bank
       (or (<= 6300 n 6399) (= n 6411)) :insurance
-      (<= 6500 n 6553) :reit
+      (or (= n 6798) (<= 6500 n 6553)) :reit
       :else :standard)))
 
 (defn- detect-industry
@@ -154,13 +163,14 @@
   (case industry
     :bank bank-income-concepts
     :insurance insurance-income-concepts
+    :reit reit-income-concepts
     income-statement-concepts))
 
 (defn concepts-for
   "Return the active concept chains for a statement, for inspection/extension.
    statement: :income | :balance | :cash-flow
    Options:
-     :industry - :standard (default) | :bank | :insurance (income only)
+     :industry - :standard (default) | :bank | :insurance | :reit (income only)
    Returns {:chains [[label c1 c2 ...] ...] :meta <EDN map metadata>}"
   [statement & {:keys [industry] :or {industry :standard}}]
   (case statement
@@ -169,6 +179,8 @@
                      :meta (dissoc bank-income-concept-map :line-items)}
               :insurance {:chains insurance-income-concepts
                           :meta (dissoc insurance-income-concept-map :line-items)}
+              :reit {:chains reit-income-concepts
+                     :meta (dissoc reit-income-concept-map :line-items)}
               {:chains income-statement-concepts
                :meta (dissoc income-statement-concept-map :line-items)})
     :balance {:chains balance-sheet-concepts
@@ -744,7 +756,7 @@
                  (Compustat)\" - alongside the originals (rows carry
                  :method :reclassified, :rule and :derived-from; see
                  edgar.reclass and resources/edgar/reclass/)
-     :industry - :standard | :bank | :insurance. When omitted, auto-detected
+     :industry - :standard | :bank | :insurance | :reit. When omitted, auto-detected
                  from the company's SIC code (banks and insurers get
                  industry-specific chains)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
@@ -811,7 +823,7 @@
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
                  | :compustat (reclassified line items, income statement only)
-     :industry - :standard | :bank | :insurance (income statement only;
+     :industry - :standard | :bank | :insurance | :reit (income statement only;
                  auto-detected from SIC when omitted)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  All three statements use point-in-time deduplication:

@@ -4,6 +4,10 @@ All notable changes to edgarjure are documented here.
 
 ## [Unreleased]
 
+### Added
+- **REIT income statement chains (roadmap 4.1d)** — `resources/edgar/concepts/reit-income.edn`, verified against SPG, PLD, O, EQR, WELL, and AMT facts. REIT-specific line items alongside the standard core: `"Rental Revenue"` (spanning the pre- and post-ASC 842 tag families), `"Real Estate Revenue"`, `"Tenant Reimbursements"`, `"Property Operating Expense"`, `"Real Estate Taxes"`, `"Ground Rent Expense"`, `"D&A"` (a first-class income statement line for REITs), `"Impairment of Real Estate"`, `"Gain on Sale of Real Estate"`. Available via `:industry :reit` and `(e/concepts-for :income :industry :reit)`.
+- Industry routing fix: **SIC 6798 (REITs) now routes to `:reit`** — the previous range (6500–6553, real estate operators) never matched actual equity REITs, which nearly all file under 6798, so they silently got the industrial chains.
+
 ### Changed
 - Reclassification ruleset: new `:dp-components` rule — `"DP (Compustat)"` now prefers Depreciation + Amortization of Intangibles (cross-statement, from the cash flow) over the combined cash-flow D&A tag, whose scope can exceed Compustat DP (AMZN's includes capitalized-content amortization: 48.7B tagged vs 30.9B DP in FY2023, which equals the component sum exactly). The COGS and OIBDP rules now consume `"DP (Compustat)"` instead of the raw D&A operand. Out-of-sample FY2016+: DP 66% → **76%**, COGS 43% → **54%**, OIBDP 21% → **33%**, XOPR 33% → 38%; in-sample DP 65% → 74% with COGS/XSGA/OIADP unchanged. Known tradeoff: filers tagging footnote-scope Depreciation values (KO, UPS) lose a few years. AMZN's remaining XSGA/XRD gap is documented as extension-tag territory (Fulfillment, Technology & Content) that the companyfacts API does not carry.
 

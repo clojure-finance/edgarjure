@@ -296,11 +296,12 @@ The Compustat view goes one step further: a data-driven reclassification rule en
 
 ### Industry Routing
 
-Banks and insurers use fundamentally different income statement line items (Net Interest Income, Provision for Credit Losses, Premiums Earned). edgarjure auto-detects them from the company's SIC code and switches concept chains:
+Banks, insurers, and REITs use fundamentally different income statement line items (Net Interest Income, Provision for Credit Losses, Premiums Earned, Rental Revenue, Property Operating Expense). edgarjure auto-detects them from the company's SIC code and switches concept chains:
 
 ```clojure
 (e/income "JPM")                        ; auto-routes to bank chains
 (e/income "MET")                        ; auto-routes to insurance chains
+(e/income "SPG")                        ; auto-routes to REIT chains (SIC 6798)
 (e/income "JPM" :industry :standard)    ; force the generic chains
 ```
 

@@ -432,7 +432,7 @@
                  approximate Compustat definitions (\"COGS (Compustat)\",
                  \"XSGA (Compustat)\", \"OIADP (Compustat)\", ...; rows
                  carry :method :reclassified) - see (e/reclass-rules :income)
-     :industry - :standard | :bank | :insurance. Auto-detected from the
+     :industry - :standard | :bank | :insurance | :reit. Auto-detected from the
                  company's SIC code when omitted (banks/insurers get
                  industry-specific concept chains)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
@@ -498,7 +498,7 @@
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
                  | :compustat (income statement reclassification)
-     :industry - :standard | :bank | :insurance (income statement only)
+     :industry - :standard | :bank | :insurance | :reit (income statement only)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  All three statements use point-in-time deduplication."
   [ticker-or-cik & {:keys [form shape as-of view industry]
@@ -519,7 +519,7 @@
   "Return the active concept chains (and their EDN metadata) for a statement.
    statement: :income | :balance | :cash-flow
    Options:
-     :industry - :standard (default) | :bank | :insurance (income only)
+     :industry - :standard (default) | :bank | :insurance | :reit (income only)
    Example: (e/concepts-for :income :industry :bank)"
   [statement & {:keys [industry] :or {industry :standard}}]
   (financials/concepts-for statement :industry industry))

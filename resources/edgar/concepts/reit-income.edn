@@ -1,0 +1,79 @@
+{:statement :income-statement
+ :industry :reit
+ :taxonomy "us-gaap"
+ :version "2026-07-28"
+ :notes "Income statement chains for REITs (SIC 6798, plus real estate operators
+6500-6553). Verified against SPG, PLD, O, EQR, WELL, and AMT company facts.
+Rental revenue spans the pre- and post-ASC 842 tag families. D&A is a
+first-class income statement line for REITs (unlike the industrial chains).
+FFO is not tagged in XBRL (non-GAAP) and is not derived yet - planned."
+ :line-items
+ [{:label "Revenue"
+   :concepts ["RevenueFromContractWithCustomerExcludingAssessedTax"
+              "Revenues"
+              "SalesRevenueNet"
+              "RevenueFromContractWithCustomerIncludingAssessedTax"]}
+  {:label "Rental Revenue"
+   :concepts ["OperatingLeaseLeaseIncome"
+              "OperatingLeasesIncomeStatementLeaseRevenue"
+              "LeaseIncome"
+              "RevenueFromLeaseOrRentalOfPropertyOrEquipment"
+              "OperatingLeasesIncomeStatementMinimumLeaseRevenue"]}
+  {:label "Real Estate Revenue"
+   :concepts ["RealEstateRevenueNet"]}
+  {:label "Tenant Reimbursements"
+   :concepts ["TenantReimbursements"]}
+  {:label "Other Property Revenue"
+   :concepts ["OtherRealEstateRevenue"]}
+  {:label "Property Operating Expense"
+   :concepts ["DirectCostsOfLeasedAndRentedPropertyOrEquipment"
+              "OwnedPropertyManagementCosts"]}
+  {:label "Real Estate Taxes"
+   :concepts ["RealEstateTaxExpense"
+              "RealEstateTaxesAndInsurance"]}
+  {:label "Ground Rent Expense"
+   :concepts ["LeaseAndRentalExpense"]}
+  {:label "General and Administrative Expense"
+   :concepts ["GeneralAndAdministrativeExpense"]}
+  {:label "SG&A Expense"
+   :concepts ["SellingGeneralAndAdministrativeExpense"]}
+  {:label "D&A"
+   :concepts ["DepreciationAndAmortization"
+              "DepreciationDepletionAndAmortization"
+              "DepreciationAmortizationAndAccretionNet"]}
+  {:label "Impairment of Real Estate"
+   :concepts ["ImpairmentOfRealEstate"]}
+  {:label "Total Costs and Expenses"
+   :concepts ["CostsAndExpenses"
+              "OperatingCostsAndExpenses"]}
+  {:label "Gain on Sale of Real Estate"
+   :concepts ["GainLossOnSaleOfProperties"
+              "GainsLossesOnSalesOfInvestmentRealEstate"
+              "GainLossOnSaleOfPropertiesBeforeApplicableIncomeTaxes"]}
+  {:label "Operating Income"
+   :concepts ["OperatingIncomeLoss"]}
+  {:label "Non-Operating Income"
+   :concepts ["NonoperatingIncomeExpense"]}
+  {:label "Interest Expense"
+   :concepts ["InterestExpense"
+              "InterestExpenseDebt"
+              "InterestExpenseNonoperating"
+              "InterestAndDebtExpense"]}
+  {:label "Pre-Tax Income"
+   :concepts ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"
+              "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"]}
+  {:label "Income Tax Expense"
+   :concepts ["IncomeTaxExpenseBenefit"
+              "IncomeTaxExpenseBenefitContinuingOperations"]}
+  {:label "Net Income"
+   :concepts ["NetIncomeLoss"
+              "ProfitLoss"
+              "NetIncomeLossAvailableToCommonStockholdersBasic"]}
+  {:label "EPS Basic"
+   :concepts ["EarningsPerShareBasic"]}
+  {:label "EPS Diluted"
+   :concepts ["EarningsPerShareDiluted"]}
+  {:label "Shares Basic"
+   :concepts ["WeightedAverageNumberOfSharesOutstandingBasic"]}
+  {:label "Shares Diluted"
+   :concepts ["WeightedAverageNumberOfDilutedSharesOutstanding"]}]}
