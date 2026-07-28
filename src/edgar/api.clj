@@ -4,7 +4,9 @@
 
    Design principles:
    - Every function accepts ticker or CIK interchangeably
-   - Keyword args throughout; no positional form/type args
+   - Keyword args throughout; no positional form/type args — a single options
+     map also works everywhere: (e/income \"AAPL\" {:form \"10-Q\"})
+   - nth-style lookups (e/filing :n ...) return nil out of range, never throw
    - Sensible defaults for taxonomy (us-gaap), unit (USD), form (10-K)
    - :concept accepts a string or a collection of strings
    - Functions that return datasets always return tech.ml.dataset, never seq-of-maps"
@@ -540,6 +542,32 @@
     {:income (:income-statement stmts)
      :balance (:balance-sheet stmts)
      :cashflow (:cash-flow stmts)}))
+
+;;; ---------------------------------------------------------------------------
+;;; Long-name aliases (Phase 6 syntax refinements)
+;;;
+;;; Every statement function also answers to its full name; e/search gets a
+;;; companies-suffixed alias symmetric with e/search-filings. All functions
+;;; taking keyword options also accept a single options map (Clojure 1.11+
+;;; keyword-argument semantics): (e/income "AAPL" {:form "10-Q" :shape :wide})
+;;; ---------------------------------------------------------------------------
+
+(def ^{:doc "Long-name alias of e/income."
+       :arglists '([ticker-or-cik & {:keys [form shape as-of view industry]}])}
+  income-statement income)
+
+(def ^{:doc "Long-name alias of e/balance."
+       :arglists '([ticker-or-cik & {:keys [form shape as-of view]}])}
+  balance-sheet balance)
+
+(def ^{:doc "Long-name alias of e/cashflow."
+       :arglists '([ticker-or-cik & {:keys [form shape as-of view]}])}
+  cash-flow cashflow)
+
+(def ^{:doc "Alias of e/search — searches companies by name, symmetric with
+  e/search-filings for full-text filing search."
+       :arglists '([query & {:keys [limit]}])}
+  search-companies search)
 
 ;;; ---------------------------------------------------------------------------
 ;;; Standardization introspection

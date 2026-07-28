@@ -7,6 +7,7 @@
             [edgar.company :as edgar.company]
             [edgar.extract :as extract]
             [edgar.filing :as filing]
+            [edgar.filings :as edgar.filings]
             [edgar.schema :as schema]))
 
 ;;; ---------------------------------------------------------------------------
@@ -201,3 +202,27 @@
                        (catch clojure.lang.ExceptionInfo e
                          (when (= ::schema/invalid-args (:type (ex-data e))) e))))
             (str fn-name " must not throw schema error for valid input"))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Phase 6 syntax refinements
+;;; ---------------------------------------------------------------------------
+
+(deftest long-name-aliases-test
+  (testing "long-name aliases are the same functions"
+    (is (identical? e/income e/income-statement))
+    (is (identical? e/balance e/balance-sheet))
+    (is (identical? e/cashflow e/cash-flow))
+    (is (identical? e/search e/search-companies))))
+
+(deftest opts-map-passing-test
+  (testing "a single options map works in place of keyword args (Clojure 1.11+)"
+    (with-redefs [edgar.filings/get-filings
+                  (fn [_ & {:keys [form limit]}] [{:form form :limit limit}])]
+      (is (= [{:form "10-K" :limit 3}]
+             (e/filings "AAPL" {:form "10-K" :limit 3}))))))
+
+(deftest filing-nth-out-of-range-nil-test
+  (testing "e/filing with :n past the available filings returns nil, never throws"
+    (with-redefs [edgar.filings/get-filings
+                  (fn [_ & _] [{:form "10-K" :accessionNumber "0000000000-24-000001"}])]
+      (is (nil? (e/filing "AAPL" :form "10-K" :n 5))))))
