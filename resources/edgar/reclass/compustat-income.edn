@@ -1,0 +1,90 @@
+{:ruleset :compustat
+ :statement :income
+ :taxonomy "us-gaap"
+ :version "2026-07-28"
+ :notes "Reclassification rules approximating Compustat income statement item
+definitions (roadmap 4.1c). Derived empirically against a 2016-vintage WRDS
+FUNDA extract (18 large industrials, FY2010-2015, ~120 firm-years): match
+rates within 1% are quoted per rule as as-reported -> reclassified. Original
+line items are always preserved alongside the reclassified ones. Residual
+gaps are footnote-level allocations Compustat keys from disclosures absent in
+the companyfacts API (e.g. partial D&A splits between COGS and SG&A, R&D
+embedded in COGS, INDL-format restatements of firms with finance arms)."
+ :aux {:cash-flow ["D&A"]}
+ :rules
+ [{:id :dp
+   :target "DP (Compustat)"
+   :compustat "DP"
+   :formula [:= "D&A"]
+   :notes "Depreciation and amortization. Compustat sources DP from the cash-flow
+statement; the D&A operand is the cash-flow statement's (possibly derived)
+line item. 65% within 1%; remaining gaps are DP definitional scope."}
+  {:id :cogs-ex-da
+   :target "COGS (Compustat)"
+   :compustat "COGS"
+   :formula [:- "Cost of Revenue" "D&A"]
+   :guards [[:lt "D&A" "Cost of Revenue"]]
+   :notes "Compustat COGS excludes D&A. In the dominant filer pattern Compustat
+removes the FULL DP from COGS, none from SG&A (IBM, INTC, KO, WMT, AAPL, CAT
+all show a ~1.00 COGS fraction). 1% -> 57%."}
+  {:id :xsga-plus-rd
+   :target "XSGA (Compustat)"
+   :compustat "XSGA"
+   :formula [:+ "SG&A Expense" [:opt "R&D Expense"]]
+   :notes "Compustat XSGA folds R&D into SG&A (XRD stays broken out separately as
+its own item). 20% -> 42%. Caveat: filers that embed R&D in COGS and tag the
+notes value (e.g. HON) are over-added; not detectable from companyfacts."}
+  {:id :xsga-components
+   :target "XSGA (Compustat)"
+   :compustat "XSGA"
+   :formula [:+ "Selling and Marketing Expense" "General and Administrative Expense"
+             [:opt "R&D Expense"]]
+   :notes "Component fallback for filers with no combined SG&A tag (MSFT, ORCL,
+CSCO tag S&M and G&A separately)."}
+  {:id :gross-profit
+   :target "Gross Profit (Compustat)"
+   :compustat "REVT - COGS"
+   :formula [:- "Revenue" "COGS (Compustat)"]
+   :notes "Gross profit under Compustat's COGS definition (i.e. before D&A)."}
+  {:id :xopr
+   :target "XOPR (Compustat)"
+   :compustat "XOPR"
+   :formula [:+ "COGS (Compustat)" "XSGA (Compustat)"]
+   :notes "Total operating expenses excluding D&A; Compustat's XOPR = COGS + XSGA
+identity. 43% within 1%."}
+  {:id :special-items
+   :target "Special Items (Compustat)"
+   :compustat "SPI (operating portion)"
+   :formula [:neg-sum "Restructuring Charges" "Impairment Charges" "Goodwill Impairment"
+             "Acquisition-Related Costs" "Litigation Settlement"]
+   :notes "Compustat treats restructuring and impairment charges as special items
+below the operating line. Sign follows Compustat: charges are negative. Only
+the operating portion visible in XBRL tags is captured; non-operating special
+items (divestiture gains etc.) are not. Double counting is possible when a
+filer tags both a combined restructuring-and-impairment concept and a
+separate impairment concept."}
+  {:id :oiadp
+   :target "OIADP (Compustat)"
+   :compustat "OIADP"
+   :formula [:- "Operating Income" [:opt "Special Items (Compustat)"]]
+   :notes "Operating income after depreciation: OperatingIncomeLoss with special-
+item charges added back (XBRL operating income includes them; Compustat
+excludes them). 24% -> 41%."}
+  {:id :oibdp
+   :target "OIBDP (Compustat)"
+   :compustat "OIBDP"
+   :formula [:+ "OIADP (Compustat)" "D&A"]
+   :notes "Operating income before depreciation = OIADP + DP. Built top-down from
+operating income (28% within 1%) rather than bottom-up as REVT - XOPR (19%);
+as a consequence REVT - XOPR (Compustat) and OIBDP (Compustat) need not agree
+exactly for firms with expense lines outside the COGS/XSGA reconstruction."}
+  {:id :revt-ex-excise
+   :target "Revenue (Compustat)"
+   :compustat "REVT"
+   :formula [:- "Revenue" "Excise Taxes"]
+   :guards [[:concept-not-in "Revenue"
+             #{"RevenueFromContractWithCustomerExcludingAssessedTax"}]]
+   :notes "Compustat REVT is net of excise taxes. Applies only when the winning
+revenue concept is not already net of assessed taxes and the filer tags an
+excise-tax line. Oil majors may still differ: some (CVX) include equity-
+affiliate and other income in their tagged Revenues."}]}

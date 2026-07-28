@@ -15,6 +15,7 @@
             [edgar.extract :as extract]
             [edgar.xbrl :as xbrl]
             [edgar.financials :as financials]
+            [edgar.reclass :as reclass]
             [edgar.dataset :as dataset]
             [edgar.tables :as tables-ns]
             [edgar.schema :as schema]))
@@ -423,9 +424,14 @@
      :form     - \"10-K\" (default) or \"10-Q\"
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
+                 | :compustat
                  :as-reported = raw rows, no dedup or label mapping;
                  :standardized = normalized plus line items imputed from
-                 arithmetic identities (rows carry :method :derived)
+                 arithmetic identities (rows carry :method :derived);
+                 :compustat = standardized plus line items reclassified to
+                 approximate Compustat definitions (\"COGS (Compustat)\",
+                 \"XSGA (Compustat)\", \"OIADP (Compustat)\", ...; rows
+                 carry :method :reclassified) - see (e/reclass-rules :income)
      :industry - :standard | :bank | :insurance. Auto-detected from the
                  company's SIC code when omitted (banks/insurers get
                  industry-specific concept chains)
@@ -447,8 +453,11 @@
      :form  - \"10-K\" (default) or \"10-Q\"
      :shape - :long (default) or :wide
      :view  - :normalized (default) | :as-reported | :standardized
+              | :compustat
               (:standardized imputes e.g. Total Liabilities, Total Equity
-              = SE + NCI, and a derived-only \"Working Capital\" item)
+              = SE + NCI, and a derived-only \"Working Capital\" item;
+              :compustat currently equals :standardized for the balance
+              sheet - no reclassification rules exist yet)
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode)."
@@ -465,8 +474,10 @@
      :form  - \"10-K\" (default) or \"10-Q\"
      :shape - :long (default) or :wide
      :view  - :normalized (default) | :as-reported | :standardized
+              | :compustat
               (:standardized adds a derived \"Free Cash Flow\" line item and
-              imputes \"D&A\" from separately tagged components)
+              imputes \"D&A\" from separately tagged components; :compustat
+              currently equals :standardized for the cash flow statement)
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode).
@@ -486,6 +497,7 @@
      :form     - \"10-K\" (default) or \"10-Q\"
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
+                 | :compustat (income statement reclassification)
      :industry - :standard | :bank | :insurance (income statement only)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  All three statements use point-in-time deduplication."
@@ -511,6 +523,15 @@
    Example: (e/concepts-for :income :industry :bank)"
   [statement & {:keys [industry] :or {industry :standard}}]
   (financials/concepts-for statement :industry industry))
+
+(defn reclass-rules
+  "Return the reclassification ruleset used by :view :compustat for a
+   statement, as its full EDN map ({:ruleset :compustat :rules [...] ...}),
+   or nil when the statement has no rules (currently only :income has any).
+   statement: :income | :balance | :cash-flow
+   Example: (e/reclass-rules :income)"
+  [statement]
+  (reclass/ruleset-for statement))
 
 (defn unmapped-concepts
   "Return the registry of us-gaap concepts seen in company facts that no

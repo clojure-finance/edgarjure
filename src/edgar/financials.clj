@@ -1,7 +1,7 @@
 (ns edgar.financials
   "Financial statement extraction with normalization and standardization.
 
-   Three output views for each statement (:view option):
+   Four output views for each statement (:view option):
      :as-reported   - raw XBRL observations for the statement's concepts,
                       exactly as filed; no deduplication, no label mapping
      :normalized    - (default) fallback chains map variant tags to canonical
@@ -10,6 +10,13 @@
                       arithmetic identities (e.g. Gross Profit = Revenue -
                       Cost of Revenue). Derived rows carry :method :derived
                       and :derived-from for auditability.
+     :compustat     - :standardized plus line items reclassified to
+                      approximate Compustat definitions (D&A out of COGS,
+                      R&D folded into XSGA, special items added back to
+                      operating income, ...). Reclassified rows carry
+                      :method :reclassified, :rule and :derived-from.
+                      Rules live in resources/edgar/reclass/ (edgar.reclass);
+                      income statement only for now.
 
    Concept fallback chains: each line item is a vector of concept names tried
    in order; the first one present in the facts data wins. Chains are loaded
@@ -48,6 +55,7 @@
    clear-unmapped-concepts!, save-unmapped-concepts!."
   (:require [edgar.xbrl :as xbrl]
             [edgar.company :as company]
+            [edgar.reclass :as reclass]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [tech.v3.dataset :as ds])
@@ -555,20 +563,9 @@
                  :method :direct)
          priority-deduped)))
 
-(defn- normalized-statement
-  "Build a normalized long-format statement dataset (:view :normalized), or
-   the standardized variant when identities is non-nil (:view :standardized).
-
-   Steps:
-     1. Resolve fallback chains -> collect ALL present candidates per line item
-     2. Filter facts to winning concepts + form + duration type
-     3. Deduplicate restatements (dedup-point-in-time honours :as-of)
-     4. Deduplicate overlapping chain candidates via chain priority
-     5. Attach :line-item and :method :direct
-     6. When identities given: impute missing items per period (:method :derived)
-     7. For 10-Q duration statements: derive :duration-months/:val-q/:val-ltm,
-        blending the company's 10-K annual rows for Q4/LTM computation
-     8. Sort :end descending, :line-item ascending within each period"
+(defn- build-statement-rows
+  "Resolve chains and produce deduped, labeled rows for one form, applying
+   imputation identities when given. Returns a row seq (possibly empty)."
   [facts-ds chains form duration-type as-of identities]
   (let [available (concepts-in-data facts-ds)
         resolved (resolve-all-chains chains available)
@@ -582,28 +579,71 @@
                                       [idx concept] (map-indexed vector candidates)
                                       :when (contains? winning-concepts concept)]
                                   [concept idx]))]
-    (if (empty? winning-concepts)
-      (ds/->dataset [])
-      (let [build-rows (fn [f]
-                         (cond-> (statement-rows facts-ds winning-concepts
-                                                 concept->label concept->priority
-                                                 f duration-type as-of)
-                           identities (apply-identities identities)))
-            rows (build-rows form)
-            annual-rows (when (and (= form "10-Q") (= duration-type :duration))
-                          (build-rows "10-K"))
-            result-ds (ds/->dataset (vec rows))]
-        (if (zero? (ds/row-count result-ds))
-          result-ds
-          (-> result-ds
-              (add-quarterly-and-ltm form annual-rows)
-              (ds/sort-by
-               (fn [row] [(:end row) (:line-item row)])
-               (fn [a b]
-                 (let [c (compare (first b) (first a))]
-                   (if (zero? c)
-                     (compare (second a) (second b))
-                     c))))))))))
+    (when (seq winning-concepts)
+      (cond-> (statement-rows facts-ds winning-concepts
+                              concept->label concept->priority
+                              form duration-type as-of)
+        identities (apply-identities identities)))))
+
+(defn- reclass-aux-fn
+  "Return (fn [form] rows) supplying cross-statement operand rows for
+   reclassification, per the ruleset's :aux spec. Currently supports
+   {:aux {:cash-flow [line-items]}}: builds the standardized cash-flow rows
+   for the same form/as-of (from the same facts dataset, no extra fetch) and
+   keeps only the listed line items."
+  [facts-ds as-of ruleset]
+  (when-let [cf-items (seq (get-in ruleset [:aux :cash-flow]))]
+    (let [wanted (set cf-items)]
+      (fn [form]
+        (->> (build-statement-rows facts-ds cash-flow-concepts form :duration
+                                   as-of cash-flow-identities)
+             (filter #(wanted (:line-item %))))))))
+
+(defn- normalized-statement
+  "Build a normalized long-format statement dataset (:view :normalized), or
+   the standardized variant when identities is non-nil (:view :standardized),
+   or the reclassified variant when reclass is also non-nil (:view :compustat).
+
+   Steps:
+     1. Resolve fallback chains -> collect ALL present candidates per line item
+     2. Filter facts to winning concepts + form + duration type
+     3. Deduplicate restatements (dedup-point-in-time honours :as-of)
+     4. Deduplicate overlapping chain candidates via chain priority
+     5. Attach :line-item and :method :direct
+     6. When identities given: impute missing items per period (:method :derived)
+     7. When reclass given ({:ruleset rs :aux-fn f}): add reclassified line
+        items per period (:method :reclassified), with cross-statement
+        operands supplied by aux-fn
+     8. For 10-Q duration statements: derive :duration-months/:val-q/:val-ltm,
+        blending the company's 10-K annual rows for Q4/LTM computation
+     9. Sort :end descending, :line-item ascending within each period"
+  ([facts-ds chains form duration-type as-of identities]
+   (normalized-statement facts-ds chains form duration-type as-of identities nil))
+  ([facts-ds chains form duration-type as-of identities reclass]
+   (let [build-rows (fn [f]
+                      (let [rows (build-statement-rows facts-ds chains f
+                                                       duration-type as-of identities)]
+                        (if (and reclass (seq rows))
+                          (reclass/apply-ruleset rows
+                                                 (when-let [aux-fn (:aux-fn reclass)]
+                                                   (aux-fn f))
+                                                 (:ruleset reclass))
+                          rows)))
+         rows (build-rows form)
+         annual-rows (when (and (= form "10-Q") (= duration-type :duration))
+                       (build-rows "10-K"))
+         result-ds (ds/->dataset (vec rows))]
+     (if (zero? (ds/row-count result-ds))
+       result-ds
+       (-> result-ds
+           (add-quarterly-and-ltm form annual-rows)
+           (ds/sort-by
+            (fn [row] [(:end row) (:line-item row)])
+            (fn [a b]
+              (let [c (compare (first b) (first a))]
+                (if (zero? c)
+                  (compare (second a) (second b))
+                  c)))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Wide-format pivot
@@ -671,9 +711,16 @@
     (shape-result
      (case view
        :as-reported (as-reported-statement facts chains form duration-type)
-       :normalized (normalized-statement facts chains form duration-type as-of nil)
+       :normalized (normalized-statement facts chains form duration-type as-of
+                                         nil nil)
        :standardized (normalized-statement facts chains form duration-type as-of
-                                           (statement-identities statement-key)))
+                                           (statement-identities statement-key)
+                                           nil)
+       :compustat (normalized-statement facts chains form duration-type as-of
+                                        (statement-identities statement-key)
+                                        (when-let [rs (reclass/ruleset-for statement-key)]
+                                          {:ruleset rs
+                                           :aux-fn (reclass-aux-fn facts as-of rs)})))
      shape)))
 
 (defn income-statement
@@ -684,9 +731,19 @@
      :concepts - override the fallback chains (disables industry routing)
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
+                 | :compustat
                  :as-reported skips dedup and label mapping entirely;
                  :standardized additionally imputes missing line items from
-                 arithmetic identities (rows carry :method :derived)
+                 arithmetic identities (rows carry :method :derived);
+                 :compustat additionally adds line items reclassified to
+                 approximate Compustat definitions - \"COGS (Compustat)\"
+                 (D&A stripped), \"XSGA (Compustat)\" (R&D folded in),
+                 \"OIADP (Compustat)\", \"OIBDP (Compustat)\", \"XOPR
+                 (Compustat)\", \"DP (Compustat)\", \"Special Items
+                 (Compustat)\", \"Gross Profit (Compustat)\", \"Revenue
+                 (Compustat)\" - alongside the originals (rows carry
+                 :method :reclassified, :rule and :derived-from; see
+                 edgar.reclass and resources/edgar/reclass/)
      :industry - :standard | :bank | :insurance. When omitted, auto-detected
                  from the company's SIC code (banks and insurers get
                  industry-specific chains)
@@ -709,8 +766,11 @@
      :concepts - override balance-sheet-concepts
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
+                 | :compustat
                  (:standardized imputes e.g. Total Liabilities, Total Equity
-                 = SE + NCI, and a derived-only \"Working Capital\" item)
+                 = SE + NCI, and a derived-only \"Working Capital\" item;
+                 :compustat currently equals :standardized - no balance
+                 sheet reclassification rules exist yet)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, excludes filings where :filed > as-of-date,
                  giving point-in-time / look-ahead-safe results."
@@ -725,9 +785,12 @@
      :concepts - override cash-flow-concepts
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
+                 | :compustat
                  (:standardized adds a derived \"Free Cash Flow\" line item
                  and imputes \"D&A\" for filers tagging depreciation and
-                 intangible amortization separately)
+                 intangible amortization separately; :compustat currently
+                 equals :standardized - no cash flow reclassification rules
+                 exist yet)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, excludes filings where :filed > as-of-date,
                  giving point-in-time / look-ahead-safe results.
@@ -747,6 +810,7 @@
      :form     - \"10-K\" (default) or \"10-Q\"
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
+                 | :compustat (reclassified line items, income statement only)
      :industry - :standard | :bank | :insurance (income statement only;
                  auto-detected from SIC when omitted)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).

@@ -87,8 +87,8 @@
    [:form {:optional true} [:maybe FormType]]])
 
 (def ViewKw
-  [:enum {:error/message "must be :as-reported, :normalized or :standardized"}
-   :as-reported :normalized :standardized])
+  [:enum {:error/message "must be :as-reported, :normalized, :standardized or :compustat"}
+   :as-reported :normalized :standardized :compustat])
 
 (def IndustryKw
   [:enum {:error/message "must be :standard, :bank, :insurance or :reit"}

@@ -15,9 +15,12 @@
      Quarterly, 2022+ vs FUNDQ: single-quarter income values (:val-q vs
        SALEQ/NIQ) 98.6% (205/208); quarterly Total Assets 100% (104/104).
      Reclassification-sensitive items (COGS, SG&A, R&D, Operating Income,
-       Gross Profit vs REVT-COGS) match only ~15-18% — this is the documented
-       Compustat reclassification gap (D&A stripped out of COGS/SG&A, etc.),
-       future territory for the rule engine (roadmap 4.1c).
+       Gross Profit vs REVT-COGS) match only ~15-18% as reported — the
+       documented Compustat reclassification gap (D&A stripped out of
+       COGS/SG&A, etc.). The :view :compustat rule engine (roadmap 4.1c,
+       shipped 2026-07) closes much of it: COGS 57%, XSGA 45%, OIADP 38%,
+       Gross Profit vs REVT-COGS 59% — see annual-compustat-items and
+       validate-reclass below.
      Extended items (annual): Investing/Financing Cash Flow 96.2%, Goodwill
        95.2%, Shares Basic/Diluted 89/88%, Cash 87.8%, EPS 79.5%, PP&E 77.6%.
        Known-definitional laggards (documented, not chased):
@@ -119,11 +122,27 @@
 
 (def annual-reclass-items
   "Items where Compustat reclassifies (D&A stripped from COGS/XSGA, etc.).
-   Expect low match rates until a reclassification rule engine exists."
+   As-reported these match only ~15%; the :view :compustat reclassification
+   rule engine (roadmap 4.1c, 2026-07) lifts the COGS/XSGA/OIADP trio to
+   ~47% on this sample - see annual-compustat-items."
   [["Cost of Revenue" :cogs]
    ["SG&A Expense" :xsga]
    ["R&D Expense" :xrd]
    ["Operating Income" :oiadp]])
+
+(def annual-compustat-items
+  "Reclassified line items (:view :compustat) -> FUNDA keys, with the match
+   rates measured on this study's industrials (FY2010-2015, 2016 vintage):
+   COGS 57%, XSGA 45%, XOPR 46%, OIADP 38%, OIBDP 29%, DP 65%, and
+   Gross Profit (Compustat) vs REVT-COGS 59%. Residual gaps are footnote-
+   level allocations (partial D&A splits, R&D embedded in COGS) and special
+   items invisible to companyfacts."
+  [["COGS (Compustat)" :cogs]
+   ["XSGA (Compustat)" :xsga]
+   ["XOPR (Compustat)" :xopr]
+   ["OIADP (Compustat)" :oiadp]
+   ["OIBDP (Compustat)" :oibdp]
+   ["DP (Compustat)" :dp]])
 
 (defn- revenue-line-item [ticker]
   (cond
@@ -172,6 +191,17 @@
      :balance (run :balance (bench-for #{"Total Assets" "Total Liabilities" "Stockholders Equity"
                                          "Current Assets" "Current Liabilities"}))
      :cashflow (run :cash-flow (bench-for #{"Operating Cash Flow" "Capex"}))}))
+
+(defn validate-reclass
+  "Validate one firm's reclassified income items (:view :compustat) against
+   a FUNDA extract. Same conventions as validate-annual."
+  [ticker compustat-rows & {:keys [as-of date-tolerance-days]
+                            :or {date-tolerance-days 10}}]
+  (let [bench (make-benchmark ticker compustat-rows annual-compustat-items)]
+    (when (seq bench)
+      (validation/compare-to-benchmark ticker bench
+                                       :statement :income :view :compustat :as-of as-of
+                                       :date-tolerance-days date-tolerance-days))))
 
 (defn validate-quarterly
   "Validate single-quarter values (:val-q) against FUNDQ SALEQ/NIQ rows.

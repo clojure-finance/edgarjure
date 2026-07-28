@@ -12,7 +12,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ## What You Can Do
 
-**Pull financial statements** — income statement, balance sheet, and cash flow, with automatic line-item resolution across different XBRL tags, restatement deduplication, and long or wide output. Three views per statement: as-reported, normalized (default), and standardized — the last imputes missing line items from arithmetic identities (Gross Profit, Free Cash Flow, …) with full provenance. Banks and insurers automatically get industry-specific line items. Override the mappings for non-standard filers. For 10-Q data, quarterly and trailing-twelve-month values are derived automatically from YTD figures.
+**Pull financial statements** — income statement, balance sheet, and cash flow, with automatic line-item resolution across different XBRL tags, restatement deduplication, and long or wide output. Four views per statement: as-reported, normalized (default), standardized — imputes missing line items from arithmetic identities (Gross Profit, Free Cash Flow, …) with full provenance — and compustat, which reclassifies line items to approximate Compustat definitions (D&A out of COGS, R&D folded into XSGA, special items added back to operating income). Banks and insurers automatically get industry-specific line items. Override the mappings for non-standard filers. For 10-Q data, quarterly and trailing-twelve-month values are derived automatically from YTD figures.
 
 **Backtest without look-ahead bias** — the `:as-of` option on every financial statement and panel query restricts data to what was actually filed on or before a given date. Essential for event studies, strategy backtests, and panel regressions.
 
@@ -279,17 +279,20 @@ Income statement, balance sheet, and cash flow — with automatic line-item reso
 (e/cashflow "AAPL" :form "10-Q")        ; single-quarter + trailing 12 months
 ```
 
-### Three Views: As-Reported, Normalized, Standardized
+### Four Views: As-Reported, Normalized, Standardized, Compustat
 
-Every statement function takes a `:view` option exposing three layers of the same underlying XBRL facts:
+Every statement function takes a `:view` option exposing four layers of the same underlying XBRL facts:
 
 ```clojure
 (e/income "AAPL" :view :as-reported)   ; raw rows exactly as filed — no dedup, no mapping
 (e/income "AAPL")                      ; :normalized (default) — canonical labels + restatement dedup
 (e/income "AAPL" :view :standardized)  ; + missing line items imputed from arithmetic identities
+(e/income "AAPL" :view :compustat)     ; + line items reclassified to Compustat definitions
 ```
 
 The standardized view fills gaps commercial databases fill by hand: if a filer doesn't tag `GrossProfit`, it is derived as Revenue − Cost of Revenue; Total Liabilities from L&E − Equity; a `"Free Cash Flow"` line item (OCF − Capex) is added to the cash flow statement. Derived rows are fully auditable — they carry `:method :derived` and `:derived-from [operand labels]`, while reported rows carry `:method :direct`.
+
+The Compustat view goes one step further: a data-driven reclassification rule engine (`edgar.reclass`, rules in `resources/edgar/reclass/`) adds line items that approximate Compustat's item definitions, alongside the originals — `"COGS (Compustat)"` (D&A stripped out, sourced from the cash-flow statement), `"XSGA (Compustat)"` (R&D folded in, with a component fallback for filers that tag S&M and G&A separately), `"OIADP (Compustat)"` (restructuring/impairment charges added back), plus `DP`, `XOPR`, `OIBDP`, `Special Items`, `Gross Profit`, and excise-netted `Revenue`. Reclassified rows carry `:method :reclassified`, the `:rule` that produced them, and `:derived-from`; inspect the active rules with `(e/reclass-rules :income)`. Income statement only for now.
 
 ### Industry Routing
 
@@ -332,8 +335,15 @@ Across ~45 line items on all three statements, the strongest secondary items
 are Total Liabilities & Equity (98.5%), Investing/Financing Cash Flow (96.2%),
 Goodwill (95.2%), derived Total Equity (94.7%) and Working Capital (90%).
 Expense-classification items (COGS, SG&A, R&D, Operating Income) diverge by
-construction — Compustat reclassifies them (e.g. D&A stripped out) — and are
-not yet standardized; per-share items need split-vintage alignment (AJEX).
+construction — Compustat reclassifies them (e.g. D&A stripped out). The
+`:compustat` view's rule engine closes much of that gap on the same sample:
+COGS 1% → **57%**, SG&A (as XSGA) 20% → **45%**, Operating Income (as OIADP)
+24% → **38%**, Gross Profit vs REVT−COGS 0% → **59%** — the COGS/XSGA/OIADP
+trio moves from ~15% to ~47% overall. The remainder is footnote-level
+allocation Compustat keys from disclosures the companyfacts API doesn't carry
+(partial D&A splits between COGS and SG&A, R&D embedded in COGS, special
+items only visible in text). Per-share items need split-vintage alignment
+(AJEX).
 
 For bulk standardization work, `edgar.fsds` downloads the SEC Financial Statement Data Sets (quarterly DERA dumps with every filer's numeric facts, statement placement, and company extension tags — things the companyfacts API lacks):
 
@@ -447,6 +457,7 @@ edgar.core            HTTP client, JSON + raw caches, retry, rate limiter
     │               └── edgar.forms/        Form parsers (Form 4, 13F-HR)
     ├── edgar.xbrl          Company facts → dataset, concept discovery, frames
     │       ├── edgar.financials    Statements: views, imputation, industry routing
+    │       │       ├── edgar.reclass       Reclassification rule engine (Compustat definitions)
     │       │       └── edgar.validation    Benchmark match-rate harness
     │       └── edgar.dataset       Panel datasets, pivot, cross-sectional
     └── edgar.fsds          SEC Financial Statement Data Sets (bulk quarterly dumps)
@@ -464,7 +475,8 @@ edgar.core            HTTP client, JSON + raw caches, retry, rate limiter
 | `edgar.filing` | Individual filing content, accession number lookup, save to disk, `filing-obj` multimethod, exhibit API |
 | `edgar.download` | Bulk downloader — single company and batch, structured result envelopes |
 | `edgar.xbrl` | XBRL company-facts → `tech.ml.dataset` with labels; concept discovery; cross-sectional frames |
-| `edgar.financials` | Income statement, balance sheet, cash flow; three views; line-item resolution; imputation; industry routing; `:as-of` |
+| `edgar.financials` | Income statement, balance sheet, cash flow; four views; line-item resolution; imputation; industry routing; `:as-of` |
+| `edgar.reclass` | Reclassification rule engine — EDN rulesets approximating Compustat item definitions (`:view :compustat`) |
 | `edgar.validation` | Match-rate harness against benchmark datasets (Compustat extracts, hand-collected figures) |
 | `edgar.fsds` | SEC Financial Statement Data Sets (DERA quarterly dumps) — download + load as datasets |
 | `edgar.extract` | NLP item-section extraction (10-K, 10-Q, 8-K); batch mode |

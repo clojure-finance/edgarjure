@@ -1,7 +1,7 @@
 {:statement :income-statement
  :industry :standard
  :taxonomy "us-gaap"
- :version "2026-07-15"
+ :version "2026-07-28"
  :notes "Concept fallback chains for standard industrial filers. Each line item lists candidate XBRL concepts tried in order; the first present in the company's facts wins per period."
  :line-items
  [{:label "Revenue"
@@ -24,6 +24,36 @@
    :concepts ["ResearchAndDevelopmentExpense"]}
   {:label "SG&A Expense"
    :concepts ["SellingGeneralAndAdministrativeExpense"]}
+  {:label "Selling and Marketing Expense"
+   :concepts ["SellingAndMarketingExpense"
+              "SellingExpense"]}
+  {:label "General and Administrative Expense"
+   :concepts ["GeneralAndAdministrativeExpense"]}
+  {:label "Marketing Expense"
+   :concepts ["MarketingExpense"
+              "MarketingAndAdvertisingExpense"]}
+  {:label "Fulfillment Expense"
+   :concepts ["FulfillmentExpense"]}
+  {:label "Other Operating Expense"
+   :concepts ["OtherCostAndExpenseOperating"
+              "OtherOperatingIncomeExpenseNet"]}
+  {:label "Excise Taxes"
+   :concepts ["ExciseAndSalesTaxes"
+              "ExciseTaxes"]}
+  {:label "Restructuring Charges"
+   :concepts ["RestructuringCharges"
+              "RestructuringCostsAndAssetImpairmentCharges"
+              "RestructuringSettlementAndImpairmentProvisions"]}
+  {:label "Impairment Charges"
+   :concepts ["AssetImpairmentCharges"
+              "ImpairmentOfLongLivedAssetsHeldAndUsed"
+              "ImpairmentOfIntangibleAssetsExcludingGoodwill"]}
+  {:label "Goodwill Impairment"
+   :concepts ["GoodwillImpairmentLoss"]}
+  {:label "Acquisition-Related Costs"
+   :concepts ["BusinessCombinationAcquisitionRelatedCosts"]}
+  {:label "Litigation Settlement"
+   :concepts ["LitigationSettlementExpense"]}
   {:label "Operating Income"
    :concepts ["OperatingIncomeLoss"]}
   {:label "Non-Operating Income"

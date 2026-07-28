@@ -4,9 +4,19 @@ All notable changes to edgarjure are documented here.
 
 ## [Unreleased]
 
+### Added
+
+**Reclassification rule engine and `:view :compustat` (roadmap 4.1c) — `edgar.reclass`**
+- New fourth statement view: `(e/income "AAPL" :view :compustat)` adds line items reclassified to approximate Compustat item definitions, alongside the originals. Rules are data (EDN, `resources/edgar/reclass/compustat-income.edn`), applied per period group on top of the standardized view; reclassified rows carry `:method :reclassified`, `:rule`, and `:derived-from`. Inspect the active ruleset with `(e/reclass-rules :income)`. Income statement only; `:view :compustat` on the balance sheet / cash flow currently equals `:standardized`.
+- Rules, derived empirically against a 2016-vintage FUNDA extract (18 industrials, FY2010–2015, ~120 firm-years; match-within-1% before → after): `"COGS (Compustat)"` = Cost of Revenue − D&A, with D&A pulled cross-statement from the cash flow (1% → **57%** — Compustat removes the full DP from COGS, none from SG&A, in the dominant filer pattern); `"XSGA (Compustat)"` = SG&A + R&D, with an S&M + G&A component fallback for filers with no combined SG&A tag (20% → **45%**); `"OIADP (Compustat)"` = Operating Income + restructuring/impairment/goodwill-impairment/acquisition-cost/litigation add-backs (24% → **38%**); `"OIBDP (Compustat)"` = OIADP + D&A; `"XOPR (Compustat)"` = COGS + XSGA (43%); `"DP (Compustat)"` (65%); `"Special Items (Compustat)"` (negated charges, Compustat sign convention); `"Gross Profit (Compustat)"` = Revenue − Compustat COGS (vs REVT−COGS: 0% → **59%**); `"Revenue (Compustat)"` = Revenue − Excise Taxes (guarded on the revenue concept not already being net of assessed taxes). The COGS/XSGA/OIADP trio overall: ~15% → ~47%. Residual gaps are footnote-level allocations invisible to the companyfacts API (partial D&A splits e.g. PEP, R&D embedded in COGS e.g. HON, INDL-format restatements e.g. GE) — documented in the ruleset EDN.
+- Engine semantics: formula ops `:=`/`:+`/`:-`/`:neg-sum` with `[:opt x]` optional operands; guards `[:lt a b]`, `[:gt a b]`, `[:concept-not-in item #{...}]`; rules apply sequentially in order (a rule's output is immediately visible to later rules), first rule per target wins, iterated to fixpoint (capped at 4 passes). For 10-Q data, reclassified rows get `:val-q`/`:val-ltm` like any other duration line item.
+- New income statement chains feeding the rules (also available in all other views): `"Selling and Marketing Expense"`, `"General and Administrative Expense"`, `"Marketing Expense"`, `"Fulfillment Expense"`, `"Other Operating Expense"`, `"Excise Taxes"`, `"Restructuring Charges"`, `"Impairment Charges"`, `"Goodwill Impairment"`, `"Acquisition-Related Costs"`, `"Litigation Settlement"`.
+- `examples/compustat_validation.clj`: new `annual-compustat-items` mapping and `validate-reclass` helper reproducing the reclassification study.
+
 ### Changed
 - **License switched from EPL-2.0 to Apache-2.0** (LICENSE file, README, and the pom metadata in build.clj). Applies from the next published version onward; artifacts through 0.2.1 were published under EPL-2.0.
 - Added CONTRIBUTING.md (no pull requests at this time; bug reports via GitHub issues welcome).
+- Test suite: 184 tests, 962 assertions.
 
 ## [0.2.1] — 2026-07-15
 

@@ -5,6 +5,7 @@
             edgar.filings-test
             edgar.filing-test
             edgar.financials-test
+            edgar.reclass-test
             edgar.extract-test
             edgar.tables-test
             edgar.forms.form4-test
@@ -23,6 +24,7 @@
                             'edgar.filings-test
                             'edgar.filing-test
                             'edgar.financials-test
+                            'edgar.reclass-test
                             'edgar.extract-test
                             'edgar.tables-test
                             'edgar.forms.form4-test
