@@ -196,3 +196,92 @@
         (core/edgar-get "https://example.com/last")
         (is (= 2 @eviction-call-count)
             "eviction fires again after exactly eviction-interval further puts")))))
+
+;;; ---------------------------------------------------------------------------
+;;; Disk cache (opt-in) — stubbed HTTP, temp directory
+;;; ---------------------------------------------------------------------------
+
+(defn- temp-cache-dir []
+  (let [d (java.io.File/createTempFile "edgarjure-test-cache" "")]
+    (.delete d)
+    (.mkdirs d)
+    (str d)))
+
+(deftest disk-cache-disabled-by-default-test
+  (core/clear-cache!)
+  (core/disable-disk-cache!)
+  (testing "no disk files written when disabled"
+    (let [call-count (atom 0)]
+      (with-redefs [hato.client/get (fn [_ _] (swap! call-count inc)
+                                      {:status 200 :body "\"v\""})
+                    edgar.core/throttle! (fn [] nil)]
+        (core/set-identity! "Test test@example.com")
+        (core/edgar-get "https://example.com/disk-off")
+        (is (= 1 @call-count))
+        (is (nil? (core/disk-cache-stats)))))))
+
+(deftest disk-cache-round-trip-test
+  (core/clear-cache!)
+  (let [dir (temp-cache-dir)
+        call-count (atom 0)]
+    (try
+      (core/enable-disk-cache! :dir dir)
+      (with-redefs [hato.client/get (fn [_ _] (swap! call-count inc)
+                                      {:status 200 :body "{\"a\":1}"})
+                    edgar.core/throttle! (fn [] nil)]
+        (core/set-identity! "Test test@example.com")
+        (testing "first fetch hits network and writes the disk entry"
+          (is (= {:a 1} (core/edgar-get "https://example.com/disk-json")))
+          (is (= 1 @call-count))
+          (is (= 1 (:entries (core/disk-cache-stats)))))
+        (testing "after clearing memory, the disk entry answers without network"
+          (core/clear-cache!)
+          (is (= {:a 1} (core/edgar-get "https://example.com/disk-json")))
+          (is (= 1 @call-count) "no second network call"))
+        (testing "raw responses round-trip too"
+          (with-redefs [hato.client/get (fn [_ _] (swap! call-count inc)
+                                          {:status 200 :body "<html>doc</html>"})
+                        edgar.core/throttle! (fn [] nil)]
+            (is (= "<html>doc</html>" (core/edgar-get "https://example.com/disk-raw" :raw? true)))
+            (core/clear-cache!)
+            (is (= "<html>doc</html>" (core/edgar-get "https://example.com/disk-raw" :raw? true)))
+            (is (= 2 @call-count) "raw fetched from network exactly once"))))
+      (finally
+        (core/clear-disk-cache! :dir dir)
+        (core/disable-disk-cache!)))))
+
+(deftest disk-cache-expiry-test
+  (core/clear-cache!)
+  (let [dir (temp-cache-dir)
+        call-count (atom 0)]
+    (try
+      (core/enable-disk-cache! :dir dir :ttl-json-ms -1)
+      (with-redefs [hato.client/get (fn [_ _] (swap! call-count inc)
+                                      {:status 200 :body "\"v\""})
+                    edgar.core/throttle! (fn [] nil)]
+        (core/set-identity! "Test test@example.com")
+        (core/edgar-get "https://example.com/disk-expired")
+        (core/clear-cache!)
+        (testing "already-expired entry is refetched and deleted"
+          (is (= "v" (core/edgar-get "https://example.com/disk-expired")))
+          (is (= 2 @call-count))))
+      (finally
+        (core/clear-disk-cache! :dir dir)
+        (core/disable-disk-cache!)))))
+
+(deftest clear-disk-cache-test
+  (let [dir (temp-cache-dir)]
+    (try
+      (core/enable-disk-cache! :dir dir)
+      (core/clear-cache!)
+      (with-redefs [hato.client/get (fn [_ _] {:status 200 :body "\"x\""})
+                    edgar.core/throttle! (fn [] nil)]
+        (core/set-identity! "Test test@example.com")
+        (core/edgar-get "https://example.com/disk-clear-1")
+        (core/edgar-get "https://example.com/disk-clear-2")
+        (testing "clear removes all entries and reports the count"
+          (is (= 2 (:entries (core/disk-cache-stats))))
+          (is (= 2 (core/clear-disk-cache!)))
+          (is (= 0 (:entries (core/disk-cache-stats))))))
+      (finally
+        (core/disable-disk-cache!)))))

@@ -1,6 +1,8 @@
 (ns edgar.core
   (:require [hato.client :as hato]
-            [jsonista.core :as json])
+            [jsonista.core :as json]
+            [clojure.edn]
+            [clojure.string])
   (:import [io.github.bucket4j Bandwidth Bucket]))
 
 ;;; ---------------------------------------------------------------------------
@@ -155,6 +157,105 @@
   (reset! put-count (dec eviction-interval)))
 
 ;;; ---------------------------------------------------------------------------
+;;; Disk cache (opt-in, off by default)
+;;;
+;;; Persists HTTP response bodies across sessions as one pair of files per
+;;; URL under a cache directory: <sha1>.edn (metadata: url, expiry) and
+;;; <sha1>.dat (the body). No extra dependencies, transparent on disk,
+;;; cleared with clear-disk-cache! or plain rm.
+;;;
+;;; TTLs are longer than the in-memory layer because the point is
+;;; cross-session reuse: filing documents under /Archives/ are immutable
+;;; once published (30-day default), JSON endpoints get 24 hours.
+;;; ---------------------------------------------------------------------------
+
+(def ^:private disk-cache-config (atom nil))
+
+(defn- sha1-hex [^String s]
+  (let [d (.digest (java.security.MessageDigest/getInstance "SHA-1")
+                   (.getBytes s "UTF-8"))]
+    (apply str (map #(format "%02x" %) d))))
+
+(defn enable-disk-cache!
+  "Enable the persistent on-disk HTTP cache (off by default).
+   Options:
+     :dir             - cache directory (default ~/.edgarjure/http-cache)
+     :ttl-json-ms     - TTL for JSON endpoints: submissions, companyfacts,
+                        tickers, search (default 24 h)
+     :ttl-raw-ms      - TTL for raw documents: filing HTML/XML, indexes
+                        (default 30 days; published filings are immutable)
+   Returns the config map in effect."
+  [& {:keys [dir ttl-json-ms ttl-raw-ms]
+      :or {ttl-json-ms (* 24 60 60 1000)
+           ttl-raw-ms (* 30 24 60 60 1000)}}]
+  (let [dir (java.io.File. (str (or dir (str (System/getProperty "user.home")
+                                             "/.edgarjure/http-cache"))))]
+    (.mkdirs dir)
+    (reset! disk-cache-config {:dir dir
+                               :ttl-json-ms ttl-json-ms
+                               :ttl-raw-ms ttl-raw-ms})))
+
+(defn disable-disk-cache!
+  "Disable the on-disk HTTP cache (files are kept; delete with
+   clear-disk-cache! first if desired)."
+  []
+  (reset! disk-cache-config nil))
+
+(defn- disk-entry-files [url]
+  (when-let [{:keys [dir]} @disk-cache-config]
+    (let [h (sha1-hex url)]
+      [(java.io.File. ^java.io.File dir (str h ".edn"))
+       (java.io.File. ^java.io.File dir (str h ".dat"))])))
+
+(defn- disk-cache-get
+  "Return the cached body string for url, or nil. Deletes expired entries."
+  [url]
+  (when-let [[meta-f data-f] (disk-entry-files url)]
+    (when (and (.isFile ^java.io.File meta-f) (.isFile ^java.io.File data-f))
+      (let [{:keys [expires-at]} (clojure.edn/read-string (slurp meta-f))]
+        (if (> (long expires-at) (System/currentTimeMillis))
+          (slurp data-f)
+          (do (.delete ^java.io.File meta-f)
+              (.delete ^java.io.File data-f)
+              nil))))))
+
+(defn- disk-cache-put! [url raw? ^String body]
+  (when-let [{:keys [ttl-json-ms ttl-raw-ms]} @disk-cache-config]
+    (when-let [[meta-f data-f] (disk-entry-files url)]
+      (let [ttl (if raw? ttl-raw-ms ttl-json-ms)
+            tmp (java.io.File/createTempFile "edgarjure" ".tmp"
+                                             (.getParentFile ^java.io.File data-f))]
+        (spit tmp body)
+        (.renameTo tmp ^java.io.File data-f)
+        (spit meta-f (pr-str {:url url
+                              :raw? raw?
+                              :expires-at (+ (System/currentTimeMillis) (long ttl))}))))))
+
+(defn clear-disk-cache!
+  "Delete every entry in the on-disk cache directory (whether or not the
+   disk cache is currently enabled). Returns the number of entries removed."
+  [& {:keys [dir]}]
+  (let [dir (java.io.File. (str (or dir
+                                    (:dir @disk-cache-config)
+                                    (str (System/getProperty "user.home")
+                                         "/.edgarjure/http-cache"))))
+        files (filter #(re-matches #"[0-9a-f]{40}\.(edn|dat)" (.getName ^java.io.File %))
+                      (or (.listFiles dir) []))]
+    (doseq [^java.io.File f files] (.delete f))
+    (quot (count files) 2)))
+
+(defn disk-cache-stats
+  "Return {:dir path :entries n :bytes total} for the on-disk cache, or nil
+   when disabled."
+  []
+  (when-let [{:keys [dir]} @disk-cache-config]
+    (let [files (filter #(re-matches #"[0-9a-f]{40}\.(edn|dat)" (.getName ^java.io.File %))
+                        (or (.listFiles ^java.io.File dir) []))]
+      {:dir (str dir)
+       :entries (count (filter #(clojure.string/ends-with? (.getName ^java.io.File %) ".dat") files))
+       :bytes (reduce + 0 (map #(.length ^java.io.File %) files))})))
+
+;;; ---------------------------------------------------------------------------
 ;;; HTTP GET helpers (with exponential backoff retry)
 ;;; ---------------------------------------------------------------------------
 
@@ -201,26 +302,36 @@
    JSON responses are cached in memory (5 min for metadata, 1 hr for XBRL facts).
    Raw responses are cached in a bounded cache (64 entries, 1 hr TTL) so that
    repeated content access on the same filing does not re-download it.
+   When the opt-in disk cache is enabled (enable-disk-cache!), responses are
+   also persisted across sessions and consulted between the memory caches
+   and the network.
    Retries on 429/5xx with exponential backoff (up to 3 attempts).
    Options:
      :raw?  - return body as string instead of parsing JSON (default false)"
   [url & {:keys [raw?] :or {raw? false}}]
   (if raw?
     (or (raw-cache-get url)
+        (when-let [body (disk-cache-get url)]
+          (raw-cache-put! url body)
+          body)
         (let [body (:body (http-get-with-retry url {:http-client @http-client
                                                     :headers (identity-header)
                                                     :as :string}))]
           (raw-cache-put! url body)
+          (disk-cache-put! url true body)
           body))
-    (if-let [cached (cache-get url)]
-      cached
-      (let [result (json/read-value
-                    (:body (http-get-with-retry url {:http-client @http-client
-                                                     :headers (identity-header)
-                                                     :as :string}))
-                    json/keyword-keys-object-mapper)]
-        (cache-put! url result)
-        result))))
+    (or (cache-get url)
+        (when-let [body (disk-cache-get url)]
+          (let [result (json/read-value body json/keyword-keys-object-mapper)]
+            (cache-put! url result)
+            result))
+        (let [body (:body (http-get-with-retry url {:http-client @http-client
+                                                    :headers (identity-header)
+                                                    :as :string}))
+              result (json/read-value body json/keyword-keys-object-mapper)]
+          (cache-put! url result)
+          (disk-cache-put! url false body)
+          result))))
 
 (defn edgar-get-bytes
   "Rate-limited GET returning raw bytes — for binary/archive downloads.

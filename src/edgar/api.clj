@@ -33,6 +33,36 @@
   (core/set-identity! name-and-email))
 
 ;;; ---------------------------------------------------------------------------
+;;; Disk cache (opt-in)
+;;; ---------------------------------------------------------------------------
+
+(defn enable-disk-cache!
+  "Enable the persistent on-disk HTTP cache (off by default). Responses are
+   stored under :dir (default ~/.edgarjure/http-cache) and reused across
+   sessions: JSON endpoints for 24 h, raw filing documents for 30 days
+   (published filings are immutable).
+   Options: :dir, :ttl-json-ms, :ttl-raw-ms.
+   Example: (e/enable-disk-cache!)"
+  [& {:as opts}]
+  (apply core/enable-disk-cache! (mapcat identity opts)))
+
+(defn disable-disk-cache!
+  "Disable the on-disk HTTP cache (cached files are kept on disk)."
+  []
+  (core/disable-disk-cache!))
+
+(defn clear-disk-cache!
+  "Delete all entries from the on-disk HTTP cache. Returns the number of
+   entries removed. Options: :dir (defaults to the enabled/default dir)."
+  [& {:as opts}]
+  (apply core/clear-disk-cache! (mapcat identity opts)))
+
+(defn disk-cache-stats
+  "Return {:dir :entries :bytes} for the on-disk cache, or nil when disabled."
+  []
+  (core/disk-cache-stats))
+
+;;; ---------------------------------------------------------------------------
 ;;; Company
 ;;; ---------------------------------------------------------------------------
 

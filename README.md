@@ -420,6 +420,17 @@ The 13D and 13G XML schemas spell their fields differently; both normalize to th
 ;    :total-value 12345678}
 ```
 
+### Disk Cache
+
+All HTTP responses are cached in memory by default. For cross-session persistence — batch jobs, repeated research runs — enable the opt-in disk cache:
+
+```clojure
+(e/enable-disk-cache!)          ; ~/.edgarjure/http-cache; JSON 24h, filings 30d
+(e/disk-cache-stats)            ;=> {:dir "..." :entries 42 :bytes 12345678}
+(e/clear-disk-cache!)           ; delete all entries
+(e/disable-disk-cache!)
+```
+
 ### Bulk Downloads
 
 ```clojure
@@ -491,7 +502,7 @@ edgar.core            HTTP client, JSON + raw caches, retry, rate limiter
 | Namespace | Role |
 |---|---|
 | `edgar.api` | Unified entry point — wraps all namespaces; Malli-validated |
-| `edgar.core` | HTTP client, TTL cache (5 min metadata / 1 hr XBRL), exponential backoff retry, Bucket4j rate limiter (10 req/s) |
+| `edgar.core` | HTTP client, TTL cache (5 min metadata / 1 hr XBRL), opt-in cross-session disk cache (`e/enable-disk-cache!`), exponential backoff retry, Bucket4j rate limiter (10 req/s) |
 | `edgar.schema` | Malli schemas and `validate!` helper for all public API functions |
 | `edgar.company` | Ticker↔CIK resolution, company search, shaped metadata |
 | `edgar.filings` | Filing index queries, pagination for large filers, amendment handling, daily index, quarterly master.idx, EFTS search |
