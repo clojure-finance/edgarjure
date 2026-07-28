@@ -350,8 +350,18 @@ For bulk standardization work, `edgar.fsds` downloads the SEC Financial Statemen
 
 ```clojure
 (require '[edgar.fsds :as fsds])
-(def zip (fsds/download-quarter! 2024 1 "/data/fsds"))
-(fsds/load-table zip :num)   ; also :sub :pre :tag
+(def zip (fsds/download-quarter! 2026 1 "/data/fsds"))
+(def sub (fsds/load-table zip :sub))          ; also :num :pre :tag
+
+;; Statement placement + extension tags for one filing:
+(def adsh (-> (fsds/find-submissions sub :cik "1018724" :form "10-K")
+              (ds/column :adsh) first))
+(fsds/presentation (fsds/load-table zip :pre) adsh :stmt "IS")
+;; AMZN's income statement includes FulfillmentExpense and
+;; TechnologyAndInfrastructureExpense — extension tags invisible to the
+;; companyfacts API; fsds/facts-for returns their values, and
+;; fsds/statement-placement tells you which statement any tag sits on
+;; (e.g. is D&A a separate income statement line, or embedded in COGS?).
 ```
 
 ### Quarterly and LTM Derivation
