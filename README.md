@@ -396,6 +396,19 @@ Form-specific parsers register via the `filing-obj` multimethod and activate on 
 
 All three (plus their `/A` amendments) share the ownership XML schema and one parser (`edgar.forms.ownership`). Form 3 carries initial holdings, Form 4 transactions, Form 5 the annual statement with both.
 
+**Schedules 13D/13G — >5% Beneficial Ownership (XML era, filed Dec 2024+):**
+
+```clojure
+(-> (e/filing "AAPL" :form "SCHEDULE 13G") e/obj)
+;=> {:form "SCHEDULE 13G" :schedule :13g
+;    :security-class "Common Stock" :event-date "03/31/2026" :rule "Rule 13d-1(b)"
+;    :issuer {:cik "0000320193" :name "Apple Inc" :cusip "037833100"}
+;    :reporting-persons [{:name "..." :aggregate-owned 1.099E9
+;                         :percent-of-class 7.48 :type "IA" ...}]}
+```
+
+The 13D and 13G XML schemas spell their fields differently; both normalize to the same shape, and activist group filings yield one entry per reporting person. Legacy `SC 13D`/`SC 13G` filings (pre-Dec-2024, HTML/text) fall through to the default raw-HTML result.
+
 **13F-HR — Institutional Holdings:**
 
 ```clojure
@@ -496,6 +509,7 @@ edgar.core            HTTP client, JSON + raw caches, retry, rate limiter
 | `edgar.forms.ownership` | Forms 3/4/5 parser (beneficial ownership: initial holdings, insider trades, annual statements; includes `/A` amendments) |
 | `edgar.forms.form4` | Historical Form 4 entry point — delegates to `edgar.forms.ownership` |
 | `edgar.forms.form13f` | 13F-HR parser (institutional holdings, XML-era post-2013Q2) |
+| `edgar.forms.schedule13` | Schedule 13D/13G parser (>5% beneficial ownership, XML-era Dec 2024+) |
 
 ## Conventions
 

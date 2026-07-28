@@ -10,6 +10,7 @@
             edgar.tables-test
             edgar.forms.ownership-test
             edgar.forms.form13f-test
+            edgar.forms.schedule13-test
             edgar.xbrl-test
             edgar.schema-test
             edgar.dataset-test
@@ -29,6 +30,7 @@
                             'edgar.tables-test
                             'edgar.forms.ownership-test
                             'edgar.forms.form13f-test
+                            'edgar.forms.schedule13-test
                             'edgar.xbrl-test
                             'edgar.schema-test
                             'edgar.dataset-test

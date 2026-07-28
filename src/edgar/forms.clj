@@ -13,6 +13,11 @@
      \"4\" \"4/A\"   — Form 4: insider trades (edgar.forms.ownership)
      \"5\" \"5/A\"   — Form 5: annual beneficial ownership (edgar.forms.ownership)
      \"13F-HR\"  — Form 13F-HR: institutional holdings (edgar.forms.form13f)
-     \"13F-HR/A\" — Form 13F-HR/A: amended institutional holdings (edgar.forms.form13f)"
+     \"13F-HR/A\" — Form 13F-HR/A: amended institutional holdings (edgar.forms.form13f)
+     \"SCHEDULE 13D\" \"SCHEDULE 13D/A\" \"SCHEDULE 13G\" \"SCHEDULE 13G/A\"
+               — beneficial ownership >5% (edgar.forms.schedule13; XML era,
+                 filed Dec 2024 onward — legacy SC 13D/G fall through to the
+                 default raw-HTML result)"
   (:require [edgar.forms.ownership]
-            [edgar.forms.form13f]))
+            [edgar.forms.form13f]
+            [edgar.forms.schedule13]))
