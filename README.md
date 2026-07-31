@@ -12,7 +12,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ## What You Can Do
 
-**Pull financial statements** — income statement, balance sheet, and cash flow, with automatic line-item resolution across different XBRL tags, restatement deduplication, and long or wide output. Four views per statement: as-reported, normalized (default), standardized — imputes missing line items from arithmetic identities (Gross Profit, Free Cash Flow, …) with full provenance — and compustat, which reclassifies line items to approximate Compustat definitions (D&A out of COGS, R&D folded into XSGA, special items added back to operating income). Banks and insurers automatically get industry-specific line items. Override the mappings for non-standard filers. For 10-Q data, quarterly and trailing-twelve-month values are derived automatically from YTD figures.
+**Pull financial statements** — income statement, balance sheet, and cash flow, with automatic line-item resolution across different XBRL tags, restatement deduplication, and long or wide output. Four views per statement: as-reported, normalized (default), standardized — imputes missing line items from arithmetic identities (Gross Profit, Free Cash Flow, …) with full provenance — and compustat, which reclassifies line items to approximate Compustat definitions on both the income statement (D&A out of COGS, R&D folded into XSGA, special items added back to operating income) and the balance sheet (retained earnings incl. AOCI, debt incl. lease obligations, mezzanine vs equity-section noncontrolling interest, and more). Banks, insurers, and REITs automatically get industry-specific line items. Override the mappings for non-standard filers. For 10-Q data, quarterly and trailing-twelve-month values are derived automatically from YTD figures.
 
 **Backtest without look-ahead bias** — the `:as-of` option on every financial statement and panel query restricts data to what was actually filed on or before a given date. Essential for event studies, strategy backtests, and panel regressions.
 
@@ -37,7 +37,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ```clojure
 ;; deps.edn
-{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.3.0"}}}
+{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.4.0"}}}
 ```
 
 ## Getting Started
@@ -292,7 +292,15 @@ Every statement function takes a `:view` option exposing four layers of the same
 
 The standardized view fills gaps commercial databases fill by hand: if a filer doesn't tag `GrossProfit`, it is derived as Revenue − Cost of Revenue; Total Liabilities from L&E − Equity; a `"Free Cash Flow"` line item (OCF − Capex) is added to the cash flow statement. Derived rows are fully auditable — they carry `:method :derived` and `:derived-from [operand labels]`, while reported rows carry `:method :direct`.
 
-The Compustat view goes one step further: a data-driven reclassification rule engine (`edgar.reclass`, rules in `resources/edgar/reclass/`) adds line items that approximate Compustat's item definitions, alongside the originals — `"COGS (Compustat)"` (D&A stripped out, sourced from the cash-flow statement), `"XSGA (Compustat)"` (R&D folded in, with a component fallback for filers that tag S&M and G&A separately), `"OIADP (Compustat)"` (restructuring/impairment charges added back), plus `DP`, `XOPR`, `OIBDP`, `Special Items`, `Gross Profit`, and excise-netted `Revenue`. Reclassified rows carry `:method :reclassified`, the `:rule` that produced them, and `:derived-from`; inspect the active rules with `(e/reclass-rules :income)`. Income statement only for now.
+The Compustat view goes one step further: a data-driven reclassification rule engine (`edgar.reclass`, rules in `resources/edgar/reclass/`) adds line items that approximate Compustat's item definitions, alongside the originals. On the income statement: `"COGS (Compustat)"` (D&A stripped out, sourced from the cash-flow statement), `"XSGA (Compustat)"` (R&D folded in, with a component fallback for filers that tag S&M and G&A separately), `"OIADP (Compustat)"` (restructuring/impairment charges added back), plus `DP`, `XOPR`, `OIBDP`, `Special Items`, `Gross Profit`, and excise-netted `Revenue`. On the balance sheet, rules build the analogous aggregates from the filer's tagged components: `"RE (Compustat)"` (retained earnings *including* accumulated OCI, matching how Compustat reports RE), `"DLC (Compustat)"` / `"DLTT (Compustat)"` (debt including finance-lease — and, post-ASC-842, operating-lease — obligations), `"MIB (Compustat)"` / `"MIBN (Compustat)"` (mezzanine redeemable vs equity-section noncontrolling interest), `"PSTK (Compustat)"` (preferred including mezzanine redeemable preferred), `"SEQ"`/`"CEQ"`/`"TEQ"`, `"RECT (Compustat)"` (total receivables incl. non-trade and tax refunds), and `"CHE (Compustat)"` (cash + short-term investments). Reclassified rows carry `:method :reclassified`, the `:rule` that produced them, and `:derived-from`; inspect the active rules with `(e/reclass-rules :income)` or `(e/reclass-rules :balance)`.
+
+Two expense-classification questions cannot be answered from the companyfacts API at all: *where* a filer's D&A sits (own income-statement line, or embedded in COGS/SG&A?) and what its custom extension expense lines contain (Amazon's Fulfillment and Technology & content, which Compustat folds into XSGA/XRD). `(e/enable-fsds!)` turns on a local cache of the SEC's quarterly [Financial Statement Data Sets](https://www.sec.gov/dera/data/financial-statement-data-sets) (downloaded on first use into `~/.edgarjure/fsds`, shared across all companies), and the `:compustat` income view then uses statement placement to guard the D&A strip and extension-tag values as reclassification operands — including a first-class `"XRD (Compustat)"` line item:
+
+```clojure
+(e/enable-fsds!)                        ; opt-in; quarter files are 50-130 MB
+(e/income "AMZN" :view :compustat)      ; XSGA now includes Fulfillment + Technology,
+                                        ; XRD (Compustat) = the technology extension line
+```
 
 ### Industry Routing
 
@@ -345,6 +353,28 @@ allocation Compustat keys from disclosures the companyfacts API doesn't carry
 (partial D&A splits between COGS and SG&A, R&D embedded in COGS, special
 items only visible in text). Per-share items need split-vintage alignment
 (AJEX).
+
+The balance-sheet `:compustat` rules were validated against live Compustat
+(21 firms, FY2009–2025, 357 firm-years; rates below are the 13 industrials,
+within 1%): Retained Earnings 12% → **96%** (Compustat RE includes
+accumulated OCI), Long-Term Debt 33% → **76%** and Current Debt 27% → **63%**
+(finance leases in all eras; operating leases folded into debt by Compustat
+from ASC 842 / FY2019 onward), Receivables 20% → **61%**, Noncontrolling
+Interest 2% → **81%** (mezzanine vs equity-section split; the equity-section
+`MIBN` matches at 99%), SEQ/CEQ/TEQ 93–95%, CHE 76%. Equity items hold up for
+banks and insurers too (RE 96%, SEQ/TEQ 95%); classified-balance-sheet items
+(debt/receivables/cash buckets) do not apply to financial-format filers and
+REITs, which remain future industry-chain work.
+
+> **Disclaimer.** Compustat is a registered trademark of S&P Global Inc.
+> edgarjure is an independent open-source project with no affiliation to,
+> endorsement by, or derivation from S&P Global or WRDS products. The
+> `:compustat` view is an *approximation* computed entirely from public SEC
+> filings, built by empirically comparing edgarjure's output against a
+> licensed Compustat sample — the match rates above quantify exactly how
+> close (and how far) that approximation is. It is not a reimplementation of,
+> or substitute for, licensed Compustat data, whose values rest on manual
+> analyst review that no automated mapping reproduces.
 
 For bulk standardization work, `edgar.fsds` downloads the SEC Financial Statement Data Sets (quarterly DERA dumps with every filer's numeric facts, statement placement, and company extension tags — things the companyfacts API lacks):
 
