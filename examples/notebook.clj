@@ -50,7 +50,7 @@
      (take 3)
      (map #(select-keys % [:end :val :method :derived-from])))
 
-;; The Compustat view adds line items matching Compustat's definitions —
+;; The Compustat view adds line items approximating Compustat's definitions —
 ;; COGS with D&A stripped out, XSGA with R&D folded in, OIADP with special
 ;; items added back — alongside the originals, each tagged with the rule
 ;; that produced it:

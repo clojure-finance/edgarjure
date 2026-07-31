@@ -1,7 +1,7 @@
 {:ruleset :compustat
  :statement :income
  :taxonomy "us-gaap"
- :version "2026-07-28"
+ :version "2026-07-31"
  :notes "Reclassification rules approximating Compustat income statement item
 definitions (roadmap 4.1c). Derived empirically against WRDS FUNDA extracts
 (18 large industrials; fitted on FY2010-2015, checked out-of-sample on
@@ -14,6 +14,17 @@ restatements of firms with finance arms, and expense lines carried only in
 filer extension taxonomies - AMZN's Fulfillment and Technology & Content,
 which Compustat folds into XSGA/XRD, are extension tags invisible here)."
  :aux {:cash-flow ["D&A" "Depreciation" "Amortization of Intangibles"]}
+ :fsds
+ {:da-marker "D&A Presented on Income Statement"
+  :da-tags ["DepreciationDepletionAndAmortization"
+            "DepreciationAndAmortization"
+            "DepreciationAmortizationAndAccretionNet"
+            "Depreciation"
+            "DepreciationNonproduction"
+            "OtherDepreciationAndAmortization"]
+  :extension-labels
+  [["(?i)fulfil?lment" "Fulfillment Expense"]
+   ["(?i)technologyand(content|infrastructure)" "Technology and Content Expense"]]}
  :rules
  [{:id :dp-components
    :target "DP (Compustat)"
@@ -33,6 +44,15 @@ no in-sample cost. Known tradeoff: KO/UPS tag partial Depreciation values
    :formula [:= "D&A"]
    :notes "Fallback when no separate Depreciation tag exists: the cash-flow
 statement's (possibly derived) D&A line item."}
+  {:id :cogs-da-presented
+   :target "COGS (Compustat)"
+   :compustat "COGS"
+   :formula [:= "Cost of Revenue"]
+   :guards [[:present "D&A Presented on Income Statement"]]
+   :notes "FSDS placement guard: when the filer presents D&A as its own income
+statement line, the reported cost-of-revenue line already excludes it and
+stripping DP would double-count. The marker row is injected from FSDS pre.txt
+(only when the FSDS cache is enabled), so this rule never fires otherwise."}
   {:id :cogs-ex-da
    :target "COGS (Compustat)"
    :compustat "COGS"
@@ -40,7 +60,9 @@ statement's (possibly derived) D&A line item."}
    :guards [[:lt "DP (Compustat)" "Cost of Revenue"]]
    :notes "Compustat COGS excludes D&A. In the dominant filer pattern Compustat
 removes the FULL DP from COGS, none from SG&A (IBM, INTC, KO, WMT, AAPL, CAT
-all show a ~1.00 COGS fraction). 1% -> 57% in-sample."}
+all show a ~1.00 COGS fraction). 1% -> 57% in-sample. With the FSDS cache
+enabled, the D&A-on-CF-only placement signal is what licenses this strip;
+D&A-on-IS filers are caught by :cogs-da-presented above."}
   {:id :xsga-plus-rd
    :target "XSGA (Compustat)"
    :compustat "XSGA"
@@ -55,6 +77,18 @@ notes value (e.g. HON) are over-added; not detectable from companyfacts."}
              [:opt "R&D Expense"]]
    :notes "Component fallback for filers with no combined SG&A tag (MSFT, ORCL,
 CSCO tag S&M and G&A separately)."}
+  {:id :xsga-opex-lines
+   :target "XSGA (Compustat)"
+   :compustat "XSGA"
+   :formula [:+ "General and Administrative Expense" [:opt "Marketing Expense"]
+             [:opt "Fulfillment Expense"] [:opt "Technology and Content Expense"]
+             [:opt "R&D Expense"] [:opt "Other Operating Expense"]]
+   :notes "E-commerce presentation fallback (AMZN): no SG&A or S&M tag; the
+operating expense lines besides cost of sales - fulfillment, marketing,
+technology, G&A - all land in Compustat XSGA (empirically, the operating
+expenses a filer reports alongside a COGS line resolve to XSGA). Fulfillment and
+Technology & Content are extension tags supplied as FSDS operand rows when the
+FSDS cache is enabled; without it this rule still fires but understates."}
   {:id :gross-profit
    :target "Gross Profit (Compustat)"
    :compustat "REVT - COGS"
@@ -70,7 +104,7 @@ identity. 43% within 1%."}
    :target "Special Items (Compustat)"
    :compustat "SPI (operating portion)"
    :formula [:neg-sum "Restructuring Charges" "Impairment Charges" "Goodwill Impairment"
-             "Acquisition-Related Costs" "Litigation Settlement"]
+             "Acquisition-Related Costs" "Litigation Settlement" "In-Process R&D"]
    :notes "Compustat treats restructuring and impairment charges as special items
 below the operating line. Sign follows Compustat: charges are negative. Only
 the operating portion visible in XBRL tags is captured; non-operating special
@@ -80,10 +114,16 @@ separate impairment concept."}
   {:id :oiadp
    :target "OIADP (Compustat)"
    :compustat "OIADP"
-   :formula [:- "Operating Income" [:opt "Special Items (Compustat)"]]
+   :formula [:- "Operating Income" [:opt "Special Items (Compustat)"]
+             [:opt "Gain (Loss) on Sale of Assets"]]
    :notes "Operating income after depreciation: OperatingIncomeLoss with special-
 item charges added back (XBRL operating income includes them; Compustat
-excludes them). 24% -> 41%."}
+excludes them). 24% -> 41%. Nonrecurring asset-sale gains/losses (Compustat
+GLP) are removed via subtraction because the XBRL tag is signed: a gain
+(positive) is taken out of operating income, a loss (negative) is added back.
+GLP is kept out of the Special Items row itself, whose :neg-sum operands are
+positively-tagged charges. Caveat: for oil/coal/transport filers Compustat
+treats recurring asset-sale gains as NOPI, not special - not modeled."}
   {:id :oibdp
    :target "OIBDP (Compustat)"
    :compustat "OIBDP"
@@ -92,6 +132,21 @@ excludes them). 24% -> 41%."}
 operating income (28% within 1%) rather than bottom-up as REVT - XOPR (19%);
 as a consequence REVT - XOPR (Compustat) and OIBDP (Compustat) need not agree
 exactly for firms with expense lines outside the COGS/XSGA reconstruction."}
+  {:id :xrd-reported
+   :target "XRD (Compustat)"
+   :compustat "XRD"
+   :formula [:= "R&D Expense"]
+   :notes "Compustat XRD as a first-class reclassified item (supplementary and
+non-additive: R&D is already folded into the XSGA reclassification)."}
+  {:id :xrd-tech-content
+   :target "XRD (Compustat)"
+   :compustat "XRD"
+   :formula [:= "Technology and Content Expense"]
+   :notes "Filers with no R&D tag whose technology line Compustat keys as XRD:
+AMZN's Technology and content / Technology and infrastructure extension tag
+equals Compustat XRD exactly (verified on FY2025 vs the 2026Q1 FSDS). The
+operand is an FSDS extension row - without the FSDS cache this rule cannot
+fire."}
   {:id :revt-ex-excise
    :target "Revenue (Compustat)"
    :compustat "REVT"

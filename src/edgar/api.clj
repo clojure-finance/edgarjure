@@ -20,6 +20,7 @@
             [edgar.reclass :as reclass]
             [edgar.dataset :as dataset]
             [edgar.tables :as tables-ns]
+            [edgar.fsds :as fsds]
             [edgar.schema :as schema]))
 
 ;;; ---------------------------------------------------------------------------
@@ -63,6 +64,26 @@
   "Return {:dir :entries :bytes} for the on-disk cache, or nil when disabled."
   []
   (core/disk-cache-stats))
+
+(defn enable-fsds!
+  "Enable the local SEC Financial Statement Data Sets quarter cache (off by
+   default). When enabled, the income statement's :view :compustat augments
+   its reclassification with two things the companyfacts API cannot provide,
+   per 10-K period: statement placement (does this filer present D&A as its
+   own income statement line? then COGS is not stripped) and extension-tag
+   operands (e.g. AMZN's Fulfillment / Technology & content lines, folded
+   into XSGA/XRD).
+   Quarter zips (tens of MB each) download on first use into :dir (default
+   ~/.edgarjure/fsds) and are shared across all companies.
+   Options: :dir.
+   Example: (e/enable-fsds!)"
+  [& {:as opts}]
+  (apply fsds/enable-cache! (mapcat identity opts)))
+
+(defn disable-fsds!
+  "Disable the FSDS quarter cache (cached files are kept on disk)."
+  []
+  (fsds/disable-cache!))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Company
@@ -488,8 +509,10 @@
               | :compustat
               (:standardized imputes e.g. Total Liabilities, Total Equity
               = SE + NCI, and a derived-only \"Working Capital\" item;
-              :compustat currently equals :standardized for the balance
-              sheet - no reclassification rules exist yet)
+              :compustat adds reclassified items approximating Compustat
+              constructions: \"RE (Compustat)\" incl. AOCI, \"DLC\"/\"DLTT\"
+              incl. lease obligations, \"MIB\"/\"MIBN\", \"PSTK\",
+              \"SEQ\"/\"CEQ\"/\"TEQ\", \"RECT\", \"CHE\")
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode)."
@@ -529,7 +552,7 @@
      :form     - \"10-K\" (default) or \"10-Q\"
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
-                 | :compustat (income statement reclassification)
+                 | :compustat (income + balance sheet reclassification)
      :industry - :standard | :bank | :insurance | :reit (income statement only)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  All three statements use point-in-time deduplication."
@@ -585,9 +608,9 @@
 (defn reclass-rules
   "Return the reclassification ruleset used by :view :compustat for a
    statement, as its full EDN map ({:ruleset :compustat :rules [...] ...}),
-   or nil when the statement has no rules (currently only :income has any).
-   statement: :income | :balance | :cash-flow
-   Example: (e/reclass-rules :income)"
+   or nil when the statement has no rules (:income and :balance have rules;
+   :cash-flow has none).
+   Example: (e/reclass-rules :balance)"
   [statement]
   (reclass/ruleset-for statement))
 

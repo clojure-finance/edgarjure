@@ -16,7 +16,10 @@
                       operating income, ...). Reclassified rows carry
                       :method :reclassified, :rule and :derived-from.
                       Rules live in resources/edgar/reclass/ (edgar.reclass);
-                      income statement only for now.
+                      income statement and balance sheet (cash flow equals
+                      :standardized). With the FSDS cache enabled
+                      (edgar.fsds/enable-cache!), 10-K income periods gain
+                      statement-placement guards and extension-tag operands.
 
    Concept fallback chains: each line item is a vector of concept names tried
    in order; the first one present in the facts data wins. Chains are loaded
@@ -56,6 +59,7 @@
   (:require [edgar.xbrl :as xbrl]
             [edgar.company :as company]
             [edgar.reclass :as reclass]
+            [edgar.fsds :as fsds]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [tech.v3.dataset :as ds])
@@ -494,7 +498,13 @@
    {:target "Total Equity" :formula [:= "Stockholders Equity"]}
    {:target "Non-Current Assets" :formula [:- "Total Assets" "Current Assets"]}
    {:target "Non-Current Liabilities" :formula [:- "Total Liabilities" "Current Liabilities"]}
-   {:target "Working Capital" :formula [:- "Current Assets" "Current Liabilities"]}])
+   {:target "Working Capital" :formula [:- "Current Assets" "Current Liabilities"]}
+   ;; Compustat DLC = DD1 + NP is a sum, not a fallback (holds at 100%
+   ;; empirically); when no combined DebtCurrent tag exists, build Current
+   ;; Debt from the components, falling back to whichever one is tagged
+   {:target "Current Debt" :formula [:+ "Current Portion of Long-Term Debt" "Short-Term Borrowings"]}
+   {:target "Current Debt" :formula [:= "Current Portion of Long-Term Debt"]}
+   {:target "Current Debt" :formula [:= "Short-Term Borrowings"]}])
 
 (def cash-flow-identities
   "Arithmetic identities for cash flow imputation (:view :standardized).
@@ -524,23 +534,31 @@
                  acc (vec grows)]
             (if (>= pass 3)
               acc
-              (let [by-li (into {} (map (juxt :line-item identity)) acc)
-                    new-rows
-                    (keep (fn [{:keys [target formula]}]
-                            (when-not (contains? by-li target)
-                              (let [[op & operands] formula
-                                    vals (map #(:val (get by-li %)) operands)]
-                                (when (every? some? vals)
-                                  (-> (get by-li (first operands))
-                                      (assoc :line-item target
-                                             :val (eval-formula op vals)
-                                             :concept nil
-                                             :method :derived
-                                             :derived-from (vec operands)))))))
-                          identities)]
-                (if (empty? new-rows)
-                  acc
-                  (recur (inc pass) (into acc new-rows))))))))))
+              (let [;; identities apply sequentially: the first identity to
+                    ;; produce a target wins and later identities for the same
+                    ;; target see it as present (ordered fallbacks emit once)
+                    [acc' _ emitted?]
+                    (reduce (fn [[rows by-li emitted?] {:keys [target formula]}]
+                              (if (contains? by-li target)
+                                [rows by-li emitted?]
+                                (let [[op & operands] formula
+                                      vals (map #(:val (get by-li %)) operands)]
+                                  (if (every? some? vals)
+                                    (let [row (-> (get by-li (first operands))
+                                                  (assoc :line-item target
+                                                         :val (eval-formula op vals)
+                                                         :concept nil
+                                                         :method :derived
+                                                         :derived-from (vec operands)))]
+                                      [(conj rows row) (assoc by-li target row) true])
+                                    [rows by-li emitted?]))))
+                            [acc
+                             (into {} (map (juxt :line-item identity)) acc)
+                             false]
+                            identities)]
+                (if emitted?
+                  (recur (inc pass) acc')
+                  acc'))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Statement builders
@@ -597,6 +615,71 @@
                               form duration-type as-of)
         identities (apply-identities identities)))))
 
+(defn- close-dates?
+  "True when two ISO/LocalDate dates are within tol days (FSDS ddate is
+   month-end normalized while XBRL carries exact 52/53-week dates)."
+  [a b tol]
+  (let [pa (java.time.LocalDate/parse (str a))
+        pb (java.time.LocalDate/parse (str b))]
+    (<= (Math/abs (.between java.time.temporal.ChronoUnit/DAYS pa pb)) (long tol))))
+
+(defn- fsds-aux-fn
+  "Return (fn [form rows] aux-rows) injecting FSDS-derived operand rows for
+   the reclassification pass, per the ruleset's :fsds spec:
+     - annual values of extension tags presented on the income statement,
+       relabeled via :extension-labels pattern pairs (e.g. AMZN's
+       FulfillmentExpense -> \"Fulfillment Expense\")
+     - a marker row (:da-marker) for periods whose filing presents one of
+       :da-tags on the income statement - the signal that reported expense
+       lines already exclude D&A.
+   Rows join period groups by copying [unit start end] from the statement's
+   own rows (FSDS dates are month-end normalized, so matching is by ±10-day
+   proximity). Only fires for 10-K rows with the FSDS cache enabled; every
+   FSDS lookup failure degrades to no rows."
+  [cik ruleset]
+  (when-let [spec (:fsds ruleset)]
+    (let [patterns (mapv (fn [[p l]] [(re-pattern p) l]) (:extension-labels spec))
+          da-tags (vec (:da-tags spec))]
+      (fn [form rows]
+        (when (and (= form "10-K") (fsds/cache-enabled?))
+          (->> (map (juxt :unit :start :end :filed) rows)
+               distinct
+               ;; annual windows only: 10-K facts also carry quarterly
+               ;; windows sharing the fiscal-year end date, and the FSDS
+               ;; operand values are annual (qtrs=4)
+               (filter (fn [[_ start end _]]
+                         (and start end
+                              (let [days (.between java.time.temporal.ChronoUnit/DAYS
+                                                   (java.time.LocalDate/parse (str start))
+                                                   (java.time.LocalDate/parse (str end)))]
+                                (<= 300 days 430)))))
+               (mapcat
+                (fn [[unit start end filed]]
+                  (when (and end filed)
+                    (when-let [ctx (try (fsds/annual-filing-context cik filed)
+                                        (catch Exception _ nil))]
+                      (let [base {:unit unit :start start :end end
+                                  :form form :filed filed :concept nil}
+                            ext (->> (:is-extension-values ctx)
+                                     (keep (fn [{:keys [tag value] :as v}]
+                                             (when-let [label (some (fn [[re l]]
+                                                                      (when (re-find re tag) l))
+                                                                    patterns)]
+                                               (when (and value (:end v)
+                                                          (close-dates? (:end v) end 10))
+                                                 (assoc base :line-item label :val value
+                                                        :method :fsds :fsds-tag tag)))))
+                                     ;; one row per label per period
+                                     (reduce (fn [m r] (if (m (:line-item r)) m
+                                                           (assoc m (:line-item r) r))) {})
+                                     vals)
+                            marker (when (some #(contains? (get (:placement ctx) % #{}) "IS")
+                                               da-tags)
+                                     [(assoc base :line-item (:da-marker spec) :val 1.0
+                                             :method :fsds)])]
+                        (concat ext marker))))))
+               doall))))))
+
 (defn- reclass-aux-fn
   "Return (fn [form] rows) supplying cross-statement operand rows for
    reclassification, per the ruleset's :aux spec. Currently supports
@@ -637,8 +720,11 @@
                                                        duration-type as-of identities)]
                         (if (and reclass (seq rows))
                           (reclass/apply-ruleset rows
-                                                 (when-let [aux-fn (:aux-fn reclass)]
-                                                   (aux-fn f))
+                                                 (concat
+                                                  (when-let [aux-fn (:aux-fn reclass)]
+                                                    (aux-fn f))
+                                                  (when-let [ff (:fsds-aux-fn reclass)]
+                                                    (ff f rows)))
                                                  (:ruleset reclass))
                           rows)))
          rows (build-rows form)
@@ -732,7 +818,8 @@
                                         (statement-identities statement-key)
                                         (when-let [rs (reclass/ruleset-for statement-key)]
                                           {:ruleset rs
-                                           :aux-fn (reclass-aux-fn facts as-of rs)})))
+                                           :aux-fn (reclass-aux-fn facts as-of rs)
+                                           :fsds-aux-fn (fsds-aux-fn cik rs)})))
      shape)))
 
 (defn income-statement
@@ -781,8 +868,9 @@
                  | :compustat
                  (:standardized imputes e.g. Total Liabilities, Total Equity
                  = SE + NCI, and a derived-only \"Working Capital\" item;
-                 :compustat currently equals :standardized - no balance
-                 sheet reclassification rules exist yet)
+                 :compustat adds reclassified items approximating Compustat
+                 constructions - see resources/edgar/reclass/
+                 compustat-balance.edn)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, excludes filings where :filed > as-of-date,
                  giving point-in-time / look-ahead-safe results."
@@ -822,7 +910,8 @@
      :form     - \"10-K\" (default) or \"10-Q\"
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
-                 | :compustat (reclassified line items, income statement only)
+                 | :compustat (reclassified line items on the income statement
+                 and balance sheet; cash flow equals :standardized)
      :industry - :standard | :bank | :insurance | :reit (income statement only;
                  auto-detected from SIC when omitted)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).

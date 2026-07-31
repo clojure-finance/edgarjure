@@ -18,7 +18,15 @@
    One bulk download covers every filer for a quarter, instead of one HTTP
    call per company.
 
-   Usage:
+   Two access styles:
+
+   1. Managed (what the :compustat statement view uses): enable the local
+      quarter cache and let per-filing contexts stream what they need —
+        (fsds/enable-cache!)                        ; or (e/enable-fsds!)
+        (fsds/annual-filing-context \"1018724\" \"2026-02-06\")
+        ;=> {:adsh ... :placement {tag #{\"IS\" ...}} :is-extension-values [...]}
+
+   2. Manual table access for ad-hoc analysis:
      (require '[edgar.fsds :as fsds])
      (def zip (fsds/download-quarter! 2026 1 \"/data/fsds\"))
      (def sub (fsds/load-table zip :sub))
@@ -47,9 +55,12 @@
      (fsds/facts-for num adsh :qtrs 4 :tag \"FulfillmentExpense\")"
   (:require [edgar.core :as core]
             [babashka.fs :as fs]
+            [clojure.string :as str]
             [tech.v3.dataset :as ds])
   (:import [java.util.zip ZipFile]
-           [java.io FileOutputStream]))
+           [java.io BufferedReader InputStreamReader FileOutputStream]
+           [java.nio.charset StandardCharsets]
+           [java.time LocalDate]))
 
 (defn quarter-url
   "URL of the FSDS zip for a year/quarter, e.g. (quarter-url 2024 1)."
@@ -162,3 +173,170 @@
   (cond-> (ds/filter-column num-ds :adsh #(= % adsh))
     qtrs (ds/filter-column :qtrs #(= (long %) (long qtrs)))
     tag (ds/filter-column :tag #(= % tag))))
+
+;;; ---------------------------------------------------------------------------
+;;; Local quarter cache + per-filing streaming access (roadmap: FSDS wiring)
+;;;
+;;; Loading whole FSDS tables is expensive (num.txt has millions of rows).
+;;; The statement views need only ONE filing's rows, and every FSDS table is
+;;; adsh-prefixed, so the functions below stream the zip entries line by line
+;;; and keep just the matching rows. Quarter zips live in an opt-in local
+;;; cache (~/.edgarjure/fsds by default) shared by all companies.
+;;; ---------------------------------------------------------------------------
+
+(def default-cache-dir
+  (str (System/getProperty "user.home") "/.edgarjure/fsds"))
+
+(defonce ^:private cache-config (atom nil))
+
+(defn enable-cache!
+  "Enable the local FSDS quarter cache (downloads on first use per quarter).
+   Options: :dir (default ~/.edgarjure/fsds). Returns the active config.
+   When enabled, the income statement's :view :compustat augments its
+   reclassification rules with FSDS statement placement and extension-tag
+   operands for 10-K periods."
+  [& {:keys [dir]}]
+  (reset! cache-config {:dir (or dir default-cache-dir)}))
+
+(defn disable-cache!
+  "Disable the local FSDS quarter cache. Cached files stay on disk."
+  []
+  (reset! cache-config nil))
+
+(defn cache-enabled? [] (some? @cache-config))
+
+(defn- active-dir [] (:dir @cache-config default-cache-dir))
+
+(defn quarter-of-date
+  "The FSDS [year quarter] whose dataset contains filings RECEIVED on date
+   (ISO string or LocalDate)."
+  [d]
+  (let [ld (if (instance? LocalDate d) d (LocalDate/parse (str d)))]
+    [(.getYear ld) (inc (quot (dec (.getMonthValue ld)) 3))]))
+
+(defonce ^:private missing-quarters (atom #{}))
+
+(defn cached-quarter!
+  "Path of the year/quarter FSDS zip in the local cache, downloading it on
+   first use. Returns nil when the quarter isn't published (404 remembered
+   for the session) or the cache is disabled and no :dir is given."
+  [year quarter & {:keys [dir]}]
+  (let [dir (or dir (when (cache-enabled?) (active-dir)))]
+    (when (and dir (not (@missing-quarters [year quarter])))
+      (try
+        (download-quarter! year quarter dir)
+        (catch Exception e
+          (swap! missing-quarters conj [year quarter])
+          (when-not (re-find #"404" (str (ex-message e)))
+            (throw e))
+          nil)))))
+
+(defn- zip-entry-line-seq*
+  "Call f with the lazy line seq of one zip entry (FSDS tables are
+   ISO-8859-1; tab-delimited, header first)."
+  [zip-path entry-name f]
+  (with-open [zf (ZipFile. (str zip-path))]
+    (let [entry (.getEntry zf entry-name)]
+      (when-not entry
+        (throw (ex-info (str entry-name " not found in " zip-path)
+                        {:type ::missing-entry :zip (str zip-path) :entry entry-name})))
+      (with-open [rdr (BufferedReader.
+                       (InputStreamReader. (.getInputStream zf entry)
+                                           StandardCharsets/ISO_8859_1))]
+        (f (line-seq rdr))))))
+
+(defn- rows-where
+  "Stream one FSDS table out of a quarter zip, keeping rows for which
+   (pred fields-vector) is true. Returns a vector of keywordized maps."
+  [zip-path table pred]
+  (zip-entry-line-seq*
+   zip-path (str (name table) ".txt")
+   (fn [lines]
+     (let [header (mapv keyword (str/split (first lines) #"\t" -1))]
+       (into []
+             (comp (map #(str/split % #"\t" -1))
+                   (filter pred)
+                   (map #(zipmap header %)))
+             (rest lines))))))
+
+(defn filing-rows
+  "One filing's :pre or :num rows streamed from a quarter zip (all FSDS
+   tables are adsh-first, so this never loads the full table). All values
+   are strings; callers parse what they need."
+  [zip-path table adsh]
+  (rows-where zip-path table #(= (first %) adsh)))
+
+(defn submission-row
+  "The sub.txt row (keywordized string map) of a company's latest submission
+   of the given form in a quarter zip, or nil. cik may be padded or not."
+  [zip-path cik & {:keys [form]}]
+  (let [ciks (str (Long/parseLong (str cik)))]
+    (->> (rows-where zip-path :sub #(= (second %) ciks))
+         (filter #(or (nil? form) (= form (:form %))))
+         (sort-by :filed #(compare %2 %1))
+         first)))
+
+(defn- parse-double* [s] (when-not (str/blank? s) (Double/parseDouble s)))
+
+(defn- ddate->local-date [s]
+  (when (and s (= 8 (count s)))
+    (LocalDate/parse (str (subs s 0 4) "-" (subs s 4 6) "-" (subs s 6 8)))))
+
+(defn- standard-version?
+  "True for us-gaap/dei/srt/ifrs release versions; extension tags carry a
+   filer-specific version instead."
+  [version]
+  (boolean (re-matches #"(?:us-gaap|dei|srt|ifrs(?:-full)?|invest|country|currency)/\d{4}(?:q\d)?" (str version))))
+
+(defonce ^:private context-cache (atom {}))
+
+(defn annual-filing-context
+  "FSDS context of the 10-K a company filed in the quarter containing
+   filed-date:
+     {:adsh      accession number
+      :placement {tag #{\"IS\" \"CF\" ...}}   (statement placement, all tags)
+      :is-extension-values [{:tag :label :value :end}]  (annual values of
+                            extension tags presented on the income statement;
+                            :end is the FSDS month-end period date)}
+   Returns nil when the quarter isn't cached/published or the filing isn't
+   found. Results are cached per [cik year quarter] for the session."
+  [cik filed-date & {:keys [dir]}]
+  (let [[y q] (quarter-of-date filed-date)
+        ck [(str cik) y q]]
+    (if-let [hit (find @context-cache ck)]
+      (val hit)
+      (let [ctx
+            (when-let [zip (cached-quarter! y q :dir dir)]
+              (when-let [subrow (submission-row zip cik :form "10-K")]
+                (let [adsh (:adsh subrow)
+                      pre (filing-rows zip :pre adsh)
+                      placement (reduce (fn [m {:keys [tag stmt]}]
+                                          (update m tag (fnil conj #{}) stmt))
+                                        {} pre)
+                      ext-is-tags (->> pre
+                                       (filter #(and (= "IS" (:stmt %))
+                                                     (not (standard-version? (:version %)))))
+                                       (map (juxt :tag :plabel))
+                                       (into {}))
+                      ext-values (when (seq ext-is-tags)
+                                   (->> (filing-rows zip :num adsh)
+                                        (filter #(and (contains? ext-is-tags (:tag %))
+                                                      (= "4" (:qtrs %))
+                                                      (= "USD" (:uom %))
+                                                      ;; consolidated only: no
+                                                      ;; segment/coreg breakdown
+                                                      (str/blank? (or (:segments %) ""))
+                                                      (str/blank? (or (:coreg %) ""))))
+                                        (keep (fn [{:keys [tag ddate value]}]
+                                                (when-let [v (parse-double* value)]
+                                                  {:tag tag
+                                                   :label (get ext-is-tags tag)
+                                                   :value v
+                                                   :end (ddate->local-date ddate)})))
+                                        (distinct)
+                                        vec))]
+                  {:adsh adsh
+                   :placement placement
+                   :is-extension-values (or ext-values [])})))]
+        (swap! context-cache assoc ck ctx)
+        ctx))))

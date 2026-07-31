@@ -35,7 +35,11 @@
        territory).
      Extended items (annual): Investing/Financing Cash Flow 96.2%, Goodwill
        95.2%, Shares Basic/Diluted 89/88%, Cash 87.8%, EPS 79.5%, PP&E 77.6%.
-       Known-definitional laggards (documented, not chased):
+       Known-definitional laggards (2026-07-31: now addressed by the
+       :view :compustat balance-sheet rules — RE 96%, DLTT 76%, DLC 63%,
+       RECT 61%, MIB 81% on the extended 21-firm FY2009-2025 check; the
+       rates below are the ORIGINAL standardized-view study, kept as the
+       baseline record):
        - Retained Earnings 16%: Compustat RE carries treasury-stock and other
          adjustments vs the raw RetainedEarningsAccumulatedDeficit tag
        - Accounts Receivable 30%: Compustat RECT is total receivables; the

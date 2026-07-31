@@ -4,7 +4,8 @@
             [babashka.fs :as fs]
             [tech.v3.dataset :as ds])
   (:import [java.util.zip ZipOutputStream ZipEntry]
-           [java.io FileOutputStream]))
+           [java.io FileOutputStream]
+           [java.time LocalDate]))
 
 (deftest quarter-url-test
   (testing "builds the DERA financial-statement-data-sets URL"
@@ -53,6 +54,68 @@
           (is (thrown? clojure.lang.ExceptionInfo (fsds/load-table empty-zip :num)))))
       (finally
         (fs/delete-tree tmp-dir)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Local cache + streaming per-filing access
+;;; ---------------------------------------------------------------------------
+
+(def ^:private ctx-adsh "0001018724-24-000008")
+
+(defn- write-context-zip!
+  "Quarter zip with full FSDS columns: one AMZN 10-K whose D&A sits on the
+   cash flow only and whose income statement carries an extension line."
+  [path]
+  (let [entry! (fn [zos name content]
+                 (.putNextEntry zos (ZipEntry. ^String name))
+                 (.write zos (.getBytes ^String content "ISO-8859-1"))
+                 (.closeEntry zos))]
+    (with-open [zos (ZipOutputStream. (FileOutputStream. (str path)))]
+      (entry! zos "sub.txt"
+              (str "adsh\tcik\tname\tform\tperiod\tfiled\n"
+                   ctx-adsh "\t1018724\tAMAZON COM INC\t10-K\t20231231\t20240202\n"
+                   "0000320193-24-000099\t320193\tAPPLE INC\t10-K\t20230930\t20240115\n"))
+      (entry! zos "pre.txt"
+              (str "adsh\treport\tline\tstmt\ttag\tversion\tplabel\n"
+                   ctx-adsh "\t2\t9\tIS\tCostOfGoodsAndServicesSold\tus-gaap/2023\tCost of sales\n"
+                   ctx-adsh "\t2\t10\tIS\tFulfillmentExpense\t" ctx-adsh "\tFulfillment\n"
+                   ctx-adsh "\t5\t3\tCF\tDepreciationDepletionAndAmortization\tus-gaap/2023\tD&A\n"))
+      (entry! zos "num.txt"
+              (str "adsh\ttag\tversion\tddate\tqtrs\tuom\tsegments\tcoreg\tvalue\tfootnote\n"
+                   ;; the annual consolidated fact we want
+                   ctx-adsh "\tFulfillmentExpense\t" ctx-adsh "\t20231231\t4\tUSD\t\t\t90000000000\t\n"
+                   ;; quarterly and segmented variants must be excluded
+                   ctx-adsh "\tFulfillmentExpense\t" ctx-adsh "\t20231231\t1\tUSD\t\t\t25000000000\t\n"
+                   ctx-adsh "\tFulfillmentExpense\t" ctx-adsh "\t20231231\t4\tUSD\tSegment=NA;\t\t60000000000\t\n")))))
+
+(deftest streaming-and-context-test
+  (let [dir (fs/create-temp-dir)
+        zip (fs/path dir "2024q1.zip")]
+    (try
+      (write-context-zip! zip)
+      (testing "quarter-of-date maps a filed date to its FSDS quarter"
+        (is (= [2024 1] (fsds/quarter-of-date "2024-02-02")))
+        (is (= [2023 4] (fsds/quarter-of-date "2023-10-01"))))
+      (testing "submission-row streams sub.txt by cik"
+        (is (= "AMAZON COM INC"
+               (:name (fsds/submission-row zip "1018724" :form "10-K"))))
+        (is (nil? (fsds/submission-row zip "999999" :form "10-K"))))
+      (testing "filing-rows streams a single filing's rows by adsh prefix"
+        (is (= 3 (count (fsds/filing-rows zip :pre ctx-adsh))))
+        (is (= 3 (count (fsds/filing-rows zip :num ctx-adsh)))))
+      (testing "annual-filing-context: placement + consolidated annual extension values"
+        (let [ctx (fsds/annual-filing-context "1018724" "2024-02-02" :dir (str dir))]
+          (is (= ctx-adsh (:adsh ctx)))
+          (is (= #{"CF"} (get (:placement ctx) "DepreciationDepletionAndAmortization")))
+          (is (= #{"IS"} (get (:placement ctx) "FulfillmentExpense")))
+          (is (= [{:tag "FulfillmentExpense" :label "Fulfillment"
+                   :value 9.0E10 :end (LocalDate/parse "2023-12-31")}]
+                 (:is-extension-values ctx))
+              "qtrs=4 consolidated only; quarterly and segmented rows excluded")))
+      (testing "padded CIK resolves the same context"
+        (is (= ctx-adsh
+               (:adsh (fsds/annual-filing-context "0001018724" "2024-02-02"
+                                                  :dir (str dir))))))
+      (finally (fs/delete-tree dir)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Placement and extension-tag queries — synthetic tables modeled on the

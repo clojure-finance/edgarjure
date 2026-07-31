@@ -54,6 +54,14 @@
    :concepts ["BusinessCombinationAcquisitionRelatedCosts"]}
   {:label "Litigation Settlement"
    :concepts ["LitigationSettlementExpense"]}
+  {:label "Gain (Loss) on Sale of Assets"
+   :concepts ["GainLossOnDispositionOfAssets1"
+              "GainsLossesOnSalesOfAssets"
+              "GainLossOnDispositionOfAssets"
+              "GainLossOnSaleOfPropertyPlantEquipment"
+              "GainLossOnDispositionOfProperty"]}
+  {:label "In-Process R&D"
+   :concepts ["ResearchAndDevelopmentInProcess"]}
   {:label "Operating Income"
    :concepts ["OperatingIncomeLoss"]}
   {:label "Non-Operating Income"

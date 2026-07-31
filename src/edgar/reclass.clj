@@ -38,6 +38,9 @@
      [:concept-not-in a #{c ...}] - a's winning XBRL concept is not in the set
                                     (rows without a concept, e.g. derived rows,
                                     pass)
+     [:present a]                 - a line item named a exists in the period
+                                    (marker rows, e.g. FSDS placement signals)
+     [:absent a]                  - no line item named a exists in the period
 
    Rules are tried in order; for a given :target the first rule whose operands
    and guards are satisfied wins (the target is skipped once present)."
@@ -57,6 +60,11 @@
    Source: resources/edgar/reclass/compustat-income.edn"
   (load-ruleset-file "edgar/reclass/compustat-income.edn"))
 
+(def compustat-balance-ruleset
+  "Compustat reclassification ruleset for the balance sheet.
+   Source: resources/edgar/reclass/compustat-balance.edn"
+  (load-ruleset-file "edgar/reclass/compustat-balance.edn"))
+
 (defn ruleset-for
   "Return the active reclassification ruleset for a statement, for inspection.
    statement: :income | :balance | :cash-flow
@@ -64,6 +72,7 @@
   [statement]
   (case statement
     :income compustat-income-ruleset
+    :balance compustat-balance-ruleset
     nil))
 
 ;;; ---------------------------------------------------------------------------
@@ -124,6 +133,8 @@
             (and (some? va) (some? vb) (> (double va) (double vb))))
       :concept-not-in (let [c (:concept (get by-li a))]
                         (or (nil? c) (not (contains? b c))))
+      :present (contains? by-li a)
+      :absent (not (contains? by-li a))
       false)))
 
 (defn- guards-pass? [guards by-li]

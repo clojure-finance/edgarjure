@@ -57,6 +57,11 @@
       (is (f [:concept-not-in "COGS" #{"SomethingElse"}] g)))
     (testing ":concept-not-in passes for rows without a concept (derived rows)"
       (is (f [:concept-not-in "Derived" #{"CostOfRevenue"}] g)))
+    (testing ":present / :absent check line-item existence"
+      (is (f [:present "COGS"] g))
+      (is (not (f [:present "Missing"] g)))
+      (is (f [:absent "Missing"] g))
+      (is (not (f [:absent "COGS"] g))))
     (testing "unknown guard op fails closed"
       (is (not (f [:unknown "A" "B"] g))))))
 
@@ -179,17 +184,130 @@
       (is (= #{"DP (Compustat)" "COGS (Compustat)" "XSGA (Compustat)"
                "Gross Profit (Compustat)" "XOPR (Compustat)"
                "Special Items (Compustat)" "OIADP (Compustat)"
-               "OIBDP (Compustat)" "Revenue (Compustat)"}
+               "OIBDP (Compustat)" "Revenue (Compustat)" "XRD (Compustat)"}
              (set (map :target (:rules rs))))))
+    (testing "the FSDS spec declares the D&A marker and extension labels"
+      (is (string? (get-in rs [:fsds :da-marker])))
+      (is (seq (get-in rs [:fsds :da-tags])))
+      (is (seq (get-in rs [:fsds :extension-labels]))))
     (testing "rule ids are unique"
       (let [ids (map :id (:rules rs))]
         (is (= (count ids) (count (set ids))))))))
 
 (deftest ruleset-for-test
-  (testing "income has a ruleset, balance and cash flow do not"
+  (testing "income and balance have rulesets, cash flow does not"
     (is (some? (reclass/ruleset-for :income)))
-    (is (nil? (reclass/ruleset-for :balance)))
+    (is (some? (reclass/ruleset-for :balance)))
     (is (nil? (reclass/ruleset-for :cash-flow)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Compustat balance-sheet ruleset
+;;; ---------------------------------------------------------------------------
+
+(def ^:private instant {:unit "USD" :start nil :end "2015-09-26"
+                        :form "10-K" :filed "2015-10-28"})
+
+(defn- irow [li val & [extra]]
+  (merge instant {:line-item li :val val :method :direct} extra))
+
+(deftest compustat-balance-ruleset-loaded-test
+  (let [rs reclass/compustat-balance-ruleset]
+    (testing "ruleset loads from EDN with metadata"
+      (is (= :compustat (:ruleset rs)))
+      (is (= :balance (:statement rs))))
+    (testing "no cross-statement aux required"
+      (is (nil? (:aux rs))))
+    (testing "rule ids are unique"
+      (let [ids (map :id (:rules rs))]
+        (is (= (count ids) (count (set ids))))))))
+
+(deftest compustat-balance-end-to-end-test
+  ;; a filer with AOCI, both NCI kinds, mezzanine preferred, finance leases
+  (let [rows [(irow "Retained Earnings" 500.0 {:concept "RetainedEarningsAccumulatedDeficit"})
+              (irow "AOCI" -60.0 {:concept "AccumulatedOtherComprehensiveIncomeLossNetOfTax"})
+              (irow "Noncontrolling Interest" 30.0 {:concept "MinorityInterest"})
+              (irow "Redeemable Noncontrolling Interest" 25.0
+                    {:concept "RedeemableNoncontrollingInterestEquityCarryingAmount"})
+              (irow "Preferred Stock" 10.0 {:concept "PreferredStockValue"})
+              (irow "Redeemable Preferred Stock" 40.0
+                    {:concept "RedeemablePreferredStockCarryingAmount"})
+              (irow "Stockholders Equity" 800.0 {:concept "StockholdersEquity"})
+              (irow "Current Debt" 100.0 {:concept "DebtCurrent"})
+              (irow "Finance Lease Liability (Current)" 15.0
+                    {:concept "FinanceLeaseLiabilityCurrent"})
+              (irow "Long-Term Debt" 400.0 {:concept "LongTermDebtNoncurrent"})
+              (irow "Finance Lease Liability (Non-Current)" 80.0
+                    {:concept "FinanceLeaseLiabilityNoncurrent"})
+              (irow "Accounts Receivable" 200.0 {:concept "AccountsReceivableNetCurrent"})
+              (irow "Nontrade Receivables" 35.0 {:concept "NontradeReceivablesCurrent"})
+              (irow "Income Taxes Receivable" 5.0 {:concept "IncomeTaxesReceivable"})
+              (irow "Cash and Equivalents" 120.0
+                    {:concept "CashAndCashEquivalentsAtCarryingValue"})
+              (irow "Short-Term Investments" 70.0 {:concept "ShortTermInvestments"})]
+        result (vec (reclass/apply-ruleset rows [] reclass/compustat-balance-ruleset))
+        v (fn [li] (:val (first (filter #(= li (:line-item %)) result))))]
+    (is (= 440.0 (v "RE (Compustat)")) "REUNA + AOCI")
+    (is (= 25.0 (v "MIB (Compustat)")) "mezzanine NCI only")
+    (is (= 30.0 (v "MIBN (Compustat)")) "equity-section NCI")
+    (is (= 55.0 (v "MIBT (Compustat)")) "MIB + MIBN")
+    (is (= 115.0 (v "DLC (Compustat)")) "DebtCurrent + current finance leases")
+    (is (= 480.0 (v "DLTT (Compustat)")) "noncurrent debt + noncurrent finance leases")
+    (is (= 240.0 (v "RECT (Compustat)")) "trade + nontrade + tax refunds")
+    (is (= 50.0 (v "PSTK (Compustat)")) "equity preferred + mezzanine preferred")
+    (is (= 840.0 (v "SEQ (Compustat)")) "parent equity + mezzanine preferred")
+    (is (= 790.0 (v "CEQ (Compustat)")) "SEQ - PSTK")
+    (is (= 870.0 (v "TEQ (Compustat)")) "SEQ + MIBN (MIB stays outside)")
+    (is (= 190.0 (v "CHE (Compustat)")) "cash + short-term investments")))
+
+(deftest compustat-balance-guards-test
+  (testing "RECT copies a total-receivables concept unchanged"
+    (let [rows [(irow "Accounts Receivable" 250.0 {:concept "ReceivablesNetCurrent"})
+                (irow "Income Taxes Receivable" 5.0 {:concept "IncomeTaxesReceivable"})]
+          rect (->> (reclass/apply-ruleset rows [] reclass/compustat-balance-ruleset)
+                    (filter #(= "RECT (Compustat)" (:line-item %))) first)]
+      (is (= 250.0 (:val rect)))
+      (is (= :rect-total (:rule rect)))))
+  (testing "DLTT subtracts the current portion from a combined LongTermDebt tag"
+    (let [rows [(irow "Long-Term Debt" 500.0 {:concept "LongTermDebt"})
+                (irow "Current Portion of Long-Term Debt" 50.0
+                      {:concept "LongTermDebtCurrent"})]
+          dltt (->> (reclass/apply-ruleset rows [] reclass/compustat-balance-ruleset)
+                    (filter #(= "DLTT (Compustat)" (:line-item %))) first)]
+      (is (= 450.0 (:val dltt)))
+      (is (= :dltt-from-combined (:rule dltt)))))
+  (testing "SEQ falls back to subtracting NCI from an including-NCI equity tag"
+    (let [rows [(irow "Stockholders Equity" 830.0
+                      {:concept "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"})
+                (irow "Noncontrolling Interest" 30.0 {:concept "MinorityInterest"})]
+          seqr (->> (reclass/apply-ruleset rows [] reclass/compustat-balance-ruleset)
+                    (filter #(= "SEQ (Compustat)" (:line-item %))) first)]
+      (is (= 800.0 (:val seqr)))
+      (is (= :seq-from-total (:rule seqr)))))
+  (testing "CHE copies a combined cash-and-investments concept unchanged"
+    (let [rows [(irow "Cash and Equivalents" 190.0
+                      {:concept "CashCashEquivalentsAndShortTermInvestments"})
+                (irow "Short-Term Investments" 70.0 {:concept "ShortTermInvestments"})]
+          che (->> (reclass/apply-ruleset rows [] reclass/compustat-balance-ruleset)
+                   (filter #(= "CHE (Compustat)" (:line-item %))) first)]
+      (is (= 190.0 (:val che)))
+      (is (= :che-combined (:rule che))))))
+
+(deftest current-debt-identity-test
+  ;; the standardized-view identities build Current Debt from components as a
+  ;; SUM (Compustat DLC = DD1 + NP), with single-component fallbacks, and the
+  ;; sequential engine emits only the first matching identity per target
+  (let [f #'edgar.financials/apply-identities
+        both [(irow "Current Portion of Long-Term Debt" 50.0)
+              (irow "Short-Term Borrowings" 20.0)]
+        one [(irow "Short-Term Borrowings" 20.0)]
+        v (fn [rows]
+            (let [ds (filter #(= "Current Debt" (:line-item %))
+                             (f rows fin/balance-sheet-identities))]
+              [(count ds) (:val (first ds))]))]
+    (testing "components sum when both are present"
+      (is (= [1 70.0] (v both))))
+    (testing "single component falls through, still exactly one row"
+      (is (= [1 20.0] (v one))))))
 
 (deftest compustat-end-to-end-test
   ;; values modeled on AAPL FY2015 (verified live against the SEC API and a
@@ -237,6 +355,68 @@
             dp2 (first (filter #(= "DP (Compustat)" (:line-item %)) result2))]
         (is (= 48663.0 (:val dp2)))
         (is (= :dp (:rule dp2)))))))
+
+(deftest compustat-glp-rdip-test
+  ;; GLP: signed gains/losses on asset sales leave OIADP by subtraction;
+  ;; RDIP: in-process R&D charges join the neg-sum special items
+  (let [base [(row "Operating Income" 100.0 {:concept "OperatingIncomeLoss"})
+              (row "In-Process R&D" 5.0 {:concept "ResearchAndDevelopmentInProcess"})]
+        v (fn [rows li] (->> (reclass/apply-ruleset rows [] reclass/compustat-income-ruleset)
+                             (filter #(= li (:line-item %))) first :val))]
+    (testing "a gain (positive) is removed from operating income"
+      (let [rows (conj base (row "Gain (Loss) on Sale of Assets" 10.0
+                                 {:concept "GainLossOnDispositionOfAssets1"}))]
+        (is (= 95.0 (v rows "OIADP (Compustat)")) "OI + 5 RDIP - 10 gain")))
+    (testing "a loss (negative) is added back"
+      (let [rows (conj base (row "Gain (Loss) on Sale of Assets" -10.0
+                                 {:concept "GainLossOnDispositionOfAssets1"}))]
+        (is (= 115.0 (v rows "OIADP (Compustat)")) "OI + 5 RDIP + 10 loss")))
+    (testing "RDIP joins the special-items charges"
+      (is (= -5.0 (v base "Special Items (Compustat)"))))))
+
+(deftest compustat-fsds-guards-test
+  ;; the D&A-on-IS marker (injected from FSDS pre.txt) switches the COGS rule
+  (let [rows [(row "Cost of Revenue" 600.0 {:concept "CostOfRevenue"})]
+        aux [(row "D&A" 40.0)]
+        marker (row "D&A Presented on Income Statement" 1.0 {:method :fsds})
+        cogs (fn [aux-rows]
+               (->> (reclass/apply-ruleset rows aux-rows reclass/compustat-income-ruleset)
+                    (filter #(= "COGS (Compustat)" (:line-item %))) first))]
+    (testing "without the marker D&A is stripped from COGS"
+      (let [c (cogs aux)]
+        (is (= 560.0 (:val c)))
+        (is (= :cogs-ex-da (:rule c)))))
+    (testing "with the marker COGS is copied as reported"
+      (let [c (cogs (conj aux marker))]
+        (is (= 600.0 (:val c)))
+        (is (= :cogs-da-presented (:rule c)))))))
+
+(deftest compustat-xsga-opex-lines-and-xrd-test
+  ;; AMZN-shaped filer: no SG&A / S&M tags; fulfillment + technology arrive
+  ;; as FSDS extension operand rows
+  (let [rows [(row "General and Administrative Expense" 10.0
+                   {:concept "GeneralAndAdministrativeExpense"})
+              (row "Marketing Expense" 20.0 {:concept "MarketingExpense"})]
+        aux [(row "Fulfillment Expense" 90.0 {:method :fsds})
+             (row "Technology and Content Expense" 80.0 {:method :fsds})]
+        result (vec (reclass/apply-ruleset rows aux reclass/compustat-income-ruleset))
+        get-row (fn [li] (first (filter #(= li (:line-item %)) result)))]
+    (testing "XSGA sums the operating expense lines incl. FSDS extensions"
+      (let [xsga (get-row "XSGA (Compustat)")]
+        (is (= 200.0 (:val xsga)))
+        (is (= :xsga-opex-lines (:rule xsga)))))
+    (testing "XRD falls back to the technology extension line"
+      (let [xrd (get-row "XRD (Compustat)")]
+        (is (= 80.0 (:val xrd)))
+        (is (= :xrd-tech-content (:rule xrd)))))
+    (testing "XRD prefers a reported R&D tag when present"
+      (let [xrd (->> (reclass/apply-ruleset
+                      (conj rows (row "R&D Expense" 42.0
+                                      {:concept "ResearchAndDevelopmentExpense"}))
+                      aux reclass/compustat-income-ruleset)
+                     (filter #(= "XRD (Compustat)" (:line-item %))) first)]
+        (is (= 42.0 (:val xrd)))
+        (is (= :xrd-reported (:rule xrd)))))))
 
 (deftest compustat-xsga-components-fallback-test
   (let [rows [(row "Selling and Marketing Expense" 60.0 {:concept "SellingAndMarketingExpense"})

@@ -1,8 +1,14 @@
 {:statement :balance-sheet
  :industry :standard
  :taxonomy "us-gaap"
- :version "2026-07-15"
- :notes "Concept fallback chains for the balance sheet (instant observations)."
+ :version "2026-07-31"
+ :notes "Concept fallback chains for the balance sheet (instant observations).
+2026-07-31: added component line items for the Compustat balance-sheet
+reclassification rules (AOCI, redeemable NCI/preferred, finance leases,
+debt components, receivable components). Current Debt now maps only
+DebtCurrent; component filers are covered by standardized-view identities
+(Current Portion of Long-Term Debt + Short-Term Borrowings), which sum
+components instead of the old first-match fallback."
  :line-items
  [{:label "Total Assets"
    :concepts ["Assets"]}
@@ -15,13 +21,25 @@
               "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"]}
   {:label "Short-Term Investments"
    :concepts ["ShortTermInvestments"
-              "MarketableSecuritiesCurrent"
               "AvailableForSaleSecuritiesCurrent"
               "AvailableForSaleSecuritiesDebtSecuritiesCurrent"
               "OtherShortTermInvestments"]}
+  {:label "Marketable Securities (Current)"
+   :concepts ["MarketableSecuritiesCurrent"]}
+  {:label "Trading Assets"
+   :concepts ["TradingSecuritiesCurrent"]}
   {:label "Accounts Receivable"
    :concepts ["AccountsReceivableNetCurrent"
-              "ReceivablesNetCurrent"]}
+              "ReceivablesNetCurrent"
+              "AccountsNotesAndLoansReceivableNetCurrent"]}
+  {:label "Nontrade Receivables"
+   :concepts ["NontradeReceivablesCurrent"
+              "OtherReceivablesNetCurrent"]}
+  {:label "Notes and Loans Receivable (Current)"
+   :concepts ["NotesAndLoansReceivableNetCurrent"]}
+  {:label "Income Taxes Receivable"
+   :concepts ["IncomeTaxesReceivable"
+              "IncomeTaxReceivable"]}
   {:label "Inventory"
    :concepts ["InventoryNet"]}
   {:label "Non-Current Assets"
@@ -41,16 +59,38 @@
    :concepts ["AccountsPayableCurrent"
               "AccountsPayableTradeCurrent"]}
   {:label "Current Debt"
-   :concepts ["DebtCurrent"
-              "LongTermDebtCurrent"
-              "ShortTermBorrowings"]}
+   :concepts ["DebtCurrent"]}
+  {:label "Current Portion of Long-Term Debt"
+   :concepts ["LongTermDebtCurrent"
+              "LongTermDebtAndCapitalLeaseObligationsCurrent"]}
+  {:label "Short-Term Borrowings"
+   :concepts ["ShortTermBorrowings"
+              "ShortTermBankLoansAndNotesPayable"
+              "CommercialPaper"
+              "BankOverdrafts"
+              "OtherShortTermBorrowings"]}
+  {:label "Finance Lease Liability (Current)"
+   :concepts ["FinanceLeaseLiabilityCurrent"]}
+  {:label "Capital Lease Obligation (Current)"
+   :concepts ["CapitalLeaseObligationsCurrent"]}
+  {:label "Operating Lease Liability (Current)"
+   :concepts ["OperatingLeaseLiabilityCurrent"]}
   {:label "Income Taxes Payable"
    :concepts ["AccruedIncomeTaxesCurrent"
               "TaxesPayableCurrent"]}
   {:label "Long-Term Debt"
    :concepts ["LongTermDebtNoncurrent"
+              "LongTermDebtAndCapitalLeaseObligations"
               "LongTermDebt"
               "LongTermNotesPayable"]}
+  {:label "Finance Lease Liability (Non-Current)"
+   :concepts ["FinanceLeaseLiabilityNoncurrent"]}
+  {:label "Capital Lease Obligation (Non-Current)"
+   :concepts ["CapitalLeaseObligationsNoncurrent"]}
+  {:label "Operating Lease Liability (Non-Current)"
+   :concepts ["OperatingLeaseLiabilityNoncurrent"]}
+  {:label "Other Long-Term Debt"
+   :concepts ["OtherLongTermDebt"]}
   {:label "Non-Current Liabilities"
    :concepts ["LiabilitiesNoncurrent"]}
   {:label "Stockholders Equity"
@@ -58,12 +98,20 @@
               "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]}
   {:label "Retained Earnings"
    :concepts ["RetainedEarningsAccumulatedDeficit"]}
+  {:label "AOCI"
+   :concepts ["AccumulatedOtherComprehensiveIncomeLossNetOfTax"]}
   {:label "Common Stock"
    :concepts ["CommonStockValue"]}
   {:label "Preferred Stock"
    :concepts ["PreferredStockValue"]}
+  {:label "Redeemable Preferred Stock"
+   :concepts ["RedeemablePreferredStockCarryingAmount"
+              "TemporaryEquityCarryingAmountAttributableToParent"]}
   {:label "Noncontrolling Interest"
    :concepts ["MinorityInterest"]}
+  {:label "Redeemable Noncontrolling Interest"
+   :concepts ["RedeemableNoncontrollingInterestEquityCarryingAmount"
+              "RedeemableNoncontrollingInterestEquityCommonCarryingAmount"]}
   {:label "Total Equity"
    :concepts ["StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]}
   {:label "Total Liabilities and Equity"

@@ -1,0 +1,179 @@
+{:ruleset :compustat
+ :statement :balance
+ :taxonomy "us-gaap"
+ :version "2026-07-31"
+ :notes "Reclassification rules approximating Compustat balance-sheet items.
+Each construction was verified empirically against licensed Compustat data
+(the component identities RE = REUNA + ACOMINC + SEQO, DLC = DD1 + NP,
+TEQ = SEQ + MIBN with redeemable NCI outside equity, PSTK = PSTKN + PSTKR,
+RECT = RECTR + TXR + RECCO, CHE = CH + IVST all hold at 100% on the
+validation sample, and finance leases sit inside DLC/DLTT). Original line
+items are preserved alongside the reclassified ones. Post-ASC-842 OPERATING
+lease liabilities are also folded into current Compustat DLC/DLTT vintages
+(verified on AMZN/WMT FY2019+) - the OperatingLeaseLiability* operands
+self-gate by era since the tags only exist from 2019. Known residual gaps:
+SEQO/deferred-comp odds and ends in RE, multi-component short-term borrowings
+(fallback chains pick one concept), combined LongTermDebt filers where
+finance leases cannot be added in the same formula, finance-arm filers with
+dimensional debt tagging (CAT), and ESOP-preferred netting (PG)."
+ :rules
+ [;; --- Retained earnings: Compustat RE includes accumulated OCI -------------
+  {:id :re-with-aoci
+   :target "RE (Compustat)"
+   :compustat "RE = REUNA + ACOMINC (+ SEQO)"
+   :formula [:+ "Retained Earnings" [:opt "AOCI"]]
+   :notes "Compustat RE = REUNA + ACOMINC + SEQO (holds at 100% empirically).
+The XBRL RetainedEarningsAccumulatedDeficit tag is REUNA only; AOCI is tagged
+separately. SEQO (other equity adjustments, deferred comp) has no reliable
+tag and is omitted."}
+
+  ;; --- Noncontrolling interest: mezzanine vs equity-section -----------------
+  {:id :mib
+   :target "MIB (Compustat)"
+   :compustat "MIB (redeemable/mezzanine NCI)"
+   :formula [:= "Redeemable Noncontrolling Interest"]
+   :notes "Compustat MIB is mezzanine redeemable NCI only (LSE = LT + MIB + TEQ).
+Post-SFAS-160 (2009) the temporary-equity placement is the classifier; the
+us-gaap:MinorityInterest equity-section tag must never map here."}
+  {:id :mibn
+   :target "MIBN (Compustat)"
+   :compustat "MIBN (nonredeemable NCI)"
+   :formula [:= "Noncontrolling Interest"]
+   :notes "Equity-section NCI. Emitted for symmetry with MIB so validation can
+compare both columns."}
+  {:id :mibt-both
+   :target "MIBT (Compustat)"
+   :compustat "MIBT = MIB + MIBN"
+   :formula [:+ "MIB (Compustat)" [:opt "MIBN (Compustat)"]]}
+  {:id :mibt-mibn-only
+   :target "MIBT (Compustat)"
+   :compustat "MIBT"
+   :formula [:= "MIBN (Compustat)"]}
+
+  ;; --- Debt in current liabilities ------------------------------------------
+  {:id :dlc
+   :target "DLC (Compustat)"
+   :compustat "DLC = DD1 + NP"
+   :formula [:+ "Current Debt" [:opt "Finance Lease Liability (Current)"]
+             [:opt "Capital Lease Obligation (Current)"]
+             [:opt "Operating Lease Liability (Current)"]]
+   :notes "Compustat DD1 includes finance/capital-lease current portions;
+us-gaap:DebtCurrent excludes them, so add the lease tags when
+present - BOTH kinds, since transition-era filers (AMZN 2016-2018) carry
+capital-lease and finance-lease obligations simultaneously. Component filers
+reach here via the standardized-view identity Current Debt = Current Portion
+of Long-Term Debt + Short-Term Borrowings. Known double-count risk: a filer
+tagging LongTermDebtAndCapitalLeaseObligationsCurrent AND a separate current
+lease tag (none observed)."}
+
+  ;; --- Long-term debt --------------------------------------------------------
+  {:id :dltt-noncurrent
+   :target "DLTT (Compustat)"
+   :compustat "DLTT (incl. finance leases, net of discount)"
+   :formula [:+ "Long-Term Debt" [:opt "Finance Lease Liability (Non-Current)"]
+             [:opt "Capital Lease Obligation (Non-Current)"]
+             [:opt "Operating Lease Liability (Non-Current)"]
+             [:opt "Other Long-Term Debt"]]
+   :guards [[:concept-not-in "Long-Term Debt"
+             #{"LongTermDebt" "LongTermDebtAndCapitalLeaseObligations"}]]
+   :notes "DLTT includes capitalized/finance leases (DCLO) and is net of
+unamortized discount, i.e. XBRL carrying amounts. Both lease kinds are added
+(transition-era filers carry both). Guard: the combined LongTermDebt tag
+includes the current portion, and LongTermDebtAndCapitalLeaseObligations
+already includes leases - both handled below."}
+  {:id :dltt-incl-leases
+   :target "DLTT (Compustat)"
+   :compustat "DLTT"
+   :formula [:+ "Long-Term Debt" [:opt "Operating Lease Liability (Non-Current)"]]
+   :guards [[:concept-not-in "Long-Term Debt" #{"LongTermDebt"}]]
+   :notes "The winning concept is LongTermDebtAndCapitalLeaseObligations
+(noncurrent, finance leases already included - HON); operating leases still
+need adding in the post-ASC-842 era."}
+  {:id :dltt-from-combined
+   :target "DLTT (Compustat)"
+   :compustat "DLTT"
+   :formula [:- "Long-Term Debt" "Current Portion of Long-Term Debt"]
+   :notes "Fallback when only the combined LongTermDebt tag exists: remove the
+current portion. Finance leases cannot be added in the same flat formula;
+lease-heavy filers in this pattern remain understated."}
+
+  ;; --- Receivables -----------------------------------------------------------
+  {:id :rect-total
+   :target "RECT (Compustat)"
+   :compustat "RECT = RECTR + TXR + RECCO"
+   :formula [:= "Accounts Receivable"]
+   :guards [[:concept-not-in "Accounts Receivable" #{"AccountsReceivableNetCurrent"}]]
+   :notes "When the filer tags total ReceivablesNetCurrent, it already matches
+Compustat's total-receivables scope."}
+  {:id :rect-components
+   :target "RECT (Compustat)"
+   :compustat "RECT"
+   :formula [:+ "Accounts Receivable" [:opt "Nontrade Receivables"]
+             [:opt "Income Taxes Receivable"]
+             [:opt "Notes and Loans Receivable (Current)"]]
+   :notes "Trade receivables plus the non-trade and tax-refund components
+Compustat sweeps into RECT (empirically RECT = RECTR + TXR + RECCO, net of
+allowances)."}
+
+  ;; --- Preferred stock: carrying value incl. mezzanine ----------------------
+  {:id :pstk-with-mezzanine
+   :target "PSTK (Compustat)"
+   :compustat "PSTK = PSTKN + PSTKR (carrying value)"
+   :formula [:+ "Preferred Stock" [:opt "Redeemable Preferred Stock"]]
+   :notes "Compustat PSTK includes mezzanine redeemable preferred at carrying
+value. TemporaryEquityCarryingAmountAttributableToParent (fallback concept)
+can over-include redeemable common - rare."}
+  {:id :pstk-mezzanine-only
+   :target "PSTK (Compustat)"
+   :compustat "PSTK"
+   :formula [:= "Redeemable Preferred Stock"]
+   :notes "Filers with mezzanine preferred and no equity-section preferred
+line."}
+
+  ;; --- Equity totals ---------------------------------------------------------
+  {:id :seq
+   :target "SEQ (Compustat)"
+   :compustat "SEQ = CEQ + PSTK"
+   :formula [:+ "Stockholders Equity" [:opt "Redeemable Preferred Stock"]]
+   :guards [[:concept-not-in "Stockholders Equity"
+             #{"StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"}]]
+   :notes "Parent equity plus mezzanine redeemable preferred (which Compustat
+counts in PSTK and therefore in SEQ). Guard: when the chain fell back to the
+including-NCI tag the value is TEQ-shaped, handled below."}
+  {:id :seq-from-total
+   :target "SEQ (Compustat)"
+   :compustat "SEQ"
+   :formula [:- "Stockholders Equity" "Noncontrolling Interest"]
+   :notes "Fallback when only the including-NCI equity tag exists: remove the
+equity-section NCI. Mezzanine preferred cannot be added in the same flat
+formula."}
+  {:id :ceq
+   :target "CEQ (Compustat)"
+   :compustat "CEQ = SEQ - PSTK"
+   :formula [:- "SEQ (Compustat)" [:opt "PSTK (Compustat)"]]
+   :notes "Common equity as the residual (empirically CEQ = SEQ - PSTK =
+CSTK + CAPS + RE - TSTK, at 100% on the validation sample)."}
+  {:id :teq
+   :target "TEQ (Compustat)"
+   :compustat "TEQ = SEQ + MIBN"
+   :formula [:+ "SEQ (Compustat)" [:opt "MIBN (Compustat)"]]
+   :notes "Redeemable NCI (MIB) stays outside: LSE = LT + MIB + TEQ."}
+
+  ;; --- Cash and short-term investments --------------------------------------
+  {:id :che-sum
+   :target "CHE (Compustat)"
+   :compustat "CHE = CH + IVST"
+   :formula [:+ "Cash and Equivalents" [:opt "Short-Term Investments"]
+             [:opt "Marketable Securities (Current)"] [:opt "Trading Assets"]]
+   :guards [[:concept-not-in "Cash and Equivalents"
+             #{"CashCashEquivalentsAndShortTermInvestments"}]]
+   :notes "More robust than IVST alone when filers blur the 90-day
+cash-equivalent boundary (SFAS 95). Compustat IVST sweeps in current
+marketable securities and trading assets presented as separate lines
+(KO, INTC), so those are added when tagged."}
+  {:id :che-combined
+   :target "CHE (Compustat)"
+   :compustat "CHE"
+   :formula [:= "Cash and Equivalents"]
+   :notes "The winning concept already combines cash and short-term
+investments."}]}
