@@ -285,3 +285,26 @@
           (is (= 0 (:entries (core/disk-cache-stats))))))
       (finally
         (core/disable-disk-cache!)))))
+
+(deftest disk-cache-raw-json-key-separation-test
+  ;; the same URL fetched :raw? and as JSON must not share a disk entry —
+  ;; a raw HTML body handed to the JSON path would fail to parse
+  (core/clear-cache!)
+  (let [dir (temp-cache-dir)]
+    (try
+      (core/enable-disk-cache! :dir dir)
+      (core/set-identity! "Test test@example.com")
+      (with-redefs [hato.client/get (fn [_ _] {:status 200 :body "<html>doc</html>"})
+                    edgar.core/throttle! (fn [] nil)]
+        (is (= "<html>doc</html>"
+               (core/edgar-get "https://example.com/same-url" :raw? true))))
+      (core/clear-cache!)
+      (with-redefs [hato.client/get (fn [_ _] {:status 200 :body "{\"a\":1}"})
+                    edgar.core/throttle! (fn [] nil)]
+        (testing "JSON fetch of the same URL does not read the raw entry"
+          (is (= {:a 1} (core/edgar-get "https://example.com/same-url"))))
+        (testing "two separate disk entries exist"
+          (is (= 2 (:entries (core/disk-cache-stats))))))
+      (finally
+        (core/clear-disk-cache! :dir dir)
+        (core/disable-disk-cache!)))))

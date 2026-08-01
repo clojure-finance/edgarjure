@@ -193,7 +193,10 @@
   [query & {:keys [forms start-date end-date limit] :or {limit 10}}]
   (let [base-params (cond-> (str "?q=" (java.net.URLEncoder/encode query "UTF-8"))
                       forms (str "&forms=" (str/join "," forms))
-                      start-date (str "&dateRange=custom&startdt=" start-date)
+                      ;; EFTS ignores startdt/enddt without dateRange=custom,
+                      ;; so emit it when EITHER bound is given
+                      (or start-date end-date) (str "&dateRange=custom")
+                      start-date (str "&startdt=" start-date)
                       end-date (str "&enddt=" end-date))]
     (letfn [(fetch-page [from]
               (lazy-seq

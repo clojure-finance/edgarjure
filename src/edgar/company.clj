@@ -25,6 +25,16 @@
   (load-tickers!)
   @tickers-by-ticker-cache)
 
+(defn clear-ticker-cache!
+  "Clear the cached ticker maps so the next lookup refetches
+   company_tickers.json — long-running processes pick up new listings.
+   Also run automatically by edgar.core/clear-cache!."
+  []
+  (reset! tickers-cache nil)
+  (reset! tickers-by-ticker-cache nil))
+
+(core/register-cache-clearer! ::tickers clear-ticker-cache!)
+
 (defn ticker->cik
   "Resolve a ticker symbol to a CIK string (zero-padded to 10 digits).
    Returns nil if not found."

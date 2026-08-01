@@ -17,8 +17,8 @@
    Rule format:
      {:id      :cogs-ex-da           ; unique keyword
       :target  \"COGS (Compustat)\"  ; emitted line-item label
-      :formula [:- \"Cost of Revenue\" \"D&A\"]
-      :guards  [[:lt \"D&A\" \"Cost of Revenue\"]]
+      :formula [:- \"Cost of Revenue\" \"DP (Compustat)\"]
+      :guards  [[:lt \"DP (Compustat)\" \"Cost of Revenue\"]]
       :compustat \"COGS\"            ; documentation only
       :notes   \"...\"}              ; documentation only
 
@@ -34,10 +34,14 @@
 
    Guards (all must pass; operands referenced by label):
      [:lt a b]                    - value of a strictly less than value of b
-     [:gt a b]                    - value of a strictly greater than value of b
      [:concept-not-in a #{c ...}] - a's winning XBRL concept is not in the set
                                     (rows without a concept, e.g. derived rows,
                                     pass)
+     [:concept-in a #{c ...}]     - a exists and its winning XBRL concept is
+                                    in the set (fails for missing rows and for
+                                    derived rows, whose concept is nil — use
+                                    this when the guard must positively
+                                    identify a reported tag)
      [:present a]                 - a line item named a exists in the period
                                     (marker rows, e.g. FSDS placement signals)
      [:absent a]                  - no line item named a exists in the period
@@ -51,19 +55,23 @@
 ;;; Ruleset loading
 ;;; ---------------------------------------------------------------------------
 
-(defn- load-ruleset-file [resource-path]
-  (with-open [r (java.io.PushbackReader. (io/reader (io/resource resource-path)))]
-    (edn/read r)))
+(defn- load-ruleset-file [resource-path expected-statement]
+  (let [rs (with-open [r (java.io.PushbackReader. (io/reader (io/resource resource-path)))]
+             (edn/read r))]
+    (assert (= expected-statement (:statement rs))
+            (str resource-path " declares :statement " (:statement rs)
+                 " but is loaded as the " expected-statement " ruleset"))
+    rs))
 
 (def compustat-income-ruleset
   "Compustat reclassification ruleset for the income statement.
    Source: resources/edgar/reclass/compustat-income.edn"
-  (load-ruleset-file "edgar/reclass/compustat-income.edn"))
+  (load-ruleset-file "edgar/reclass/compustat-income.edn" :income))
 
 (def compustat-balance-ruleset
   "Compustat reclassification ruleset for the balance sheet.
    Source: resources/edgar/reclass/compustat-balance.edn"
-  (load-ruleset-file "edgar/reclass/compustat-balance.edn"))
+  (load-ruleset-file "edgar/reclass/compustat-balance.edn" :balance))
 
 (defn ruleset-for
   "Return the active reclassification ruleset for a statement, for inspection.
@@ -101,9 +109,12 @@
           {:vals [] :used []}
           operands))
 
-(defn- eval-formula
-  "Evaluate a rule formula against the period group. Returns
-   {:val v :used [labels]} or nil when the formula cannot be evaluated."
+(defn eval-formula
+  "Evaluate a formula against a {line-item row} map. Returns
+   {:val v :used [labels]} or nil when the formula cannot be evaluated.
+   The single formula evaluator — the standardized-view identity engine
+   (edgar.financials/apply-identities) evaluates through this too, so ops
+   and [:opt] semantics cannot drift between the two layers."
   [[op & operands] by-li]
   (if (= :neg-sum op)
     (let [present (filter #(let [v (:val (get by-li (operand-label %)))]
@@ -129,10 +140,10 @@
     (case op
       :lt (let [va (:val (get by-li a)) vb (:val (get by-li b))]
             (and (some? va) (some? vb) (< (double va) (double vb))))
-      :gt (let [va (:val (get by-li a)) vb (:val (get by-li b))]
-            (and (some? va) (some? vb) (> (double va) (double vb))))
       :concept-not-in (let [c (:concept (get by-li a))]
                         (or (nil? c) (not (contains? b c))))
+      :concept-in (let [row (get by-li a)]
+                    (and (some? row) (contains? b (:concept row))))
       :present (contains? by-li a)
       :absent (not (contains? by-li a))
       false)))
@@ -197,6 +208,10 @@
   (if (empty? (:rules ruleset))
     rows
     (let [marked-aux (map #(assoc % ::aux true) aux-rows)]
-      (->> (concat rows marked-aux)
+      ;; aux rows FIRST: the {line-item row} operand lookup is built with
+      ;; later-wins semantics, so a statement row shadows a same-labeled aux
+      ;; row (aux only fills gaps — e.g. REIT income statements carry a
+      ;; first-class "D&A" line that must win over the cash-flow aux "D&A")
+      (->> (concat marked-aux rows)
            (group-by (juxt :unit :start :end))
            (mapcat (fn [[_ grows]] (apply-rules-to-group grows (:rules ruleset))))))))

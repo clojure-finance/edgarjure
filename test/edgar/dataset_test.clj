@@ -127,3 +127,12 @@
         (is (contains? cols "Liabilities"))))
     (testing "nil-valued columns (frame, start) do not cause missing-key errors"
       (is (= 2 (ds/row-count result))))))
+
+(deftest multi-company-facts-empty-with-as-of-test
+  (testing "empty ticker list with :as-of returns an empty dataset instead of throwing"
+    (let [result (dataset/multi-company-facts [] :as-of "2024-01-01")]
+      (is (= 0 (ds/row-count result)))))
+  (testing "all-failing tickers with :as-of also return empty"
+    (with-redefs [edgar.company/company-cik (fn [_] (throw (ex-info "not found" {})))]
+      (let [result (dataset/multi-company-facts ["BAD"] :as-of "2024-01-01")]
+        (is (= 0 (ds/row-count result)))))))

@@ -301,3 +301,30 @@
                  :items []}
             result (f src)]
         (is (nil? (:periodOfReport result)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; search-filings date parameters
+;;; ---------------------------------------------------------------------------
+
+(deftest search-filings-date-params-test
+  (let [captured (atom nil)
+        fake-resp {:hits {:hits [] :total {:value 0}}}
+        run! (fn [& opts]
+               (reset! captured nil)
+               (with-redefs [core/edgar-get (fn [url & _]
+                                              (reset! captured url)
+                                              fake-resp)]
+                 (doall (apply filings/search-filings "apple" opts))))]
+    (testing ":end-date alone still emits dateRange=custom (EFTS ignores enddt without it)"
+      (run! :end-date "2024-01-31")
+      (is (clojure.string/includes? @captured "dateRange=custom"))
+      (is (clojure.string/includes? @captured "enddt=2024-01-31"))
+      (is (not (clojure.string/includes? @captured "startdt"))))
+    (testing "both dates emit dateRange=custom exactly once"
+      (run! :start-date "2023-01-01" :end-date "2024-01-31")
+      (is (= 1 (count (re-seq #"dateRange=custom" @captured))))
+      (is (clojure.string/includes? @captured "startdt=2023-01-01"))
+      (is (clojure.string/includes? @captured "enddt=2024-01-31")))
+    (testing "no dates: no dateRange parameter at all"
+      (run!)
+      (is (not (clojure.string/includes? @captured "dateRange"))))))

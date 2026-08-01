@@ -43,29 +43,37 @@
      {:status :error   :accession-number \"...\" :type ... :message \"...\"}"
   [ticker-or-cik dir & {:keys [form limit start-date end-date download-all? skip-existing?]
                         :or {download-all? false skip-existing? false}}]
-  (let [fs-list (filings/get-filings ticker-or-cik
-                                     :form form
-                                     :start-date start-date
-                                     :end-date end-date
-                                     :limit limit)]
-    (doall
-     (for [f fs-list]
-       (try
-         (if (and skip-existing?
-                  (when-let [p (output-path f dir)] (fs/exists? (fs/path p))))
-           {:status :skipped :accession-number (:accessionNumber f)}
-           (if download-all?
-             {:status :ok :paths (filing/filing-save-all! f dir)}
-             (let [path (filing/filing-save! f dir)]
-               (if path
-                 (ok path)
-                 {:status :skipped
-                  :accession-number (:accessionNumber f)
-                  :reason :no-primary-doc}))))
-         (catch Exception e
-           (let [data (ex-data e)
-                 type (or (:type data) :exception)]
-             (err (:accessionNumber f) type (.getMessage e)))))))))
+  (try
+    (let [fs-list (filings/get-filings ticker-or-cik
+                                       :form form
+                                       :start-date start-date
+                                       :end-date end-date
+                                       :limit limit)]
+      (doall
+       (for [f fs-list]
+         (try
+           (if (and skip-existing?
+                    (when-let [p (output-path f dir)] (fs/exists? (fs/path p))))
+             {:status :skipped :accession-number (:accessionNumber f)}
+             (if download-all?
+               {:status :ok :paths (filing/filing-save-all! f dir)}
+               (let [path (filing/filing-save! f dir)]
+                 (if path
+                   (ok path)
+                   {:status :skipped
+                    :accession-number (:accessionNumber f)
+                    :reason :no-primary-doc}))))
+           (catch Exception e
+             (let [data (ex-data e)
+                   type (or (:type data) :exception)]
+               (err (:accessionNumber f) type (.getMessage e))))))))
+    ;; the filings list itself failed (unknown ticker, submissions fetch):
+    ;; return one error envelope instead of letting the exception escape —
+    ;; in download-batch! it would otherwise abort every remaining ticker
+    (catch Exception e
+      (let [data (ex-data e)
+            type (or (:type data) :exception)]
+        [(err nil type (.getMessage e))]))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Batch downloader — multiple tickers (secedgar analog)

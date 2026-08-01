@@ -117,3 +117,19 @@
                    (download/download-filings! "AAPL" "/data" :form "10-K"))
           r (first result)]
       (is (not= :ok (:status r))))))
+
+(deftest download-batch-unknown-ticker-isolation-test
+  (testing "an unresolvable ticker yields one error envelope and the batch continues"
+    (with-redefs [filings/get-filings
+                  (fn [t & _]
+                    (if (= t "BAD")
+                      (throw (ex-info "Unknown ticker" {:type :edgar.company/unknown-ticker}))
+                      [mock-filing]))
+                  filing/filing-save! (fn [_ _] "/data/10-K/file.htm")]
+      (let [result (download/download-batch! ["BAD" "GOOD"] "/data" :form "10-K")]
+        (is (= #{"BAD" "GOOD"} (set (keys result))) "every ticker gets a result")
+        (let [bad (first (get result "BAD"))]
+          (is (= :error (:status bad)))
+          (is (= :edgar.company/unknown-ticker (:type bad))))
+        (is (= :ok (:status (first (get result "GOOD"))))
+            "the healthy ticker is unaffected")))))

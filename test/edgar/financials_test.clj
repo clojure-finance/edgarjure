@@ -686,6 +686,27 @@
             te (first (filter #(= "Total Equity" (:line-item %)) result))]
         (is (= 90 (:val te)))
         (is (= ["Stockholders Equity"] (:derived-from te)))))
+    (testing "parent equity re-derived from an including-NCI-only filer"
+      (let [rows [{:unit "USD" :start nil :end "2023-12-31" :method :direct
+                   :line-item "Total Equity" :val 830
+                   :concept "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"}
+                  {:unit "USD" :start nil :end "2023-12-31" :method :direct
+                   :line-item "Noncontrolling Interest" :val 30}]
+            result (vec (f rows fin/balance-sheet-identities))
+            se (first (filter #(= "Stockholders Equity" (:line-item %)) result))]
+        (is (= 800 (:val se)) "Total Equity - NCI, not the incl-NCI value")
+        (is (= ["Total Equity" "Noncontrolling Interest"] (:derived-from se)))))
+    (testing "Total Liabilities prefers the NCI-clean subtrahend (L&E - Total Equity)"
+      (let [rows [{:unit "USD" :start nil :end "2023-12-31" :method :direct
+                   :line-item "Total Liabilities and Equity" :val 1000}
+                  {:unit "USD" :start nil :end "2023-12-31" :method :direct
+                   :line-item "Stockholders Equity" :val 90}
+                  {:unit "USD" :start nil :end "2023-12-31" :method :direct
+                   :line-item "Noncontrolling Interest" :val 10}]
+            result (vec (f rows fin/balance-sheet-identities))
+            tl (first (filter #(= "Total Liabilities" (:line-item %)) result))]
+        (is (= 900 (:val tl)) "NCI must not be folded into liabilities")
+        (is (= ["Total Liabilities and Equity" "Total Equity"] (:derived-from tl)))))
     (testing "Working Capital = Current Assets - Current Liabilities (derived-only)"
       (let [rows [{:unit "USD" :start nil :end "2023-12-31" :method :direct
                    :line-item "Current Assets" :val 70}
@@ -698,6 +719,34 @@
 ;;; ---------------------------------------------------------------------------
 ;;; Industry routing
 ;;; ---------------------------------------------------------------------------
+
+(deftest compustat-view-industry-gated-test
+  ;; the income reclassification rules were fitted on :standard chains — on
+  ;; bank/insurance/REIT chains :view :compustat must equal :standardized
+  ;; instead of emitting a Compustat-branded view whose rules cannot fire
+  (let [facts (ds/->dataset
+               [{:taxonomy "us-gaap" :concept "InterestAndDividendIncomeOperating"
+                 :unit "USD" :start "2023-01-01" :end "2023-12-31" :val 50.0
+                 :accn "0001-24-000001" :fy 2023 :fp "FY" :form "10-K"
+                 :filed "2024-02-01" :frame nil :label "" :description ""}
+                {:taxonomy "us-gaap" :concept "Revenues"
+                 :unit "USD" :start "2023-01-01" :end "2023-12-31" :val 100.0
+                 :accn "0001-24-000001" :fy 2023 :fp "FY" :form "10-K"
+                 :filed "2024-02-01" :frame nil :label "" :description ""}
+                {:taxonomy "us-gaap" :concept "DepreciationDepletionAndAmortization"
+                 :unit "USD" :start "2023-01-01" :end "2023-12-31" :val 10.0
+                 :accn "0001-24-000001" :fy 2023 :fp "FY" :form "10-K"
+                 :filed "2024-02-01" :frame nil :label "" :description ""}])
+        run (fn [industry]
+              (with-redefs [edgar.company/company-cik (fn [t] t)
+                            edgar.xbrl/get-facts-dataset (fn [_ & _] facts)]
+                (vec (ds/column (fin/income-statement "X" :view :compustat
+                                                      :industry industry)
+                                :method))))]
+    (testing "bank chains: no reclassified rows"
+      (is (not-any? #{:reclassified} (run :bank))))
+    (testing "standard chains: the ruleset applies"
+      (is (some #{:reclassified} (run :standard))))))
 
 (deftest industry-for-sic-test
   (testing "banks: SIC 6000-6199 and 6712"

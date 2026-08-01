@@ -6,7 +6,8 @@
 
    All public validate! calls throw ex-info with :type ::invalid-args on failure.
    The error message includes the human-readable Malli explanation."
-  (:require [malli.core :as m]
+  (:require [clojure.string :as str]
+            [malli.core :as m]
             [malli.error :as me]))
 
 ;;; ---------------------------------------------------------------------------
@@ -15,11 +16,11 @@
 
 (def NonBlankString
   [:and :string [:fn {:error/message "must be a non-blank string"}
-                 #(not (clojure.string/blank? %))]])
+                 #(not (str/blank? %))]])
 
 (def TickerOrCIK
   [:and :string [:fn {:error/message "must be a non-blank ticker or CIK string"}
-                 #(not (clojure.string/blank? %))]])
+                 #(not (str/blank? %))]])
 
 (def ISODate
   [:and :string [:re {:error/message "must be an ISO date string YYYY-MM-DD"}
@@ -27,7 +28,7 @@
 
 (def FormType
   [:and :string [:fn {:error/message "must be a non-blank form type string e.g. \"10-K\""}
-                 #(not (clojure.string/blank? %))]])
+                 #(not (str/blank? %))]])
 
 (def ShapeKw
   [:enum {:error/message "must be :long or :wide"} :long :wide])
@@ -46,7 +47,7 @@
 
 (def TaxonomyStr
   [:and :string [:fn {:error/message "must be a non-blank taxonomy string e.g. \"us-gaap\""}
-                 #(not (clojure.string/blank? %))]])
+                 #(not (str/blank? %))]])
 
 (def FrameStr
   [:and :string [:re {:error/message "must be a frame string e.g. \"CY2023Q4I\" or \"CY2023\""}
@@ -94,6 +95,10 @@
   [:enum {:error/message "must be :standard, :bank, :insurance or :reit"}
    :standard :bank :insurance :reit])
 
+(def ConceptChains
+  [:sequential {:error/message "must be a sequence of [label concept ...] chains"}
+   [:sequential :string]])
+
 (def StatementArgs
   [:map
    [:ticker-or-cik TickerOrCIK]
@@ -101,7 +106,8 @@
    [:shape ShapeKw]
    [:as-of {:optional true} [:maybe ISODate]]
    [:view {:optional true} [:maybe ViewKw]]
-   [:industry {:optional true} [:maybe IndustryKw]]])
+   [:industry {:optional true} [:maybe IndustryKw]]
+   [:concepts {:optional true} [:maybe ConceptChains]]])
 
 (def FrameArgs
   [:map

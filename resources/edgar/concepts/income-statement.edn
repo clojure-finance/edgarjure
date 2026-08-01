@@ -32,8 +32,6 @@
   {:label "Marketing Expense"
    :concepts ["MarketingExpense"
               "MarketingAndAdvertisingExpense"]}
-  {:label "Fulfillment Expense"
-   :concepts ["FulfillmentExpense"]}
   {:label "Other Operating Expense"
    :concepts ["OtherCostAndExpenseOperating"
               "OtherOperatingIncomeExpenseNet"]}

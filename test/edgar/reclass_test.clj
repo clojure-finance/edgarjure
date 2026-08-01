@@ -49,14 +49,18 @@
       (is (not (f [:lt "COGS" "D&A"] g))))
     (testing ":lt fails when an operand is missing"
       (is (not (f [:lt "D&A" "Missing"] g))))
-    (testing ":gt passes when strictly greater"
-      (is (f [:gt "COGS" "D&A"] g)))
     (testing ":concept-not-in fails when the concept is in the set"
       (is (not (f [:concept-not-in "COGS" #{"CostOfRevenue"}] g))))
     (testing ":concept-not-in passes when the concept is not in the set"
       (is (f [:concept-not-in "COGS" #{"SomethingElse"}] g)))
     (testing ":concept-not-in passes for rows without a concept (derived rows)"
       (is (f [:concept-not-in "Derived" #{"CostOfRevenue"}] g)))
+    (testing ":concept-in requires an existing row with a concept in the set"
+      (is (f [:concept-in "COGS" #{"CostOfRevenue"}] g))
+      (is (not (f [:concept-in "COGS" #{"SomethingElse"}] g))))
+    (testing ":concept-in fails for missing rows and derived (nil-concept) rows"
+      (is (not (f [:concept-in "Missing" #{"CostOfRevenue"}] g)))
+      (is (not (f [:concept-in "Derived" #{"CostOfRevenue"}] g))))
     (testing ":present / :absent check line-item existence"
       (is (f [:present "COGS"] g))
       (is (not (f [:present "Missing"] g)))
@@ -95,6 +99,42 @@
       (is (some #(= "Cost of Revenue" (:line-item %)) result)))
     (testing "aux rows are not emitted"
       (is (not-any? #(= "D&A" (:line-item %)) result)))))
+
+(deftest special-items-combined-restructuring-test
+  ;; a filer tagging BOTH a combined restructuring+impairment concept and a
+  ;; separate impairment concept must not have the impairment counted twice
+  (let [rows [(row "Operating Income" 500.0 {:concept "OperatingIncomeLoss"})
+              (row "Restructuring Charges" 80.0
+                   {:concept "RestructuringCostsAndAssetImpairmentCharges"})
+              (row "Impairment Charges" 30.0 {:concept "AssetImpairmentCharges"})]
+        result (vec (reclass/apply-ruleset rows [] reclass/compustat-income-ruleset))
+        spi (first (filter #(= "Special Items (Compustat)" (:line-item %)) result))]
+    (is (= -80.0 (:val spi)) "impairment already inside the combined tag")
+    (is (= :special-items-combined-restructuring (:rule spi))))
+  ;; separate tags: both count
+  (let [rows [(row "Operating Income" 500.0 {:concept "OperatingIncomeLoss"})
+              (row "Restructuring Charges" 80.0 {:concept "RestructuringCharges"})
+              (row "Impairment Charges" 30.0 {:concept "AssetImpairmentCharges"})]
+        spi (->> (reclass/apply-ruleset rows [] reclass/compustat-income-ruleset)
+                 (filter #(= "Special Items (Compustat)" (:line-item %))) first)]
+    (is (= -110.0 (:val spi)))
+    (is (= :special-items (:rule spi)))))
+
+(deftest apply-ruleset-statement-row-shadows-aux-test
+  ;; REIT income statements carry a first-class "D&A" line; the cash-flow aux
+  ;; row with the same label must NOT shadow it as a rule operand
+  (let [rules {:rules [{:id :dp
+                        :target "DP (Compustat)"
+                        :formula [:= "D&A"]}]}
+        rows [(row "D&A" 100.0 {:concept "DepreciationAndAmortization"})]
+        aux [(row "D&A" 120.0)]
+        result (vec (reclass/apply-ruleset rows aux rules))
+        dp (first (filter #(= "DP (Compustat)" (:line-item %)) result))
+        da-rows (filter #(= "D&A" (:line-item %)) result)]
+    (testing "the statement row wins the operand lookup"
+      (is (= 100.0 (:val dp))))
+    (testing "the statement row survives in the output, the aux row does not"
+      (is (= [100.0] (mapv :val da-rows))))))
 
 (deftest apply-ruleset-guard-blocks-test
   (let [rules {:rules [{:id :cogs-ex-da
@@ -275,14 +315,63 @@
                     (filter #(= "DLTT (Compustat)" (:line-item %))) first)]
       (is (= 450.0 (:val dltt)))
       (is (= :dltt-from-combined (:rule dltt)))))
-  (testing "SEQ falls back to subtracting NCI from an including-NCI equity tag"
-    (let [rows [(irow "Stockholders Equity" 830.0
-                      {:concept "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"})
-                (irow "Noncontrolling Interest" 30.0 {:concept "MinorityInterest"})]
-          seqr (->> (reclass/apply-ruleset rows [] reclass/compustat-balance-ruleset)
-                    (filter #(= "SEQ (Compustat)" (:line-item %))) first)]
-      (is (= 800.0 (:val seqr)))
-      (is (= :seq-from-total (:rule seqr)))))
+  (testing "SEQ for a filer tagging only the including-NCI equity concept"
+    ;; the chains label that concept "Total Equity"; the standardized-view
+    ;; identities re-derive parent equity before the rules run
+    (let [f #'edgar.financials/apply-identities
+          rows (f [(irow "Total Equity" 830.0
+                         {:concept "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"})
+                   (irow "Noncontrolling Interest" 30.0 {:concept "MinorityInterest"})]
+                  fin/balance-sheet-identities)
+          result (vec (reclass/apply-ruleset rows [] reclass/compustat-balance-ruleset))
+          v (fn [li] (first (filter #(= li (:line-item %)) result)))]
+      (is (= 800.0 (:val (v "Stockholders Equity"))) "parent equity re-derived")
+      (is (= :derived (:method (v "Stockholders Equity"))))
+      (is (= 800.0 (:val (v "SEQ (Compustat)"))) "SEQ excludes NCI")
+      (is (= :seq (:rule (v "SEQ (Compustat)"))))
+      (is (= 830.0 (:val (v "TEQ (Compustat)"))) "TEQ = SEQ + MIBN, NCI counted once")))
+  (testing "post-ASC-842 operating leases fold into DLC and DLTT"
+    ;; empirically confirmed twice (2026-07-31 and the 2026-08-01 A/B):
+    ;; current Compustat vintages include operating-lease liabilities in debt
+    (let [rows [(irow "Current Debt" 100.0 {:concept "DebtCurrent"})
+                (irow "Operating Lease Liability (Current)" 20.0
+                      {:concept "OperatingLeaseLiabilityCurrent"})
+                (irow "Long-Term Debt" 400.0 {:concept "LongTermDebtNoncurrent"})
+                (irow "Operating Lease Liability (Non-Current)" 90.0
+                      {:concept "OperatingLeaseLiabilityNoncurrent"})]
+          result (vec (reclass/apply-ruleset rows [] reclass/compustat-balance-ruleset))
+          v (fn [li] (first (filter #(= li (:line-item %)) result)))]
+      (is (= 120.0 (:val (v "DLC (Compustat)"))))
+      (is (= 490.0 (:val (v "DLTT (Compustat)"))))))
+  (testing "OtherLongTermDebt is not added to DLTT (component of LongTermDebtNoncurrent)"
+    (let [rows [(irow "Long-Term Debt" 400.0 {:concept "LongTermDebtNoncurrent"})
+                (irow "Other Long-Term Debt" 60.0 {:concept "OtherLongTermDebt"})]
+          dltt (->> (reclass/apply-ruleset rows [] reclass/compustat-balance-ruleset)
+                    (filter #(= "DLTT (Compustat)" (:line-item %))) first)]
+      (is (= 400.0 (:val dltt)) "adding it double-counts — confirmed by A/B validation")))
+  (testing "DLC does not double-count leases already inside a combined CPLTD tag"
+    ;; Current Debt is derived (CPLTD + STB) and the CPLTD concept already
+    ;; includes capital leases — the separate lease tag must not be added again
+    (let [f #'edgar.financials/apply-identities
+          rows (f [(irow "Current Portion of Long-Term Debt" 50.0
+                         {:concept "LongTermDebtAndCapitalLeaseObligationsCurrent"})
+                   (irow "Short-Term Borrowings" 20.0
+                         {:concept "ShortTermBorrowings"})
+                   (irow "Capital Lease Obligation (Current)" 15.0
+                         {:concept "CapitalLeaseObligationsCurrent"})]
+                  fin/balance-sheet-identities)
+          dlc (->> (reclass/apply-ruleset rows [] reclass/compustat-balance-ruleset)
+                   (filter #(= "DLC (Compustat)" (:line-item %))) first)]
+      (is (= 70.0 (:val dlc)) "CPLTD + STB only, leases not re-added")
+      (is (= :dlc-cpltd-lease-included (:rule dlc)))))
+  (testing "DLC still adds lease tags onto a direct DebtCurrent row"
+    (let [rows [(irow "Current Debt" 100.0 {:concept "DebtCurrent"})
+                (irow "Capital Lease Obligation (Current)" 15.0
+                      {:concept "CapitalLeaseObligationsCurrent"})]
+          dlc (->> (reclass/apply-ruleset rows [] reclass/compustat-balance-ruleset)
+                   (filter #(= "DLC (Compustat)" (:line-item %))) first)]
+      (is (= 115.0 (:val dlc)))
+      (is (= :dlc (:rule dlc)))))
   (testing "CHE copies a combined cash-and-investments concept unchanged"
     (let [rows [(irow "Cash and Equivalents" 190.0
                       {:concept "CashCashEquivalentsAndShortTermInvestments"})
@@ -480,8 +569,12 @@
 (deftest new-reclass-line-items-in-chains-test
   (let [labels (set (map :label (:line-items fin/income-statement-concept-map)))]
     (testing "component and special-item chains exist for the reclass rules"
+      ;; "Fulfillment Expense" is deliberately NOT a chain entry: companyfacts
+      ;; never returns extension tags, so the label only arrives via FSDS aux
       (doseq [li ["Selling and Marketing Expense" "General and Administrative Expense"
-                  "Marketing Expense" "Fulfillment Expense" "Other Operating Expense"
+                  "Marketing Expense" "Other Operating Expense"
                   "Excise Taxes" "Restructuring Charges" "Impairment Charges"
                   "Goodwill Impairment" "Acquisition-Related Costs" "Litigation Settlement"]]
-        (is (contains? labels li) li)))))
+        (is (contains? labels li) li))
+      (is (not (contains? labels "Fulfillment Expense"))
+          "extension-tag labels are FSDS-only, not chain entries"))))

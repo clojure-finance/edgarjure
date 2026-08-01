@@ -73,8 +73,10 @@
    own income statement line? then COGS is not stripped) and extension-tag
    operands (e.g. AMZN's Fulfillment / Technology & content lines, folded
    into XSGA/XRD).
-   Quarter zips (tens of MB each) download on first use into :dir (default
-   ~/.edgarjure/fsds) and are shared across all companies.
+   Quarter zips (50-130 MB each) download on first use into :dir (default
+   ~/.edgarjure/fsds) and are shared across all companies. Note that 10-Q
+   :view :compustat queries also build the company's 10-K rows internally
+   (for Q4/LTM derivation), so they too can trigger quarter downloads.
    Options: :dir.
    Example: (e/enable-fsds!)"
   [& {:as opts}]
@@ -321,6 +323,8 @@
      (e/tables f :nth 0)
      (e/tables f :nth 2)"
   [filing-map & {:keys [nth min-rows min-cols] :or {min-rows 2 min-cols 2}}]
+  (schema/validate! schema/TablesArgs {:filing-map filing-map :nth nth
+                                       :min-rows min-rows :min-cols min-cols})
   (tables-ns/extract-tables filing-map :nth nth :min-rows min-rows :min-cols min-cols))
 
 (defn save!
@@ -487,18 +491,24 @@
                  carry :method :reclassified) - see (e/reclass-rules :income)
      :industry - :standard | :bank | :insurance | :reit. Auto-detected from the
                  company's SIC code when omitted (banks/insurers get
-                 industry-specific concept chains)
+                 industry-specific concept chains). The :compustat rules only
+                 apply on :standard chains; for other industries
+                 :view :compustat equals :standardized
+     :concepts - override the fallback chains with your own
+                 [[label concept ...] ...] vectors (disables industry routing)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, only filings where :filed <= as-of-date are used
                  (point-in-time / look-ahead-safe mode).
    For 10-Q queries, long format includes :duration-months, :val-q
    (single quarter) and :val-ltm (trailing twelve months) columns."
-  [ticker-or-cik & {:keys [form shape as-of view industry]
+  [ticker-or-cik & {:keys [form shape as-of view industry concepts]
                     :or {form "10-K" shape :long}}]
   (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape
-                                          :as-of as-of :view view :industry industry})
+                                          :as-of as-of :view view :industry industry
+                                          :concepts concepts})
   (financials/income-statement ticker-or-cik :form form :shape shape :as-of as-of
-                               :view (or view :normalized) :industry industry))
+                               :view (or view :normalized) :industry industry
+                               :concepts concepts))
 
 (defn balance
   "Return balance sheet as a long-format tech.ml.dataset.
@@ -510,18 +520,22 @@
               (:standardized imputes e.g. Total Liabilities, Total Equity
               = SE + NCI, and a derived-only \"Working Capital\" item;
               :compustat adds reclassified items approximating Compustat
-              constructions: \"RE (Compustat)\" incl. AOCI, \"DLC\"/\"DLTT\"
-              incl. lease obligations, \"MIB\"/\"MIBN\", \"PSTK\",
-              \"SEQ\"/\"CEQ\"/\"TEQ\", \"RECT\", \"CHE\")
+              constructions: \"RE (Compustat)\" incl. AOCI,
+              \"DLC (Compustat)\"/\"DLTT (Compustat)\" incl. lease
+              obligations, \"MIB (Compustat)\"/\"MIBN (Compustat)\",
+              \"PSTK (Compustat)\", \"SEQ (Compustat)\"/\"CEQ (Compustat)\"
+              /\"TEQ (Compustat)\", \"RECT (Compustat)\", \"CHE (Compustat)\")
+     :concepts - override balance-sheet-concepts with your own
+               [[label concept ...] ...] vectors
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode)."
-  [ticker-or-cik & {:keys [form shape as-of view]
+  [ticker-or-cik & {:keys [form shape as-of view concepts]
                     :or {form "10-K" shape :long}}]
   (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape
-                                          :as-of as-of :view view})
+                                          :as-of as-of :view view :concepts concepts})
   (financials/balance-sheet ticker-or-cik :form form :shape shape :as-of as-of
-                            :view (or view :normalized)))
+                            :view (or view :normalized) :concepts concepts))
 
 (defn cashflow
   "Return cash flow statement as a long-format tech.ml.dataset.
@@ -533,17 +547,19 @@
               (:standardized adds a derived \"Free Cash Flow\" line item and
               imputes \"D&A\" from separately tagged components; :compustat
               currently equals :standardized for the cash flow statement)
+     :concepts - override cash-flow-concepts with your own
+               [[label concept ...] ...] vectors
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode).
    For 10-Q queries, long format includes :duration-months, :val-q and
    :val-ltm columns."
-  [ticker-or-cik & {:keys [form shape as-of view]
+  [ticker-or-cik & {:keys [form shape as-of view concepts]
                     :or {form "10-K" shape :long}}]
   (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape
-                                          :as-of as-of :view view})
+                                          :as-of as-of :view view :concepts concepts})
   (financials/cash-flow ticker-or-cik :form form :shape shape :as-of as-of
-                        :view (or view :normalized)))
+                        :view (or view :normalized) :concepts concepts))
 
 (defn financials
   "Return all three financial statements for a company.

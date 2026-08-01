@@ -35,9 +35,11 @@
   [html]
   (let [tree (hickory/as-hickory (hickory/parse html))
         node-str (fn [n] (str/trim (apply str (filter string? (tree-seq map? :content n)))))
+        ;; capture the full form type — multi-word forms exist (SCHEDULE 13D,
+        ;; SC 13D, S-1 MEF, N-CSRS); a \" - description\" suffix is dropped
         form-type (some->> (sel/select (sel/tag :strong) tree)
                            (map #(str/trim (cell-text %)))
-                           (some #(second (re-matches #"Form\s+(\S+).*" %))))
+                           (some #(second (re-matches #"Form\s+(.+?)(?:\s+-\s.*)?" %))))
         filing-date (some->> (map vector
                                   (map node-str (sel/select (sel/class "infoHead") tree))
                                   (map node-str (sel/select (sel/class "info") tree)))
@@ -195,8 +197,9 @@
 
 (defn filing-exhibits
   "Return all exhibit entries from a filing's index as a seq of maps.
-   Each map has :name :type :document :description :sequence.
-   Exhibits have :type values beginning with \"EX-\" (e.g. \"EX-21\", \"EX-31.1\")."
+   Each map has :name :type :description :sequence :size.
+   Exhibits have :type values beginning with \"EX-\" (e.g. \"EX-21\", \"EX-31.1\").
+   Fetch an exhibit's content with (filing-document filing (:name exhibit))."
   [filing]
   (let [idx (filing-index filing)]
     (->> (:files idx)

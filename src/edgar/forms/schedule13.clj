@@ -152,9 +152,9 @@
 ;;; Register filing-obj methods
 ;;; ---------------------------------------------------------------------------
 
-;; \"SCHEDULE\" covers filing maps from sources that truncate the form type
-;; at the first space (e.g. filing-by-accession); the XML submissionType
-;; disambiguates 13D vs 13G.
+;; \"SCHEDULE\" is kept for filing maps produced before the index parser
+;; captured multi-word form types (or from other sources that truncate at
+;; the first space); the XML submissionType disambiguates 13D vs 13G.
 (doseq [form-type ["SCHEDULE 13D" "SCHEDULE 13D/A"
                    "SCHEDULE 13G" "SCHEDULE 13G/A"
                    "SCHEDULE"]]

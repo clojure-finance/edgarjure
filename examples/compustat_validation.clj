@@ -1,7 +1,7 @@
 (ns compustat-validation
   "Validation study: edgarjure standardized statements vs Compustat (roadmap 4.1f).
 
-   Reproduces the July 2026 study that graded edgarjure against WRDS Compustat
+   Reproduces the July 2026 study that graded edgarjure against licensed Compustat
    extracts for 19 large filers (13 industrials/tech, 3 banks, 3 insurers).
 
    Headline results:
@@ -21,10 +21,24 @@
        shipped 2026-07) closes much of it: COGS 57%, XSGA 45%, OIADP 38%,
        Gross Profit vs REVT-COGS 58% — see annual-compustat-items and
        validate-reclass below.
-     Out-of-sample check (2026-07-28, FY2016+ vs a current-vintage WRDS
+       CAVEAT (2026-08-01): the 18-industrial fitting-sample list behind
+       those in-sample rates was never preserved, so they are a historical
+       record that cannot be re-derived (public docs have cited GP as both
+       58% and 59% — unadjudicable). The reproducible go-forward baseline,
+       measured 2026-08-01 on the NAMED 13-industrial subsample (AAPL MSFT
+       IBM INTC KO PEP PG WMT CAT CVX HON UPS CSCO), FY2010-2015, 2016
+       vintage, :as-of 2016-08-30, current rules, no FSDS: COGS 41%,
+       XSGA 57%, XOPR 47%, OIADP 26%, OIBDP 18%, DP 77%, GP 42%. The gap
+       to the historical figures is sample composition plus rule evolution
+       (:dp-components, GLP/RDIP) — not a regression: the 2026-08 audit
+       fixes measure byte-identical to pre-audit rules on income.
+     Out-of-sample check (2026-07-28, FY2016+ vs a current-vintage licensed
        FUNDA extract, ~190 firm-years the rules were never fitted on):
        COGS 54% (as-reported 1%), XSGA 43% (16%), OIADP 34% (19%), OIBDP
-       33%, DP 76%. Same firm-level structure as in-sample: near-perfect on
+       33%, DP 76%. These figures INCLUDE the :dp-components rule that this
+       pass produced; the 0.3.0 CHANGELOG's out-of-sample line records the
+       pre-rule run (COGS 43%, DP 66%) and the 0.4.0 CHANGELOG the delta.
+       Same firm-level structure as in-sample: near-perfect on
        clean filers (MSFT, PEP, WMT, KO 90-100%), misses concentrated in
        the documented problem cases (CVX, GE, HON, IBM). The out-of-sample
        pass produced the :dp-components rule (Depreciation + intangible
@@ -37,9 +51,11 @@
        95.2%, Shares Basic/Diluted 89/88%, Cash 87.8%, EPS 79.5%, PP&E 77.6%.
        Known-definitional laggards (2026-07-31: now addressed by the
        :view :compustat balance-sheet rules — RE 96%, DLTT 76%, DLC 63%,
-       RECT 61%, MIB 81% on the extended 21-firm FY2009-2025 check; the
-       rates below are the ORIGINAL standardized-view study, kept as the
-       baseline record):
+       RECT 61%, MIB 81% on the extended 21-firm FY2009-2025 check;
+       2026-08-01 equity re-derivation lifted SEQ/CEQ/TEQ to 97% and
+       standardized Total Liabilities from 79% to 96% on the same sample;
+       the rates below are the ORIGINAL standardized-view study, kept as
+       the baseline record):
        - Retained Earnings 16%: Compustat RE carries treasury-stock and other
          adjustments vs the raw RetainedEarningsAccumulatedDeficit tag
        - Accounts Receivable 30%: Compustat RECT is total receivables; the
@@ -85,7 +101,7 @@
      - Fiscal Q4 never exists in 10-Q data - exclude Q4 benchmark rows
        (or validate annual figures against the 10-K instead)
 
-   Usage sketch (WRDS exports; column names are standard FUNDA/FUNDQ):
+   Usage sketch (column names are standard FUNDA/FUNDQ):
      (def annual (load-funda-tsv \"/path/to/funda-extract.tsv\"))
      (validate-annual \"AAPL\" annual :as-of \"2016-08-30\")"
   (:require [edgar.api :as e]
@@ -167,7 +183,7 @@
     :else "Revenue"))
 
 (defn load-funda-tsv
-  "Load a WRDS FUNDA tab-delimited extract. Expects at least
+  "Load a FUNDA tab-delimited extract. Expects at least
    tic, datadate (YYYYMMDD), plus the item columns above, pre-screened to
    indfmt=INDL, consol=C, datafmt=STD, popsrc=D, curcd=USD."
   [path]
@@ -177,15 +193,18 @@
                              (str (subs d 0 4) "-" (subs d 4 6) "-" (subs d 6 8)))))))
 
 (defn make-benchmark
-  "Build compare-to-benchmark rows from Compustat rows for one ticker."
+  "Build compare-to-benchmark rows from Compustat rows for one ticker.
+   Items are [line-item funda-key] pairs (values scaled by 1e6) or
+   [line-item funda-key scale] triples (annual-extended-items carries
+   per-item scales: EPS is per-share, weighted shares are in millions)."
   [ticker compustat-rows items]
   (vec (for [r compustat-rows
              :when (= ticker (:tic r))
-             [li k] items
+             [li k scale] items
              :let [v (get r k)
                    li (if (= li "Revenue") (revenue-line-item ticker) li)]
              :when (and (number? v) (not (zero? (double v))))]
-         {:line-item li :end (:end r) :val (* (double v) 1e6)})))
+         {:line-item li :end (:end r) :val (* (double v) (or scale 1e6))})))
 
 (defn validate-annual
   "Validate one firm's annual core items against a FUNDA extract.
@@ -219,6 +238,28 @@
                                        :statement :income :view :compustat :as-of as-of
                                        :date-tolerance-days date-tolerance-days))))
 
+(def annual-balance-compustat-items
+  "Reclassified balance-sheet items (:view :compustat) -> FUNDA keys.
+   Rates on the 13 industrials, FY2009-2025 current vintage (2026-08-01):
+   SEQ/CEQ/TEQ 97%, RE 96%, MIBN 96%, DLTT 86%, MIB 83%, RECT 69%, CHE 68%,
+   DLC 58%, PSTK 34% (73% excluding missing-value years)."
+  [["RE (Compustat)" :re] ["DLC (Compustat)" :dlc] ["DLTT (Compustat)" :dltt]
+   ["RECT (Compustat)" :rect] ["CHE (Compustat)" :che] ["MIB (Compustat)" :mib]
+   ["MIBN (Compustat)" :mibn] ["PSTK (Compustat)" :pstk] ["SEQ (Compustat)" :seq]
+   ["CEQ (Compustat)" :ceq] ["TEQ (Compustat)" :teq]])
+
+(defn validate-balance-reclass
+  "Validate one firm's reclassified balance-sheet items (:view :compustat)
+   against a FUNDA extract (needs the component columns: re, dlc, dltt, rect,
+   che, mib, mibn, pstk, seq, ceq, teq). Same conventions as validate-annual."
+  [ticker compustat-rows & {:keys [as-of date-tolerance-days]
+                            :or {date-tolerance-days 10}}]
+  (let [bench (make-benchmark ticker compustat-rows annual-balance-compustat-items)]
+    (when (seq bench)
+      (validation/compare-to-benchmark ticker bench
+                                       :statement :balance :view :compustat :as-of as-of
+                                       :date-tolerance-days date-tolerance-days))))
+
 (defn validate-quarterly
   "Validate single-quarter values (:val-q) against FUNDQ SALEQ/NIQ rows.
    quarterly-rows need :tic, :end (ISO), :saleq, :niq (millions).
@@ -240,6 +281,20 @@
   (def annual (load-funda-tsv "/path/to/funda-extract.tsv"))
   (validate-annual "AAPL" annual :as-of "2016-08-30")
   ;; => {:income {:match-rate 1.0 ...} :balance {...} :cashflow {...}}
+
+  ;; Second/third-pass items reuse make-benchmark with the item maps above
+  ;; (route income items to :income, balance to :balance, cash flow to
+  ;; :cash-flow via compare-to-benchmark's :statement option):
+  (validation/compare-to-benchmark
+   "AAPL" (make-benchmark "AAPL" annual annual-extended-items)
+   :statement :balance :view :standardized :as-of "2016-08-30"
+   :date-tolerance-days 10)
+  (make-benchmark "AAPL" annual annual-balance-cashflow-items)
+  (make-benchmark "AAPL" annual annual-reclass-items)
+
+  ;; Reclassified views (:view :compustat), income and balance:
+  (validate-reclass "AAPL" annual :as-of "2016-08-30")
+  (validate-balance-reclass "AAPL" annual)
 
   ;; Grow chain coverage from what the sample missed:
   (e/unmapped-concepts :top 20))

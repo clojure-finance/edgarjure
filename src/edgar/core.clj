@@ -99,12 +99,24 @@
                                       (.isAfter now ^java.time.Instant (:expires-at v)))
                                     m))))))
 
+(def ^:private cache-max-entries
+  "Upper bound on JSON cache entries. Parsed facts responses can be tens of
+   MB each, so the cache is bounded by count in addition to the periodic
+   expired-entry sweep; the entries closest to expiry are dropped first."
+  256)
+
 (defn- cache-put! [url value]
   (when (zero? (swap! put-count #(mod (inc %) eviction-interval)))
     (cache-evict!))
   (let [ttl (cache-ttl-for url)
         expires-at (.plusMillis (java.time.Instant/now) ttl)]
-    (swap! cache assoc url {:value value :expires-at expires-at})))
+    (swap! cache
+           (fn [m]
+             (let [m (assoc m url {:value value :expires-at expires-at})
+                   overflow (- (count m) cache-max-entries)]
+               (if (pos? overflow)
+                 (into {} (drop overflow) (sort-by #(:expires-at (val %)) m))
+                 m))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Bounded raw-response cache
@@ -147,14 +159,26 @@
                                    :expires-at (.plusMillis now raw-cache-ttl)
                                    :inserted-at now}))))))
 
+(defonce ^:private extra-cache-clearers (atom {}))
+
+(defn register-cache-clearer!
+  "Register (or replace) a named 0-arg fn that clear-cache! also runs.
+   Lets higher-level namespaces hook their own caches into clear-cache!
+   (e.g. edgar.company's ticker maps) without a circular dependency."
+  [k f]
+  (swap! extra-cache-clearers assoc k f))
+
 (defn clear-cache!
-  "Clear the in-memory HTTP response caches (JSON and raw) and reset the
-   eviction counter. After calling this, the next cache-put! will perform a
-   full eviction sweep."
+  "Clear the in-memory HTTP response caches (JSON and raw), any registered
+   derived caches (e.g. the ticker maps), and reset the eviction counter.
+   After calling this, the next cache-put! will perform a full eviction
+   sweep."
   []
   (reset! cache {})
   (reset! raw-cache {})
-  (reset! put-count (dec eviction-interval)))
+  (reset! put-count (dec eviction-interval))
+  (doseq [[_ f] @extra-cache-clearers] (f))
+  nil)
 
 ;;; ---------------------------------------------------------------------------
 ;;; Disk cache (opt-in, off by default)
@@ -201,16 +225,19 @@
   []
   (reset! disk-cache-config nil))
 
-(defn- disk-entry-files [url]
+(defn- disk-entry-files [url raw?]
+  ;; raw? is part of the key: the same URL fetched raw and as JSON must not
+  ;; share an entry (different TTLs, and a raw body handed to the JSON path
+  ;; would fail to parse)
   (when-let [{:keys [dir]} @disk-cache-config]
-    (let [h (sha1-hex url)]
+    (let [h (sha1-hex (str url (when raw? "#raw")))]
       [(java.io.File. ^java.io.File dir (str h ".edn"))
        (java.io.File. ^java.io.File dir (str h ".dat"))])))
 
 (defn- disk-cache-get
   "Return the cached body string for url, or nil. Deletes expired entries."
-  [url]
-  (when-let [[meta-f data-f] (disk-entry-files url)]
+  [url raw?]
+  (when-let [[meta-f data-f] (disk-entry-files url raw?)]
     (when (and (.isFile ^java.io.File meta-f) (.isFile ^java.io.File data-f))
       (let [{:keys [expires-at]} (clojure.edn/read-string (slurp meta-f))]
         (if (> (long expires-at) (System/currentTimeMillis))
@@ -221,15 +248,18 @@
 
 (defn- disk-cache-put! [url raw? ^String body]
   (when-let [{:keys [ttl-json-ms ttl-raw-ms]} @disk-cache-config]
-    (when-let [[meta-f data-f] (disk-entry-files url)]
+    (when-let [[meta-f data-f] (disk-entry-files url raw?)]
       (let [ttl (if raw? ttl-raw-ms ttl-json-ms)
             tmp (java.io.File/createTempFile "edgarjure" ".tmp"
                                              (.getParentFile ^java.io.File data-f))]
         (spit tmp body)
-        (.renameTo tmp ^java.io.File data-f)
-        (spit meta-f (pr-str {:url url
-                              :raw? raw?
-                              :expires-at (+ (System/currentTimeMillis) (long ttl))}))))))
+        ;; only write the metadata once the body is in place — and clean the
+        ;; tmp file up on failure, since it matches no cache-maintenance filter
+        (if (.renameTo tmp ^java.io.File data-f)
+          (spit meta-f (pr-str {:url url
+                                :raw? raw?
+                                :expires-at (+ (System/currentTimeMillis) (long ttl))}))
+          (.delete tmp))))))
 
 (defn clear-disk-cache!
   "Delete every entry in the on-disk cache directory (whether or not the
@@ -311,7 +341,7 @@
   [url & {:keys [raw?] :or {raw? false}}]
   (if raw?
     (or (raw-cache-get url)
-        (when-let [body (disk-cache-get url)]
+        (when-let [body (disk-cache-get url true)]
           (raw-cache-put! url body)
           body)
         (let [body (:body (http-get-with-retry url {:http-client @http-client
@@ -321,7 +351,7 @@
           (disk-cache-put! url true body)
           body))
     (or (cache-get url)
-        (when-let [body (disk-cache-get url)]
+        (when-let [body (disk-cache-get url false)]
           (let [result (json/read-value body json/keyword-keys-object-mapper)]
             (cache-put! url result)
             result))

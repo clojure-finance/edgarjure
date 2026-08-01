@@ -151,6 +151,17 @@
     (is (= "4" (:formType (#'filing/parse-filing-index-html form4-index-html))))
     (is (= "10-K" (:formType (#'filing/parse-filing-index-html form10k-index-html)))))
 
+  (testing "multi-word form types are captured whole, not truncated at the first space"
+    (let [with-form (fn [ft] (str/replace form10k-index-html "Form 10-K" (str "Form " ft)))]
+      (is (= "SCHEDULE 13D" (:formType (#'filing/parse-filing-index-html (with-form "SCHEDULE 13D")))))
+      (is (= "SC 13G/A" (:formType (#'filing/parse-filing-index-html (with-form "SC 13G/A")))))
+      (is (= "S-1 MEF" (:formType (#'filing/parse-filing-index-html (with-form "S-1 MEF")))))))
+
+  (testing "a ' - description' suffix after the form type is dropped"
+    (let [html (str/replace form10k-index-html "Form 10-K"
+                            "Form 10-K - Annual report [Section 13 and 15(d)]")]
+      (is (= "10-K" (:formType (#'filing/parse-filing-index-html html))))))
+
   (testing ":filingDate is extracted from the Filing Date infoHead/info pair"
     (is (= "2026-03-06" (:filingDate (#'filing/parse-filing-index-html form4-index-html)))))
 

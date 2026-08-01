@@ -58,7 +58,8 @@
         combined (if (seq rows)
                    (apply ds/concat rows)
                    (ds/->dataset []))]
-    (if (nil? as-of)
+    ;; the empty dataset has no :filed column, so the as-of filter would throw
+    (if (or (nil? as-of) (zero? (ds/row-count combined)))
       combined
       (let [filtered (ds/filter-column combined :filed #(not (pos? (compare % as-of))))
             deduped (reduce (fn [acc row]

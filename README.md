@@ -37,7 +37,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ```clojure
 ;; deps.edn
-{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.4.0"}}}
+{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.4.1"}}}
 ```
 
 ## Getting Started
@@ -139,7 +139,7 @@ rate limit.
 
 ## The `edgar.api` Namespace
 
-`edgar.api` is the recommended entry point. Require it as `[edgar.api :as e]` and you have access to everything. All functions validate their arguments with Malli at entry — bad inputs throw informative `ex-info` errors.
+`edgar.api` is the recommended entry point. Require it as `[edgar.api :as e]` and you have access to everything. The core query functions (filings, statements, search, frames, panels) validate their arguments with Malli at entry — bad inputs throw informative `ex-info` errors.
 
 ### Company Lookup
 
@@ -292,7 +292,7 @@ Every statement function takes a `:view` option exposing four layers of the same
 
 The standardized view fills gaps commercial databases fill by hand: if a filer doesn't tag `GrossProfit`, it is derived as Revenue − Cost of Revenue; Total Liabilities from L&E − Equity; a `"Free Cash Flow"` line item (OCF − Capex) is added to the cash flow statement. Derived rows are fully auditable — they carry `:method :derived` and `:derived-from [operand labels]`, while reported rows carry `:method :direct`.
 
-The Compustat view goes one step further: a data-driven reclassification rule engine (`edgar.reclass`, rules in `resources/edgar/reclass/`) adds line items that approximate Compustat's item definitions, alongside the originals. On the income statement: `"COGS (Compustat)"` (D&A stripped out, sourced from the cash-flow statement), `"XSGA (Compustat)"` (R&D folded in, with a component fallback for filers that tag S&M and G&A separately), `"OIADP (Compustat)"` (restructuring/impairment charges added back), plus `DP`, `XOPR`, `OIBDP`, `Special Items`, `Gross Profit`, and excise-netted `Revenue`. On the balance sheet, rules build the analogous aggregates from the filer's tagged components: `"RE (Compustat)"` (retained earnings *including* accumulated OCI, matching how Compustat reports RE), `"DLC (Compustat)"` / `"DLTT (Compustat)"` (debt including finance-lease — and, post-ASC-842, operating-lease — obligations), `"MIB (Compustat)"` / `"MIBN (Compustat)"` (mezzanine redeemable vs equity-section noncontrolling interest), `"PSTK (Compustat)"` (preferred including mezzanine redeemable preferred), `"SEQ"`/`"CEQ"`/`"TEQ"`, `"RECT (Compustat)"` (total receivables incl. non-trade and tax refunds), and `"CHE (Compustat)"` (cash + short-term investments). Reclassified rows carry `:method :reclassified`, the `:rule` that produced them, and `:derived-from`; inspect the active rules with `(e/reclass-rules :income)` or `(e/reclass-rules :balance)`.
+The Compustat view goes one step further: a data-driven reclassification rule engine (`edgar.reclass`, rules in `resources/edgar/reclass/`) adds line items that approximate Compustat's item definitions, alongside the originals. On the income statement: `"COGS (Compustat)"` (D&A stripped out, sourced from the cash-flow statement), `"XSGA (Compustat)"` (R&D folded in, with a component fallback for filers that tag S&M and G&A separately), `"OIADP (Compustat)"` (restructuring/impairment charges added back), plus `"DP (Compustat)"`, `"XOPR (Compustat)"`, `"OIBDP (Compustat)"`, `"Special Items (Compustat)"`, `"Gross Profit (Compustat)"`, and excise-netted `"Revenue (Compustat)"`. On the balance sheet, rules build the analogous aggregates from the filer's tagged components: `"RE (Compustat)"` (retained earnings *including* accumulated OCI, matching how Compustat reports RE), `"DLC (Compustat)"` / `"DLTT (Compustat)"` (debt including finance-lease — and, post-ASC-842, operating-lease — obligations), `"MIB (Compustat)"` / `"MIBN (Compustat)"` (mezzanine redeemable vs equity-section noncontrolling interest), `"PSTK (Compustat)"` (preferred including mezzanine redeemable preferred), `"SEQ (Compustat)"`/`"CEQ (Compustat)"`/`"TEQ (Compustat)"`, `"RECT (Compustat)"` (total receivables incl. non-trade and tax refunds), and `"CHE (Compustat)"` (cash + short-term investments). Reclassified rows carry `:method :reclassified`, the `:rule` that produced them, and `:derived-from`; inspect the active rules with `(e/reclass-rules :income)` or `(e/reclass-rules :balance)`.
 
 Two expense-classification questions cannot be answered from the companyfacts API at all: *where* a filer's D&A sits (own income-statement line, or embedded in COGS/SG&A?) and what its custom extension expense lines contain (Amazon's Fulfillment and Technology & content, which Compustat folds into XSGA/XRD). `(e/enable-fsds!)` turns on a local cache of the SEC's quarterly [Financial Statement Data Sets](https://www.sec.gov/dera/data/financial-statement-data-sets) (downloaded on first use into `~/.edgarjure/fsds`, shared across all companies), and the `:compustat` income view then uses statement placement to guard the D&A strip and extension-tag values as reclassification operands — including a first-class `"XRD (Compustat)"` line item:
 
@@ -300,6 +300,7 @@ Two expense-classification questions cannot be answered from the companyfacts AP
 (e/enable-fsds!)                        ; opt-in; quarter files are 50-130 MB
 (e/income "AMZN" :view :compustat)      ; XSGA now includes Fulfillment + Technology,
                                         ; XRD (Compustat) = the technology extension line
+(e/disable-fsds!)                       ; turn off (cached quarter files are kept)
 ```
 
 ### Industry Routing
@@ -325,6 +326,7 @@ edgar.financials/income-statement-concepts     ; standard chains as data
 ;; Coverage feedback loop: what did the chains miss?
 (e/unmapped-concepts :top 20)   ; us-gaap concepts seen in facts but unmatched
 (e/save-unmapped-concepts!)     ; persist to ~/.edgarjure/unmapped-concepts.edn
+(e/clear-unmapped-concepts!)    ; reset the in-memory registry
 
 ;; Quantify agreement with a benchmark (Compustat extract, hand-collected)
 (require '[edgar.validation :as validation])
@@ -345,30 +347,40 @@ are Total Liabilities & Equity (98.5%), Investing/Financing Cash Flow (96.2%),
 Goodwill (95.2%), derived Total Equity (94.7%) and Working Capital (90%).
 Expense-classification items (COGS, SG&A, R&D, Operating Income) diverge by
 construction — Compustat reclassifies them (e.g. D&A stripped out). The
-`:compustat` view's rule engine closes much of that gap on the same sample:
-COGS 1% → **57%**, SG&A (as XSGA) 20% → **45%**, Operating Income (as OIADP)
-24% → **38%**, Gross Profit vs REVT−COGS 0% → **59%** — the COGS/XSGA/OIADP
-trio moves from ~15% to ~47% overall. The remainder is footnote-level
-allocation Compustat keys from disclosures the companyfacts API doesn't carry
-(partial D&A splits between COGS and SG&A, R&D embedded in COGS, special
-items only visible in text). Per-share items need split-vintage alignment
-(AJEX).
+`:compustat` view's rule engine closes much of that gap. On the fitting
+sample (the study's industrial subsample, FY2010–2015): COGS 1% → **57%**,
+SG&A (as XSGA) 20% → **45%**, Operating Income (as OIADP) 24% → **38%**,
+Gross Profit vs REVT−COGS 0% → **58%** — the COGS/XSGA/OIADP trio moves from
+~15% to ~47% overall. Re-measured for 0.4.0 on the wider FY2009–2025 window
+with FSDS enabled (13 industrials): XRD **84%** (new), XSGA **58%**, COGS
+**52%**, DP **73%**, XOPR 49%, Gross Profit 48%, OIADP 33%. The remainder is
+footnote-level allocation Compustat keys from disclosures the companyfacts
+API doesn't carry (partial D&A splits between COGS and SG&A, R&D embedded in
+COGS, special items only visible in text). Per-share items need
+split-vintage alignment (AJEX).
 
 The balance-sheet `:compustat` rules were validated against live Compustat
 (21 firms, FY2009–2025, 357 firm-years; rates below are the 13 industrials,
 within 1%): Retained Earnings 12% → **96%** (Compustat RE includes
-accumulated OCI), Long-Term Debt 33% → **76%** and Current Debt 27% → **63%**
+accumulated OCI), Long-Term Debt 33% → **86%** and Current Debt 27% → **58%**
 (finance leases in all eras; operating leases folded into debt by Compustat
-from ASC 842 / FY2019 onward), Receivables 20% → **61%**, Noncontrolling
+from ASC 842 / FY2019 onward — re-confirmed by A/B: dropping them costs
+DLTT 35pp; excluding the double-counted `OtherLongTermDebt` component gained
+the last 8pp), Receivables 20% → **69%**, Noncontrolling
 Interest 2% → **81%** (mezzanine vs equity-section split; the equity-section
-`MIBN` matches at 99%), SEQ/CEQ/TEQ 93–95%, CHE 76%. Equity items hold up for
-banks and insurers too (RE 96%, SEQ/TEQ 95%); classified-balance-sheet items
+`MIBN` matches at 96%), SEQ/CEQ/TEQ **97%** (after the equity re-derivation
+for filers tagging only the including-NCI concept — standardized Total
+Liabilities rose from 79% to 96% in the same fix), CHE 68%. Equity items hold
+up for banks and insurers too (RE 96%, SEQ/TEQ 95%); classified-balance-sheet items
 (debt/receivables/cash buckets) do not apply to financial-format filers and
-REITs, which remain future industry-chain work.
+REITs, which remain future industry-chain work. The *income* reclassification
+rules were fitted on the standard (industrial) chains and only apply there:
+for companies routed to bank, insurance, or REIT chains, `:view :compustat`
+on the income statement equals `:view :standardized`.
 
 > **Disclaimer.** Compustat is a registered trademark of S&P Global Inc.
 > edgarjure is an independent open-source project with no affiliation to,
-> endorsement by, or derivation from S&P Global or WRDS products. The
+> endorsement by, or reimplementation of S&P Global products. The
 > `:compustat` view is an *approximation* computed entirely from public SEC
 > filings, built by empirically comparing edgarjure's output against a
 > licensed Compustat sample — the match rates above quantify exactly how
@@ -578,17 +590,20 @@ edgar.core            HTTP client, JSON + raw caches, retry, rate limiter
 
 - **Keyword args throughout** — no positional parameters
 - **Ticker or CIK interchangeably** — every function resolves via `company-cik`
+- **Long-name aliases** — `e/income-statement`, `e/balance-sheet`, `e/cash-flow`, and `e/search-companies` are the same vars as their short names
+- **Options as keywords or a single map** — `(e/income "AAPL" :form "10-Q")` and `(e/income "AAPL" {:form "10-Q"})` are equivalent
+- **`e/filing` with `:n` out of range returns nil** — never an exception
 - **`:concept` accepts string or collection** — coerced to a set internally
 - **Amendments excluded by default** — pass `:include-amends? true` to include `10-K/A` etc.
 - **Datasets always return `tech.ml.dataset`** — never seq-of-maps
 - **Form parsers must be required** — `(require '[edgar.forms])` loads all at once
 - **Download results are structured envelopes** — `{:status :ok/:skipped/:error ...}`
-- **All `edgar.api` functions are Malli-validated** — bad args throw `ex-info` with `:type ::edgar.schema/invalid-args`
-- **Banks and insurers are auto-routed** — `e/income` detects SIC 6000–6199/6712 (banks) and 6300–6399/6411 (insurers) and switches to industry-specific concept chains; coverage is partial and grows via the unmapped-concepts feedback loop
+- **Core `edgar.api` query functions are Malli-validated** — bad args throw `ex-info` with `:type ::edgar.schema/invalid-args` (simple wrappers and toggles skip validation)
+- **Banks, insurers, and REITs are auto-routed** — `e/income` detects SIC 6000–6199/6712 (banks), 6300–6399/6411 (insurers), and 6798/6500–6553 (REITs and real-estate operators) and switches to industry-specific concept chains; coverage is partial and grows via the unmapped-concepts feedback loop
 
 ## Rate Limits and Caching
 
-SEC enforces a `User-Agent` header and a rate limit of ~10 requests/second. edgarjure handles both automatically: `set-identity!` sets the header, and a Bucket4j token-bucket rate limiter paces requests. JSON responses are cached in memory (5 min for metadata, 1 hr for XBRL facts); raw documents (filing HTML, indexes) are cached in a bounded cache (64 entries, 1 hr) so repeated content access on the same filing hits the network once. Failed requests retry with exponential backoff on 429/5xx (up to 3 attempts, 2s → 4s → 8s).
+SEC enforces a `User-Agent` header and a rate limit of ~10 requests/second. edgarjure handles both automatically: `set-identity!` sets the header, and a Bucket4j token-bucket rate limiter paces requests. JSON responses are cached in memory (5 min for metadata, 1 hr for XBRL facts); raw documents (filing HTML, indexes) are cached in a bounded cache (64 entries, 1 hr) so repeated content access on the same filing hits the network once. Failed requests retry with exponential backoff on 429/5xx (initial attempt plus up to 3 retries, sleeping 2s → 4s → 8s between attempts).
 
 ## Development
 
@@ -596,7 +611,7 @@ SEC enforces a `User-Agent` header and a rate limit of ~10 requests/second. edga
 # Start REPL (random port, written to .nrepl-port)
 clj -M:nrepl
 
-# Run offline unit tests (169 tests, 888 assertions, no network)
+# Run offline unit tests (221 tests, 1188 assertions, no network)
 clj -M:test
 
 # Run live integration tests (manual only, requires network)

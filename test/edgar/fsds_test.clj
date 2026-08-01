@@ -14,6 +14,24 @@
     (is (= "https://www.sec.gov/files/dera/data/financial-statement-data-sets/2019q4.zip"
            (fsds/quarter-url 2019 4)))))
 
+(deftest cached-quarter-failure-handling-test
+  (testing "a 404 marks the quarter missing for the session"
+    (with-redefs [fsds/download-quarter!
+                  (fn [& _] (throw (ex-info "HTTP 404 Not Found" {})))]
+      (is (nil? (fsds/cached-quarter! 1997 1 :dir "/tmp/nonexistent-fsds"))))
+    ;; second call must not re-download (would throw a different error if tried)
+    (with-redefs [fsds/download-quarter!
+                  (fn [& _] (throw (ex-info "should not be called" {})))]
+      (is (nil? (fsds/cached-quarter! 1997 1 :dir "/tmp/nonexistent-fsds")))))
+  (testing "a transient failure rethrows WITHOUT poisoning the quarter"
+    (with-redefs [fsds/download-quarter!
+                  (fn [& _] (throw (ex-info "HTTP 503 Service Unavailable" {})))]
+      (is (thrown? Exception (fsds/cached-quarter! 1998 2 :dir "/tmp/nonexistent-fsds"))))
+    ;; the quarter stays retryable: a later successful download goes through
+    (with-redefs [fsds/download-quarter! (fn [& _] "/tmp/fake-1998q2.zip")]
+      (is (= "/tmp/fake-1998q2.zip"
+             (fsds/cached-quarter! 1998 2 :dir "/tmp/nonexistent-fsds"))))))
+
 (defn- write-fake-fsds-zip! [path]
   (with-open [zos (ZipOutputStream. (FileOutputStream. (str path)))]
     (.putNextEntry zos (ZipEntry. "sub.txt"))

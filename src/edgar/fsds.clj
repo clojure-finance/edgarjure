@@ -149,6 +149,13 @@
     true (ds/sort-by (fn [row] [(:report row) (:line row)])
                      (fn [a b] (compare a b)))))
 
+(defn- placement-map
+  "Fold pre.txt rows ({:tag :stmt ...}) into {tag #{statement-codes}}."
+  [pre-rows]
+  (reduce (fn [m {:keys [tag stmt]}]
+            (update m tag (fnil conj #{}) stmt))
+          {} pre-rows))
+
 (defn statement-placement
   "Map of tag name -> set of statement codes for one submission (adsh).
    Example: {\"DepreciationDepletionAndAmortization\" #{\"CF\"} ...}
@@ -156,10 +163,8 @@
    statement only — the signal the Compustat reclassification rules need to
    decide whether D&A is embedded in the income statement expense lines."
   [pre-ds adsh]
-  (->> (ds/rows (ds/filter-column pre-ds :adsh #(= % adsh)) {:nil-missing? true})
-       (reduce (fn [m {:keys [tag stmt]}]
-                 (update m tag (fnil conj #{}) stmt))
-               {})))
+  (placement-map
+   (ds/rows (ds/filter-column pre-ds :adsh #(= % adsh)) {:nil-missing? true})))
 
 (defn facts-for
   "Numeric facts (num rows) for one submission (adsh), extension tags
@@ -194,7 +199,8 @@
    Options: :dir (default ~/.edgarjure/fsds). Returns the active config.
    When enabled, the income statement's :view :compustat augments its
    reclassification rules with FSDS statement placement and extension-tag
-   operands for 10-K periods."
+   operands for 10-K periods (10-Q queries build 10-K rows internally for
+   Q4/LTM derivation, so they can trigger quarter downloads too)."
   [& {:keys [dir]}]
   (reset! cache-config {:dir (or dir default-cache-dir)}))
 
@@ -219,17 +225,18 @@
 (defn cached-quarter!
   "Path of the year/quarter FSDS zip in the local cache, downloading it on
    first use. Returns nil when the quarter isn't published (404 remembered
-   for the session) or the cache is disabled and no :dir is given."
+   for the session) or the cache is disabled and no :dir is given. Transient
+   failures (timeouts, 5xx, disk errors) rethrow WITHOUT marking the quarter
+   missing, so a later call can retry."
   [year quarter & {:keys [dir]}]
   (let [dir (or dir (when (cache-enabled?) (active-dir)))]
     (when (and dir (not (@missing-quarters [year quarter])))
       (try
         (download-quarter! year quarter dir)
         (catch Exception e
-          (swap! missing-quarters conj [year quarter])
-          (when-not (re-find #"404" (str (ex-message e)))
-            (throw e))
-          nil)))))
+          (if (re-find #"404" (str (ex-message e)))
+            (do (swap! missing-quarters conj [year quarter]) nil)
+            (throw e)))))))
 
 (defn- zip-entry-line-seq*
   "Call f with the lazy line seq of one zip entry (FSDS tables are
@@ -310,9 +317,7 @@
               (when-let [subrow (submission-row zip cik :form "10-K")]
                 (let [adsh (:adsh subrow)
                       pre (filing-rows zip :pre adsh)
-                      placement (reduce (fn [m {:keys [tag stmt]}]
-                                          (update m tag (fnil conj #{}) stmt))
-                                        {} pre)
+                      placement (placement-map pre)
                       ext-is-tags (->> pre
                                        (filter #(and (= "IS" (:stmt %))
                                                      (not (standard-version? (:version %)))))

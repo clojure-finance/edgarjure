@@ -26,21 +26,6 @@
 (defn- days-apart ^long [^java.time.LocalDate a ^java.time.LocalDate b]
   (Math/abs (.between java.time.temporal.ChronoUnit/DAYS a b)))
 
-(defn- window-months
-  "Approximate months spanned by a duration row (3/6/9/12), nil for instant
-   rows or non-quarter windows. Mirrors edgar.financials/duration-months."
-  [row]
-  (let [s (parse-date (:start row))
-        e (parse-date (:end row))]
-    (when (and s e)
-      (let [days (.between java.time.temporal.ChronoUnit/DAYS s e)]
-        (cond
-          (<= 75 days 115) 3
-          (<= 160 days 200) 6
-          (<= 250 days 290) 9
-          (<= 340 days 380) 12
-          :else nil)))))
-
 (defn- close-enough? [expected actual tolerance]
   (cond
     (or (nil? expected) (nil? actual)) false
@@ -95,7 +80,7 @@
                                  {:line-item (:line-item row)
                                   :end-str (str (:end row))
                                   :end-date (parse-date (:end row))
-                                  :months (window-months row)
+                                  :months (financials/duration-months row)
                                   :val v}))))
         by-line-item (group-by :line-item stmt-rows)
         ;; Candidate ranking: smallest date distance first; among candidates at

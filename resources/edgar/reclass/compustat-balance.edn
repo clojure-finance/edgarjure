@@ -1,7 +1,7 @@
 {:ruleset :compustat
  :statement :balance
  :taxonomy "us-gaap"
- :version "2026-07-31"
+ :version "2026-08-01"
  :notes "Reclassification rules approximating Compustat balance-sheet items.
 Each construction was verified empirically against licensed Compustat data
 (the component identities RE = REUNA + ACOMINC + SEQO, DLC = DD1 + NP,
@@ -51,6 +51,20 @@ compare both columns."}
    :formula [:= "MIBN (Compustat)"]}
 
   ;; --- Debt in current liabilities ------------------------------------------
+  {:id :dlc-cpltd-lease-included
+   :target "DLC (Compustat)"
+   :compustat "DLC = DD1 + NP"
+   :formula [:+ "Current Debt" [:opt "Operating Lease Liability (Current)"]]
+   :guards [[:concept-in "Current Portion of Long-Term Debt"
+             #{"LongTermDebtAndCapitalLeaseObligationsCurrent"}]
+            [:concept-not-in "Current Debt" #{"DebtCurrent"}]]
+   :notes "Component filers whose current-portion concept already includes
+capital leases (LongTermDebtAndCapitalLeaseObligationsCurrent - HON): the
+derived Current Debt = CPLTD + STB already contains the leases, so adding the
+separate current lease tags would double-count; only post-ASC-842 operating
+leases still need adding. The :concept-not-in guard keeps this rule off
+filers with a direct DebtCurrent row (which excludes leases and is handled
+below)."}
   {:id :dlc
    :target "DLC (Compustat)"
    :compustat "DLC = DD1 + NP"
@@ -62,9 +76,8 @@ us-gaap:DebtCurrent excludes them, so add the lease tags when
 present - BOTH kinds, since transition-era filers (AMZN 2016-2018) carry
 capital-lease and finance-lease obligations simultaneously. Component filers
 reach here via the standardized-view identity Current Debt = Current Portion
-of Long-Term Debt + Short-Term Borrowings. Known double-count risk: a filer
-tagging LongTermDebtAndCapitalLeaseObligationsCurrent AND a separate current
-lease tag (none observed)."}
+of Long-Term Debt + Short-Term Borrowings (the lease-inclusive combined-tag
+case is caught by :dlc-cpltd-lease-included above)."}
 
   ;; --- Long-term debt --------------------------------------------------------
   {:id :dltt-noncurrent
@@ -72,15 +85,18 @@ lease tag (none observed)."}
    :compustat "DLTT (incl. finance leases, net of discount)"
    :formula [:+ "Long-Term Debt" [:opt "Finance Lease Liability (Non-Current)"]
              [:opt "Capital Lease Obligation (Non-Current)"]
-             [:opt "Operating Lease Liability (Non-Current)"]
-             [:opt "Other Long-Term Debt"]]
+             [:opt "Operating Lease Liability (Non-Current)"]]
    :guards [[:concept-not-in "Long-Term Debt"
              #{"LongTermDebt" "LongTermDebtAndCapitalLeaseObligations"}]]
    :notes "DLTT includes capitalized/finance leases (DCLO) and is net of
 unamortized discount, i.e. XBRL carrying amounts. Both lease kinds are added
 (transition-era filers carry both). Guard: the combined LongTermDebt tag
 includes the current portion, and LongTermDebtAndCapitalLeaseObligations
-already includes leases - both handled below."}
+already includes leases - both handled below. OtherLongTermDebt is NOT
+added: it is typically a component of LongTermDebtNoncurrent, and removing
+it lifted DLTT from 78% to 86% on the validation sample (2026-08-01 A/B vs
+licensed Compustat data). The operating-lease operands were re-confirmed the
+same way: removing them drops DLTT to 51% and DLC to 38%."}
   {:id :dltt-incl-leases
    :target "DLTT (Compustat)"
    :compustat "DLTT"
@@ -135,18 +151,12 @@ line."}
    :target "SEQ (Compustat)"
    :compustat "SEQ = CEQ + PSTK"
    :formula [:+ "Stockholders Equity" [:opt "Redeemable Preferred Stock"]]
-   :guards [[:concept-not-in "Stockholders Equity"
-             #{"StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"}]]
    :notes "Parent equity plus mezzanine redeemable preferred (which Compustat
-counts in PSTK and therefore in SEQ). Guard: when the chain fell back to the
-including-NCI tag the value is TEQ-shaped, handled below."}
-  {:id :seq-from-total
-   :target "SEQ (Compustat)"
-   :compustat "SEQ"
-   :formula [:- "Stockholders Equity" "Noncontrolling Interest"]
-   :notes "Fallback when only the including-NCI equity tag exists: remove the
-equity-section NCI. Mezzanine preferred cannot be added in the same flat
-formula."}
+counts in PSTK and therefore in SEQ). \"Stockholders Equity\" is parent-shaped
+by construction: the chains label the including-NCI concept \"Total Equity\",
+and for filers tagging only that concept the standardized-view identities
+re-derive parent equity as Total Equity - Noncontrolling Interest before the
+rules run."}
   {:id :ceq
    :target "CEQ (Compustat)"
    :compustat "CEQ = SEQ - PSTK"

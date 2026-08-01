@@ -1,9 +1,9 @@
 {:ruleset :compustat
  :statement :income
  :taxonomy "us-gaap"
- :version "2026-07-31"
+ :version "2026-08-01"
  :notes "Reclassification rules approximating Compustat income statement item
-definitions (roadmap 4.1c). Derived empirically against WRDS FUNDA extracts
+definitions (roadmap 4.1c). Derived empirically against a licensed Compustat annual extract
 (18 large industrials; fitted on FY2010-2015, checked out-of-sample on
 FY2016+): match rates within 1% are quoted per rule as as-reported ->
 reclassified. Original line items are always preserved alongside the
@@ -100,6 +100,19 @@ FSDS cache is enabled; without it this rule still fires but understates."}
    :formula [:+ "COGS (Compustat)" "XSGA (Compustat)"]
    :notes "Total operating expenses excluding D&A; Compustat's XOPR = COGS + XSGA
 identity. 43% within 1%."}
+  {:id :special-items-combined-restructuring
+   :target "Special Items (Compustat)"
+   :compustat "SPI (operating portion)"
+   :formula [:neg-sum "Restructuring Charges" "Goodwill Impairment"
+             "Acquisition-Related Costs" "Litigation Settlement" "In-Process R&D"]
+   :guards [[:concept-in "Restructuring Charges"
+             #{"RestructuringCostsAndAssetImpairmentCharges"
+               "RestructuringSettlementAndImpairmentProvisions"}]]
+   :notes "Filers whose restructuring concept already includes asset
+impairments: the separate Impairment Charges operand would double-count, so
+it is dropped here (Goodwill Impairment stays - not inside the combined
+tags). No filer on the validation sample triggers this today (A/B measured
+identical, 2026-08-01), so the guard is pure protection."}
   {:id :special-items
    :target "Special Items (Compustat)"
    :compustat "SPI (operating portion)"
@@ -108,9 +121,8 @@ identity. 43% within 1%."}
    :notes "Compustat treats restructuring and impairment charges as special items
 below the operating line. Sign follows Compustat: charges are negative. Only
 the operating portion visible in XBRL tags is captured; non-operating special
-items (divestiture gains etc.) are not. Double counting is possible when a
-filer tags both a combined restructuring-and-impairment concept and a
-separate impairment concept."}
+items (divestiture gains etc.) are not. The combined-restructuring-tag
+double-count case is handled by the guarded rule above."}
   {:id :oiadp
    :target "OIADP (Compustat)"
    :compustat "OIADP"
@@ -123,7 +135,11 @@ GLP) are removed via subtraction because the XBRL tag is signed: a gain
 (positive) is taken out of operating income, a loss (negative) is added back.
 GLP is kept out of the Special Items row itself, whose :neg-sum operands are
 positively-tagged charges. Caveat: for oil/coal/transport filers Compustat
-treats recurring asset-sale gains as NOPI, not special - not modeled."}
+treats recurring asset-sale gains as NOPI, not special - not modeled; and a
+gain reported below the operating line would be over-removed, which
+companyfacts cannot detect. Both concerns measured harmless on the
+validation sample (A/B with the operand removed: OIADP identical,
+2026-08-01, consistent with the 2026-07-31 zero-marginal-effect check)."}
   {:id :oibdp
    :target "OIBDP (Compustat)"
    :compustat "OIBDP"

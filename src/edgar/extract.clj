@@ -1,6 +1,7 @@
 (ns edgar.extract
   (:require [edgar.filing :as filing]
             [clojure.string :as str]
+            [clojure.walk :as walk]
             [hickory.core :as hickory]
             [hickory.select :as sel]
             [babashka.fs :as fs])
@@ -115,7 +116,7 @@
 (defn- remove-tables
   "Remove all <table> elements from a hickory tree."
   [tree]
-  (clojure.walk/postwalk
+  (walk/postwalk
    (fn [node]
      (if (and (map? node) (= :table (:tag node)))
        nil
@@ -260,6 +261,12 @@
 ;;; Main extraction API
 ;;; ---------------------------------------------------------------------------
 
+(defn- normalize-item-id
+  "Canonical form of a user-supplied item id: trimmed, separators before a
+   digit collapsed to a dash, upper-cased (\"i 1\" -> \"I-1\", \"1a\" -> \"1A\")."
+  [s]
+  (-> s str/trim (str/replace #"\s*[-\s]\s*(?=\d)" "-") str/upper-case))
+
 (defn extract-items
   "Extract item sections from a filing.
    Returns a map of item-id -> {:title \"...\" :text \"...\" :method ...}.
@@ -278,10 +285,7 @@
   (let [form (:form filing)
         items-map (items-for-form form)
         target-ids (if items
-                     (set (map #(-> % str/trim
-                                    (str/replace #"\s*[-\s]\s*(?=\d)" "-")
-                                    str/upper-case)
-                               items))
+                     (set (map normalize-item-id items))
                      (set (keys items-map)))
         html (filing/filing-html filing)]
     (cond
@@ -304,7 +308,7 @@
   "Extract a single item section from a filing.
    Returns {:title \"...\" :text \"...\" :method ...} or nil."
   [filing item-id]
-  (get (extract-items filing :items #{item-id}) (str/upper-case item-id)))
+  (get (extract-items filing :items #{item-id}) (normalize-item-id item-id)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Batch extraction (edgar-crawler analog)

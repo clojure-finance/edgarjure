@@ -361,10 +361,12 @@
 (defn- days-between ^long [^LocalDate a ^LocalDate b]
   (.between ChronoUnit/DAYS a b))
 
-(defn- duration-months
+(defn duration-months
   "Classify a duration row's window as 3, 6, 9 or 12 months, or nil when the
    row is instant or does not resemble a whole number of fiscal quarters.
-   Ranges are tolerant of 52/53-week fiscal calendars."
+   Ranges are tolerant of 52/53-week fiscal calendars. The single source of
+   truth for window classification — edgar.validation and the FSDS aux
+   matching use this same definition."
   [row]
   (let [s (parse-date (:start row))
         e (parse-date (:end row))]
@@ -487,15 +489,26 @@
 
 (def balance-sheet-identities
   "Arithmetic identities for balance sheet imputation (:view :standardized).
-   Working Capital is derived-only (never a reported XBRL line)."
+   Working Capital is derived-only (never a reported XBRL line).
+   Ordering matters twice over: identities for one target are ordered
+   fallbacks (first match wins), and the equity identities precede the
+   liability ones so that within a pass Total Liabilities can use the
+   NCI-clean subtrahend (L&E − Total Equity). \"Stockholders Equity\" always
+   means PARENT equity: filers tagging only the including-NCI equity concept
+   get it labeled \"Total Equity\" by the chains, and parent equity is
+   re-derived by stripping the equity-section NCI."
   [{:target "Total Assets" :formula [:= "Total Liabilities and Equity"]}
    {:target "Total Liabilities and Equity" :formula [:= "Total Assets"]}
-   {:target "Total Liabilities" :formula [:- "Total Liabilities and Equity" "Stockholders Equity"]}
-   {:target "Stockholders Equity" :formula [:- "Total Liabilities and Equity" "Total Liabilities"]}
+   ;; SE+NCI fires first when NCI is tagged; otherwise Total Equity equals
+   ;; parent equity (true whenever NCI is zero/untagged)
    {:target "Total Equity" :formula [:+ "Stockholders Equity" "Noncontrolling Interest"]}
-   ;; ordering matters: SE+NCI fires first when NCI is tagged; otherwise
-   ;; Total Equity equals parent equity (true whenever NCI is zero/untagged)
    {:target "Total Equity" :formula [:= "Stockholders Equity"]}
+   {:target "Stockholders Equity" :formula [:- "Total Equity" "Noncontrolling Interest"]}
+   {:target "Stockholders Equity" :formula [:= "Total Equity"]}
+   {:target "Total Liabilities" :formula [:- "Total Liabilities and Equity" "Total Equity"]}
+   {:target "Total Liabilities" :formula [:- "Total Liabilities and Equity" "Stockholders Equity"]}
+   {:target "Stockholders Equity" :formula [:- "Total Liabilities and Equity" "Total Liabilities" "Noncontrolling Interest"]}
+   {:target "Stockholders Equity" :formula [:- "Total Liabilities and Equity" "Total Liabilities"]}
    {:target "Non-Current Assets" :formula [:- "Total Assets" "Current Assets"]}
    {:target "Non-Current Liabilities" :formula [:- "Total Liabilities" "Current Liabilities"]}
    {:target "Working Capital" :formula [:- "Current Assets" "Current Liabilities"]}
@@ -514,17 +527,14 @@
   [{:target "Free Cash Flow" :formula [:- "Operating Cash Flow" "Capex"]}
    {:target "D&A" :formula [:+ "Depreciation" "Amortization of Intangibles"]}])
 
-(defn- eval-formula [op vals]
-  (case op
-    :+ (apply + vals)
-    :- (apply - vals)
-    := (first vals)))
-
 (defn- apply-identities
   "Synthesize missing line items per [unit start end] period group from
    arithmetic identities. Derived rows copy period fields from their first
    operand and carry :method :derived, :derived-from [operand labels] and a
-   nil :concept. Iterates so chained identities resolve (capped at 3 passes)."
+   nil :concept. Iterates so chained identities resolve (capped at 3 passes).
+   Formulas are evaluated by edgar.reclass/eval-formula — the same engine as
+   the reclassification rules, so identities may also use [:opt x] operands
+   and the :neg-sum op should the need arise."
   [rows identities]
   (->> rows
        (group-by (juxt :unit :start :end))
@@ -541,17 +551,16 @@
                     (reduce (fn [[rows by-li emitted?] {:keys [target formula]}]
                               (if (contains? by-li target)
                                 [rows by-li emitted?]
-                                (let [[op & operands] formula
-                                      vals (map #(:val (get by-li %)) operands)]
-                                  (if (every? some? vals)
-                                    (let [row (-> (get by-li (first operands))
-                                                  (assoc :line-item target
-                                                         :val (eval-formula op vals)
-                                                         :concept nil
-                                                         :method :derived
-                                                         :derived-from (vec operands)))]
-                                      [(conj rows row) (assoc by-li target row) true])
-                                    [rows by-li emitted?]))))
+                                (if-let [{:keys [val used]}
+                                         (reclass/eval-formula formula by-li)]
+                                  (let [row (-> (get by-li (first used))
+                                                (assoc :line-item target
+                                                       :val val
+                                                       :concept nil
+                                                       :method :derived
+                                                       :derived-from (vec used)))]
+                                    [(conj rows row) (assoc by-li target row) true])
+                                  [rows by-li emitted?])))
                             [acc
                              (into {} (map (juxt :line-item identity)) acc)
                              false]
@@ -646,13 +655,13 @@
                distinct
                ;; annual windows only: 10-K facts also carry quarterly
                ;; windows sharing the fiscal-year end date, and the FSDS
-               ;; operand values are annual (qtrs=4)
-               (filter (fn [[_ start end _]]
-                         (and start end
-                              (let [days (.between java.time.temporal.ChronoUnit/DAYS
-                                                   (java.time.LocalDate/parse (str start))
-                                                   (java.time.LocalDate/parse (str end)))]
-                                (<= 300 days 430)))))
+               ;; operand values are annual (qtrs=4) — a transition-period
+               ;; fiscal year must not receive 4-quarter operands.
+               ;; USD only: the FSDS values are filtered to uom=USD, so they
+               ;; must not be injected into a non-USD period group.
+               (filter (fn [[unit start end _]]
+                         (and (= "USD" unit)
+                              (= 12 (duration-months {:start start :end end})))))
                (mapcat
                 (fn [[unit start end filed]]
                   (when (and end filed)
@@ -799,11 +808,19 @@
    {:keys [form concepts shape as-of view industry]
     :or {form "10-K" shape :long view :normalized}}]
   (let [cik (company/company-cik ticker-or-cik)
+        resolved-industry (when (and (= statement-key :income) (nil? concepts))
+                            (or industry (detect-industry cik)))
         chains (or concepts
                    (if (= statement-key :income)
-                     (income-chains-for-industry
-                      (or industry (detect-industry cik)))
+                     (income-chains-for-industry resolved-industry)
                      default-chains))
+        ;; the income reclassification rules were fitted on :standard chains;
+        ;; bank/insurance/REIT chains lack most of their operand labels, so
+        ;; :view :compustat on those industries equals :standardized rather
+        ;; than emitting a Compustat-branded view the rules cannot support
+        reclass? (or (not= statement-key :income)
+                     (nil? resolved-industry)
+                     (= :standard resolved-industry))
         facts (xbrl/get-facts-dataset cik)]
     (record-unmapped! cik facts chains form)
     (shape-result
@@ -816,7 +833,8 @@
                                            nil)
        :compustat (normalized-statement facts chains form duration-type as-of
                                         (statement-identities statement-key)
-                                        (when-let [rs (reclass/ruleset-for statement-key)]
+                                        (when-let [rs (and reclass?
+                                                           (reclass/ruleset-for statement-key))]
                                           {:ruleset rs
                                            :aux-fn (reclass-aux-fn facts as-of rs)
                                            :fsds-aux-fn (fsds-aux-fn cik rs)})))
@@ -840,12 +858,16 @@
                  \"OIADP (Compustat)\", \"OIBDP (Compustat)\", \"XOPR
                  (Compustat)\", \"DP (Compustat)\", \"Special Items
                  (Compustat)\", \"Gross Profit (Compustat)\", \"Revenue
-                 (Compustat)\" - alongside the originals (rows carry
+                 (Compustat)\", and \"XRD (Compustat)\" (FSDS-assisted)
+                 - alongside the originals (rows carry
                  :method :reclassified, :rule and :derived-from; see
                  edgar.reclass and resources/edgar/reclass/)
      :industry - :standard | :bank | :insurance | :reit. When omitted, auto-detected
                  from the company's SIC code (banks and insurers get
-                 industry-specific chains)
+                 industry-specific chains). The :compustat reclassification
+                 rules were fitted on :standard chains and only apply there;
+                 for :bank/:insurance/:reit, :view :compustat equals
+                 :standardized
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, excludes filings where :filed > as-of-date,
                  giving point-in-time / look-ahead-safe results suitable
