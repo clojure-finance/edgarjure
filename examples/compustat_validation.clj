@@ -89,12 +89,18 @@
        FY2009-2025, current vintage, current rules: SEQ/CEQ/TEQ 97%,
        RE 96%, MIBN 96%, DLTT 86%, MIB 83%, RECT 69%, CHE 68%, DLC 58%,
        PSTK 34% (73% excluding missing-value years).
-     All of these predate the 2026-10 rule changes (AMZN-style XSGA sign
-       fix for the other-operating line, the goodwill-in-aggregate special
-       items guard, excise netting in Gross Profit (Compustat) and its
-       gross-profit tie-out), which can move XSGA, XOPR, Special Items,
-       OIADP, OIBDP, Gross Profit and Revenue (Compustat) for affected
-       firms; re-measure before quoting.
+     Current rules, re-measured 2026-10-15 on the 13 industrials above,
+       FY2009-2025, current vintage, FSDS enabled (221 firm-years):
+       income XRD 84%, DP 74%, XSGA 50%, COGS 45%, XOPR 42%, Gross Profit
+       40%, OIADP 28%, OIBDP 23%, Special Items 10%; balance unchanged from
+       the 2026-08-01 figures above (MIBT 94%). AMZN: COGS 17/17, XSGA
+       16/17, XRD 16/17. MO (excise, out of sample): Gross Profit 53%,
+       Revenue (Compustat) 59%. Against the previous rules on the same
+       extract only 18 firm-years moved, all from miss to match (OIADP
+       27.6 -> 28.1%, OIBDP 22.2 -> 22.6%, AMZN XSGA 13 -> 16 of 17, MO
+       Gross Profit 0 -> 9 of 17). The 2026-07/08 income figures for the
+       13 industrials (XSGA 58%, COGS 52%) do not reproduce on this extract
+       under either rule set, so compare rule versions on one extract.
 
    Known matching pitfalls this study codified into the harness:
      - Compustat DATADATE is calendar month-end; XBRL :end is the exact
