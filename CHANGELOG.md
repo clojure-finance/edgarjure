@@ -2,7 +2,7 @@
 
 All notable changes to edgarjure are documented here.
 
-## [Unreleased]
+## [0.5.0] — 2026-10-15
 
 Several changes below break existing callers; they are marked **Breaking**.
 
