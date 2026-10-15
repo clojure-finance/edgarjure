@@ -75,9 +75,10 @@
    operands (e.g. AMZN's Fulfillment / Technology & content lines, folded
    into XSGA/XRD).
    Quarter zips (50-130 MB each) download on first use into :dir (default
-   ~/.edgarjure/fsds) and are shared across all companies. Note that 10-Q
-   :view :compustat queries also build the company's 10-K rows internally
-   (for Q4/LTM derivation), so they too can trigger quarter downloads.
+   ~/.edgarjure/fsds) and are shared across all companies. FSDS operands
+   apply to 10-K periods only: 10-Q queries never trigger quarter downloads
+   (the annual rows they build for Q4/LTM derivation are reclassified
+   without FSDS, so a derived Q4 never mixes the two rule regimes).
    Options: :dir.
    Example: (e/enable-fsds!)"
   [& {:as opts}]

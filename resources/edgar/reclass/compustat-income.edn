@@ -77,36 +77,22 @@ notes value (e.g. HON) are over-added; not detectable from companyfacts."}
              [:opt "R&D Expense"]]
    :notes "Component fallback for filers with no combined SG&A tag (MSFT, ORCL,
 CSCO tag S&M and G&A separately)."}
-  {:id :xsga-opex-lines-net-other
+  {:id :xsga-opex-lines
    :target "XSGA (Compustat)"
    :compustat "XSGA"
    :formula [:+ "General and Administrative Expense" [:opt "Marketing Expense"]
              [:opt "Fulfillment Expense"] [:opt "Technology and Content Expense"]
-             [:opt "R&D Expense"]
-             [:opt [:neg "Other Operating Income (Expense), Net"]]]
-   :guards [[:absent "Other Operating Expense"]]
+             [:opt "R&D Expense"]]
    :notes "E-commerce presentation fallback (AMZN): no SG&A or S&M tag; the
 operating expense lines besides cost of sales - fulfillment, marketing,
 technology, G&A - all land in Compustat XSGA (empirically, the operating
 expenses a filer reports alongside a COGS line resolve to XSGA). Fulfillment and
 Technology & Content are extension tags supplied as FSDS operand rows when the
 FSDS cache is enabled; without it this rule still fires but understates.
-The other-operating line enters with its sign flipped: it is tagged
-OtherOperatingIncomeExpenseNet, where positive means income (AMZN FY2023:
--767M for a 767M net expense, which the previous unsigned sum subtracted
-from XSGA instead of adding). This variant applies when the expense-signed
-OtherCostAndExpenseOperating tag is absent for the period; the next rule
-covers periods carrying it (AMZN tagged that line with either concept in
-different years, so using both would double count)."}
-  {:id :xsga-opex-lines
-   :target "XSGA (Compustat)"
-   :compustat "XSGA"
-   :formula [:+ "General and Administrative Expense" [:opt "Marketing Expense"]
-             [:opt "Fulfillment Expense"] [:opt "Technology and Content Expense"]
-             [:opt "R&D Expense"] [:opt "Other Operating Expense"]]
-   :notes "Same e-commerce presentation fallback as above, for periods whose
-other-operating line is tagged expense-signed (OtherCostAndExpenseOperating,
-positive = expense)."}
+The other-operating line is excluded whichever way it is tagged
+(OtherCostAndExpenseOperating or OtherOperatingIncomeExpenseNet):
+empirically Compustat XSGA leaves it out - adding it overshoots and
+subtracting it undershoots by the same amount (AMZN FY2018-2024)."}
   {:id :revt-ex-excise-gp-tieout
    :target "Revenue (Compustat)"
    :compustat "REVT"

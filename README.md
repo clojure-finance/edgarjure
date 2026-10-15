@@ -520,11 +520,14 @@ How close is edgarjure to a commercial database? The method, item mappings, and 
 
 **Standardized view.** A 19-firm study (13 industrials/tech, 3 banks, 3 insurers) found annual core line items for FY2010–2015 match at **89.4%** overall (Total Assets 97.7%, Net Income 96.2%, Stockholders Equity 94.7%, Operating Cash Flow 93.2%), and quarterly derived values match Compustat's single-quarter items at **98.6%** (quarterly Total Assets 100%). Across ~45 line items on all three statements, the strongest secondary items are Total Liabilities & Equity (98.5%), Investing/Financing Cash Flow (96.2%), Goodwill (95.2%), derived Total Equity (94.7%) and Working Capital (90%). Expense-classification items (COGS, SG&A, R&D, Operating Income) match only ~15–18% as reported, because Compustat reclassifies them (e.g. D&A stripped out) — the gap the `:compustat` view addresses.
 
-**`:compustat` view.** Rates measured on the 0.4.x rules (the 13-industrial figures on 0.4.1). The unreleased rule changes listed in the CHANGELOG can move XSGA, XOPR, Special Items, OIADP, OIBDP, Gross Profit, and Revenue (Compustat) for affected firms and have not been re-measured yet; balance-sheet output is unchanged by them.
+**`:compustat` view.** Measured 2026-10-15 on the current rules against a current-vintage Compustat extract: 13 industrials (AAPL MSFT IBM INTC KO PEP PG WMT CAT CVX HON UPS CSCO), FY2009–2025, 221 firm-years, FSDS enabled.
 
-- Income, out-of-sample (FY2016+, ~190 firm-years the rules were never fitted on): COGS **54%** (as reported 1%), XSGA **43%** (16%), OIADP **34%** (19%), OIBDP 33%, DP 76%.
-- Income, 13 industrials, FY2009–2025, FSDS enabled: XRD **84%**, DP **74%**, XSGA **58%**, COGS **52%**, XOPR 49%, Gross Profit 48%, OIADP 33%, OIBDP 28%.
-- Balance sheet, the same 13 industrials, FY2009–2025: SEQ/CEQ/TEQ **97%**, RE **96%** (the raw retained-earnings tag: 12% — Compustat RE includes accumulated OCI), MIBN **96%**, DLTT **86%**, MIB **83%**, RECT 69%, CHE 68%, DLC 58%, PSTK 34%. Equity items hold up for banks and insurers too (RE 96%, SEQ/TEQ 95%); classified-balance-sheet items (debt/receivables/cash buckets) do not apply to financial-format filers and REITs.
+- Income: XRD **84%**, DP **74%**, XSGA **50%**, COGS **45%**, XOPR 42%, Gross Profit 40%, OIADP 28%, OIBDP 23%. Problem filers set aside from the 13: AMZN COGS 17/17, XSGA 16/17, XRD 16/17 (its fulfillment and technology lines come from FSDS extension tags); GE's conglomerate format matches poorly.
+- Income, out-of-sample (2026-07, FY2016+, ~190 firm-years the rules were never fitted on): COGS **54%** (as reported 1%), XSGA **43%** (16%), OIADP **34%** (19%), OIBDP 33%, DP 76%.
+- Balance sheet: SEQ/CEQ/TEQ **97%**, RE **96%** (the raw retained-earnings tag: 12% — Compustat RE includes accumulated OCI), MIBN **96%**, MIBT 94%, DLTT **86%**, MIB **83%**, RECT 69%, CHE 68%, DLC 58%, PSTK 34%. Equity items hold up for banks and insurers too (RE 95%, SEQ/TEQ 95%); classified-balance-sheet items (debt/receivables/cash buckets) do not apply to financial-format filers and REITs.
+- Excise taxes (MO, out of sample): Gross Profit 53%, Revenue (Compustat) 59%.
+
+Earlier published income figures (XSGA 58%, COGS 52%, July 2026) do not reproduce on the current extract under either the old or the new rules; absolute rates depend on the extract, so compare rule versions on one extract — the CHANGELOG reports each change that way.
 
 The remainder is mostly footnote-level allocation that the companyfacts API doesn't carry (partial D&A splits between COGS and SG&A, R&D embedded in COGS, special items only visible in text). Per-share items need split-vintage alignment (AJEX).
 
@@ -602,7 +605,7 @@ Disk entries expire after 24 hours for JSON endpoints and the daily-changing ful
 # Start REPL (random port, written to .nrepl-port)
 clj -M:nrepl
 
-# Run offline unit tests (262 tests, 1461 assertions, no network)
+# Run offline unit tests (262 tests, 1457 assertions, no network)
 clj -M:test
 
 # Run live integration tests (manual only, requires network)

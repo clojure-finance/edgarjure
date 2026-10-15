@@ -560,7 +560,7 @@
     (testing "XSGA sums the operating expense lines incl. FSDS extensions"
       (let [xsga (get-row "XSGA (Compustat)")]
         (is (= 200.0 (:val xsga)))
-        (is (= :xsga-opex-lines-net-other (:rule xsga)))))
+        (is (= :xsga-opex-lines (:rule xsga)))))
     (testing "XRD falls back to the technology extension line"
       (let [xrd (get-row "XRD (Compustat)")]
         (is (= 80.0 (:val xrd)))
@@ -574,41 +574,26 @@
         (is (= 42.0 (:val xrd)))
         (is (= :xrd-reported (:rule xrd)))))))
 
-(deftest compustat-xsga-other-operating-sign-test
-  ;; AMZN FY2023: "other operating expense (income), net" is a 767 net
-  ;; EXPENSE tagged OtherOperatingIncomeExpenseNet = -767 (positive = income);
-  ;; it must raise XSGA, not lower it. Earlier years carried the same line as
-  ;; the expense-signed OtherCostAndExpenseOperating.
+(deftest compustat-xsga-excludes-other-operating-test
+  ;; Validated against Compustat (AMZN FY2018-2024): XSGA leaves the
+  ;; other-operating line out whichever concept tags it - adding the line
+  ;; overshot and subtracting it undershot by the same amount.
   (let [base [(row "General and Administrative Expense" 100.0
                    {:concept "GeneralAndAdministrativeExpense"})
               (row "Marketing Expense" 200.0 {:concept "MarketingExpense"})]
         xsga (fn [rows]
                (->> (reclass/apply-ruleset rows [] reclass/compustat-income-ruleset)
                     (filter #(= "XSGA (Compustat)" (:line-item %))) first))]
-    (testing "income-signed net line enters negated"
+    (testing "income-signed net line is excluded"
       (let [x (xsga (conj base (row "Other Operating Income (Expense), Net" -767.0
                                     {:concept "OtherOperatingIncomeExpenseNet"})))]
-        (is (= 1067.0 (:val x)))
-        (is (= :xsga-opex-lines-net-other (:rule x)))
-        (is (= ["General and Administrative Expense" "Marketing Expense"
-                "Other Operating Income (Expense), Net"]
+        (is (= 300.0 (:val x)))
+        (is (= :xsga-opex-lines (:rule x)))
+        (is (= ["General and Administrative Expense" "Marketing Expense"]
                (:derived-from x)))))
-    (testing "net other operating INCOME lowers XSGA"
-      (is (= 225.0 (:val (xsga (conj base (row "Other Operating Income (Expense), Net" 75.0
-                                               {:concept "OtherOperatingIncomeExpenseNet"})))))))
-    (testing "expense-signed line enters as is"
-      (let [x (xsga (conj base (row "Other Operating Expense" 296.0
-                                    {:concept "OtherCostAndExpenseOperating"})))]
-        (is (= 596.0 (:val x)))
-        (is (= :xsga-opex-lines (:rule x)))))
-    (testing "both tags for one period: only the expense-signed one counts"
-      (let [x (xsga (conj base
-                          (row "Other Operating Expense" 296.0
-                               {:concept "OtherCostAndExpenseOperating"})
-                          (row "Other Operating Income (Expense), Net" -296.0
-                               {:concept "OtherOperatingIncomeExpenseNet"})))]
-        (is (= 596.0 (:val x)))
-        (is (= :xsga-opex-lines (:rule x)))))))
+    (testing "expense-signed line is excluded"
+      (is (= 300.0 (:val (xsga (conj base (row "Other Operating Expense" 296.0
+                                               {:concept "OtherCostAndExpenseOperating"})))))))))
 
 (deftest compustat-xsga-components-fallback-test
   (let [rows [(row "Selling and Marketing Expense" 60.0 {:concept "SellingAndMarketingExpense"})
