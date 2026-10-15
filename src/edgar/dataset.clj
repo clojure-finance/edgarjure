@@ -2,8 +2,9 @@
   (:require [edgar.filings :as filings]
             [edgar.xbrl :as xbrl]
             [edgar.company :as company]
-            [tech.v3.dataset :as ds]
-            [clojure.string :as str]))
+            [tech.v3.dataset :as ds])
+  (:import [java.time LocalDate]
+           [java.time.temporal ChronoUnit]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Filings index → dataset
@@ -84,10 +85,10 @@
    concept  : e.g. \"Assets\" \"Revenues\"
    unit     : e.g. \"USD\" \"shares\"
    frame    : e.g. \"CY2023Q4I\" \"CY2023\" \"CY2022Q3\"
-   Returns a dataset sorted by :val descending."
+   Returns a dataset sorted by :val descending (as edgar.xbrl/get-concept-frame
+   already returns it)."
   [taxonomy concept unit frame]
-  (-> (xbrl/get-concept-frame concept frame :taxonomy taxonomy :unit unit)
-      (ds/sort-by-column :val >)))
+  (xbrl/get-concept-frame concept frame :taxonomy taxonomy :unit unit))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Helpers for financial research workflows
@@ -107,16 +108,65 @@
   [ds form]
   (ds/filter-column ds :form #(= % form)))
 
+(defn- window-days
+  "Length in days of a fact's :start..:end window; -1 for instant facts
+   (and for unparseable dates), so any duration window outranks them."
+  ^long [row]
+  (let [parse (fn [d] (when d (try (LocalDate/parse (str d)) (catch Exception _ nil))))
+        s (parse (:start row))
+        e (parse (:end row))]
+    (if (and s e) (.between ChronoUnit/DAYS s e) -1)))
+
+(defn- preferred-fact?
+  "True when fact a should replace fact b as the pivot cell value: the
+   longer window wins; for the same window length the later :filed wins."
+  [a b]
+  (let [c (compare (window-days a) (window-days b))]
+    (if (zero? c)
+      (pos? (compare (str (:filed a)) (str (:filed b))))
+      (pos? c))))
+
 (defn pivot-wide
-  "Pivot a long-format facts dataset to wide format.
-   Rows = :end (period), columns = :concept, values = :val.
-   Deduplicates by taking the first observation per [end, concept].
+  "Pivot a long-format facts dataset to wide format: one row per period
+   (:end) — per [:ticker :end] when the dataset has a :ticker column, as
+   e/panel output does — and one column per :concept, valued from :val.
+
+   One observation is kept per [ticker end concept unit]:
+     - duration facts: the longest window ending at :end wins (a 10-K's
+       fiscal-year figure over the quarterly-footnote row sharing its end
+       date; a 10-Q's year-to-date figure over its 3-month figure)
+     - among observations of the same window length, the most recently
+       :filed wins (restatements)
+   Units are never mixed in one column: a concept reported in a single unit
+   keeps its plain name as the column; a concept reported in several units
+   gets one column per unit, named \"<concept> (<unit>)\".
+   Rows are sorted by :ticker (when present), then :end descending.
    Returns a tech.ml.dataset."
   [ds]
-  (let [deduped (ds/unique-by ds (fn [row] [(:end row) (:concept row)]))]
-    (ds/->dataset
-     (->> (ds/rows deduped {:nil-missing? true})
-          (group-by :end)
-          (map (fn [[period rows]]
-                 (into {:end period}
-                       (map (fn [r] [(:concept r) (:val r)]) rows))))))))
+  (if (zero? (ds/row-count ds))
+    (ds/->dataset [])
+    (let [rows (ds/rows ds {:nil-missing? true})
+          ticker? (contains? (set (ds/column-names ds)) :ticker)
+          units (reduce (fn [m r] (update m (:concept r) (fnil conj #{}) (:unit r)))
+                        {} rows)
+          col-name (fn [r]
+                     (if (> (count (get units (:concept r))) 1)
+                       (str (:concept r) " (" (:unit r) ")")
+                       (:concept r)))
+          best (reduce (fn [acc r]
+                         (let [k [(when ticker? (:ticker r)) (:end r) (col-name r)]
+                               cur (get acc k)]
+                           (if (or (nil? cur) (preferred-fact? r cur))
+                             (assoc acc k r)
+                             acc)))
+                       {} rows)]
+      (ds/->dataset
+       (->> best
+            (group-by (fn [[[ticker end _] _]] [ticker end]))
+            (sort-by key (fn [[ta ea] [tb eb]]
+                           (let [c (compare (str ta) (str tb))]
+                             (if (zero? c) (compare (str eb) (str ea)) c))))
+            (map (fn [[[ticker end] cells]]
+                   (into (if ticker? {:ticker ticker :end end} {:end end})
+                         (map (fn [[[_ _ col] r]] [col (:val r)]))
+                         cells))))))))

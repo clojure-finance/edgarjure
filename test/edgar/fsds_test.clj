@@ -83,9 +83,9 @@
   "Quarter zip with full FSDS columns: one AMZN 10-K whose D&A sits on the
    cash flow only and whose income statement carries an extension line."
   [path]
-  (let [entry! (fn [zos name content]
-                 (.putNextEntry zos (ZipEntry. ^String name))
-                 (.write zos (.getBytes ^String content "ISO-8859-1"))
+  (let [entry! (fn [^ZipOutputStream zos ^String name ^String content]
+                 (.putNextEntry zos (ZipEntry. name))
+                 (.write zos (.getBytes content "ISO-8859-1"))
                  (.closeEntry zos))]
     (with-open [zos (ZipOutputStream. (FileOutputStream. (str path)))]
       (entry! zos "sub.txt"
@@ -134,6 +134,23 @@
                (:adsh (fsds/annual-filing-context "0001018724" "2024-02-02"
                                                   :dir (str dir))))))
       (finally (fs/delete-tree dir)))))
+
+(deftest context-cache-keyed-by-dir-test
+  ;; the session context cache must not hand a context built from one cache
+  ;; directory to a lookup against another (key includes the directory)
+  (let [dir-a (fs/create-temp-dir)
+        dir-b (fs/create-temp-dir)]
+    (try
+      (write-context-zip! (fs/path dir-a "2021q1.zip"))
+      ;; dir-b: a quarter zip without the AMZN submission
+      (write-fake-fsds-zip! (fs/path dir-b "2021q1.zip"))
+      (is (= ctx-adsh (:adsh (fsds/annual-filing-context "1018724" "2021-02-02"
+                                                         :dir (str dir-a)))))
+      (is (nil? (fsds/annual-filing-context "1018724" "2021-02-02" :dir (str dir-b)))
+          "dir-b has no AMZN 10-K; dir-a's cached context must not leak")
+      (finally
+        (fs/delete-tree dir-a)
+        (fs/delete-tree dir-b)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Placement and extension-tag queries — synthetic tables modeled on the

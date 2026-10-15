@@ -1,7 +1,6 @@
 (ns edgar.xbrl
   (:require [edgar.core :as core]
-            [tech.v3.dataset :as ds]
-            [tech.v3.datatype :as dtype]))
+            [tech.v3.dataset :as ds]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Company Facts — SEC pre-parsed XBRL endpoint
@@ -119,28 +118,12 @@
      :unit     - default \"USD\"
    Returns a dataset sorted by :val descending with columns
    :accn :cik :entityName :loc :end :val (:start for duration frames).
-   :cik is zero-padded to the 10-digit string form used across the library.
-
-   The SEC frames endpoint returns :data as a sequence of maps; a legacy
-   :columns + vector-of-vectors shape is also accepted for robustness."
+   :cik is zero-padded to the 10-digit string form used across the library."
   [concept frame & {:keys [taxonomy unit] :or {taxonomy "us-gaap" unit "USD"}}]
-  (let [resp (core/edgar-get (concept-frame-url taxonomy concept unit frame))
-        raw-cols (:columns resp)
-        data (:data resp)
+  (let [data (:data (core/edgar-get (concept-frame-url taxonomy concept unit frame)))
         name-opt {:dataset-name (str concept "/" frame)}]
-    (if (or (nil? data) (empty? data))
+    (if (empty? data)
       (ds/->dataset {:accn [] :cik [] :entityName [] :loc [] :end [] :val []}
                     name-opt)
-      (let [rows (if (map? (first data))
-                   (map shape-frame-row data)
-                   (let [cols (if (seq raw-cols)
-                                (mapv keyword raw-cols)
-                                (let [n (count (first data))]
-                                  (if (= 6 n)
-                                    [:accn :cik :entityName :loc :end :val]
-                                    (mapv #(keyword (str "col" %)) (range n)))))]
-                     (map #(shape-frame-row (zipmap cols %)) data)))]
-        (let [result (ds/->dataset rows name-opt)]
-          (if (some #{:val} (ds/column-names result))
-            (ds/sort-by-column result :val #(compare %2 %1))
-            result))))))
+      (-> (ds/->dataset (map shape-frame-row data) name-opt)
+          (ds/sort-by-column :val #(compare %2 %1))))))

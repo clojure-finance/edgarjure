@@ -19,8 +19,9 @@
                  #(not (str/blank? %))]])
 
 (def TickerOrCIK
-  [:and :string [:fn {:error/message "must be a non-blank ticker or CIK string"}
-                 #(not (str/blank? %))]])
+  [:fn {:error/message "must be a non-blank ticker or CIK string, or a positive integer CIK"}
+   #(or (and (string? %) (not (str/blank? %)))
+        (pos-int? %))])
 
 (def ISODate
   [:and :string [:re {:error/message "must be an ISO date string YYYY-MM-DD"}
@@ -39,8 +40,8 @@
    [:sequential NonBlankString]])
 
 (def AccessionNumber
-  [:and :string [:re {:error/message "must be a dashed accession number XXXXXXXXXX-YY-ZZZZZZ"}
-                 #"^\d{10}-\d{2}-\d{6}$"]])
+  [:and :string [:re {:error/message "must be an accession number XXXXXXXXXX-YY-ZZZZZZ (dashes optional)"}
+                 #"^(\d{10}-\d{2}-\d{6}|\d{18})$"]])
 
 (def PositiveInt
   [:int {:min 0 :error/message "must be a non-negative integer"}])

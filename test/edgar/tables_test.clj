@@ -80,8 +80,10 @@
 
 (deftest layout-table-test
   (let [f #'edgar.tables/layout-table?]
-    (testing "fewer than 2 rows is a layout table"
+    (testing "a single single-cell row is a layout table"
       (is (f [["only one row"]])))
+    (testing "a single multi-cell data row is data (row count is :min-rows' job)"
+      (is (not (f [["Revenue" "100"]]))))
     (testing "all single-cell rows is a layout table"
       (is (f [["a"] ["b"] ["c"]])))
     (testing "table with multi-cell rows is not a layout table"
@@ -151,15 +153,28 @@
     (is (nil? (#'edgar.tables/matrix->dataset [["Header"]] 0)))))
 
 (deftest matrix->dataset-dedup-column-names-test
-  (let [f #'edgar.tables/matrix->dataset
-        rows [["Name" "Name" "Value"]
-              ["A" "B" "1"]
-              ["C" "D" "2"]]
-        ds (f rows 0)]
+  (let [f #'edgar.tables/matrix->dataset]
     (testing "duplicate column names are suffixed"
-      (let [cols (set (map name (ds/column-names ds)))]
-        (is (contains? cols "Name"))
-        (is (contains? cols "Name_1"))))))
+      (is (= ["Name" "Name_1" "Value"]
+             (ds/column-names (f [["Name" "Name" "Value"] ["A" "B" "1"] ["C" "D" "2"]] 0)))))
+    (testing "a suffixed name never collides with a later literal header"
+      (is (= ["Name" "Name_1" "Name_1_1"]
+             (ds/column-names (f [["Name" "Name" "Name_1"] ["A" "B" "C"]] 0)))))))
+
+(deftest matrix->dataset-column-order-test
+  ;; Regression: columns were collected in a hash map, which scrambles the
+  ;; order once a table has more than 8 columns.
+  (let [header (into ["" "Label"] (map #(str "FY" %) (range 2015 2027)))
+        row (into ["" "Net sales"] (map str (range 12)))
+        d (#'edgar.tables/matrix->dataset [header row row] 14)]
+    (testing "column order matches the table, left to right"
+      (is (= (into ["col_0" "Label"] (map #(str "FY" %) (range 2015 2027)))
+             (ds/column-names d))))
+    (testing "values stay under their own header"
+      (is (= [0 0] (vec (ds/column d "FY2015"))))
+      (is (= [11 11] (vec (ds/column d "FY2026")))))
+    (testing "dataset name is kept"
+      (is (= "table-14" (ds/dataset-name d))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; cell-text and row-cells — unit tests using inline hickory nodes
@@ -345,18 +360,17 @@
                  (tables/extract-tables {:form "10-K"}))]
     (testing "returns a seq"
       (is (seqable? result)))
-    (testing "finds at least 2 data tables (layout table excluded)"
-      (is (>= (count result) 2)))
+    (testing "finds the 3 data tables (layout table excluded)"
+      (is (= ["table-0" "table-2" "table-3"] (map ds/dataset-name result))))
     (testing "all results are datasets"
       (is (every? #(instance? tech.v3.dataset.impl.dataset.Dataset %) result)))
-    (testing "first table has Company/Revenue/Net Income columns"
-      (let [first-ds (first result)
-            cols (set (map name (ds/column-names first-ds)))]
-        (is (or (contains? cols "Company")
-                (contains? cols "Revenue")))))
+    (testing "first table has Company/Revenue/Net Income columns, in order"
+      (is (= ["Company" "Revenue" "Net Income"] (ds/column-names (first result)))))
     (testing "numeric values are inferred as numbers"
       (let [first-ds (first result)]
-        (is (pos? (ds/row-count first-ds)))))
+        (is (= [:string :int64 :int64]
+               (mapv #(-> (ds/column first-ds %) meta :datatype) (ds/column-names first-ds))))
+        (is (= [394328 211915 282836] (vec (ds/column first-ds "Revenue"))))))
     (testing "layout-only table (single-cell rows) is excluded"
       (let [all-col-counts (map ds/column-count result)]
         (is (every? #(>= % 2) all-col-counts))))))
@@ -367,11 +381,7 @@
         ;; The last table in the fixture has duplicate "Name" headers
         last-ds (last result)]
     (testing "duplicate column names are suffixed in fixture table"
-      (when last-ds
-        (let [cols (set (map name (ds/column-names last-ds)))]
-          (is (or (contains? cols "Name_1")
-                  ;; Tolerate if the last table wasn't reached due to min-rows filter
-                  (>= (count cols) 1))))))))
+      (is (= ["Name" "Name_1" "Value"] (ds/column-names last-ds))))))
 
 (deftest extract-tables-nth-option-test
   (let [result (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
@@ -386,12 +396,24 @@
       (is (nil? result)))))
 
 (deftest extract-tables-min-rows-filter-test
-  (let [result-loose (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
-                       (tables/extract-tables {:form "10-K"} :min-rows 1))
-        result-strict (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
-                        (tables/extract-tables {:form "10-K"} :min-rows 5))]
-    (testing "fewer tables returned with higher min-rows"
-      (is (>= (count result-loose) (count result-strict))))))
+  (let [extract (fn [html & opts]
+                  (with-redefs [edgar.filing/filing-html (fn [_] html)]
+                    (apply tables/extract-tables {:form "10-K"} opts)))]
+    (testing "fixture data tables have 3, 3 and 2 data rows"
+      (is (= 3 (count (extract fixture-tables-html :min-rows 1))))
+      (is (= ["table-0" "table-2"]
+             (map ds/dataset-name (extract fixture-tables-html :min-rows 3))))
+      (is (= 0 (count (extract fixture-tables-html :min-rows 5)))))
+    (testing ":min-rows 1 keeps a table with a single data row; the default does not"
+      (let [html "<html><body><table>
+                    <tr><th>Metric</th><th>2025</th></tr>
+                    <tr><td>Revenue</td><td>100</td></tr>
+                  </table></body></html>"]
+        (is (= 0 (count (extract html))))
+        (is (= [["Metric" "2025"] 1]
+               (let [[d] (extract html :min-rows 1)]
+                 [(ds/column-names d) (ds/row-count d)])))
+        (is (= 1 (count (extract html :min-rows 0))))))))
 
 (deftest extract-tables-nil-html-test
   (testing "nil html returns empty seq (not a crash)"

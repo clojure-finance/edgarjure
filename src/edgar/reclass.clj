@@ -29,11 +29,20 @@
      [:neg-sum a ..] - negated sum of the operands present with a non-zero
                        value (nil when none are)
    Operands are line-item labels; wrap as [:opt label] to treat a missing
-   operand as 0 instead of blocking the rule. Targets of earlier rules can be
-   operands of later ones (applied iteratively, capped at 4 passes).
+   operand as 0 instead of blocking the rule, and as [:neg label] to use the
+   negated value (for items tagged with the opposite sign convention, e.g.
+   an income-signed \"other operating income (expense)\" line inside an
+   expense sum). The wrappers nest: [:opt [:neg label]]. Targets of earlier
+   rules can be operands of later ones (applied iteratively, capped at 4
+   passes).
 
    Guards (all must pass; operands referenced by label):
      [:lt a b]                    - value of a strictly less than value of b
+     [:lte a b]                   - value of a less than or equal to value of b
+     [:ties formula b tol]        - formula (same syntax as :formula) evaluates
+                                    and lies within relative tolerance tol of
+                                    b's value (an arithmetic tie-out against a
+                                    reported subtotal)
      [:concept-not-in a #{c ...}] - a's winning XBRL concept is not in the set
                                     (rows without a concept, e.g. derived rows,
                                     pass)
@@ -87,23 +96,38 @@
 ;;; Formula evaluation
 ;;; ---------------------------------------------------------------------------
 
-(defn- operand-label [o]
-  (if (vector? o) (second o) o))
+(defn- operand-label
+  "The line-item label inside an operand, unwrapping [:opt ..] / [:neg ..]
+   (which may nest)."
+  [o]
+  (if (vector? o) (operand-label (second o)) o))
 
-(defn- optional-operand? [o]
-  (and (vector? o) (= :opt (first o))))
+(defn- negated-operand?
+  "True when an operand is wrapped in [:neg ..] at any nesting level."
+  [o]
+  (and (vector? o)
+       (or (= :neg (first o)) (negated-operand? (second o)))))
+
+(defn- optional-operand?
+  "True when an operand is wrapped in [:opt ..] at any nesting level."
+  [o]
+  (and (vector? o)
+       (or (= :opt (first o)) (optional-operand? (second o)))))
 
 (defn- resolve-operands
   "Resolve formula operands against the period group's {line-item row} map.
    Returns {:vals [..] :used [labels]} or nil when a required operand is
-   missing. Optional operands contribute 0.0 when absent."
+   missing. Optional operands contribute 0.0 when absent; negated operands
+   contribute their value's negation."
   [operands by-li]
   (reduce (fn [acc o]
             (let [label (operand-label o)
                   row (get by-li label)
                   v (:val row)]
               (cond
-                (some? v) (-> acc (update :vals conj v) (update :used conj label))
+                (some? v) (-> acc
+                              (update :vals conj (if (negated-operand? o) (- v) v))
+                              (update :used conj label))
                 (optional-operand? o) (update acc :vals conj 0.0)
                 :else (reduced nil))))
           {:vals [] :used []}
@@ -140,6 +164,14 @@
     (case op
       :lt (let [va (:val (get by-li a)) vb (:val (get by-li b))]
             (and (some? va) (some? vb) (< (double va) (double vb))))
+      :lte (let [va (:val (get by-li a)) vb (:val (get by-li b))]
+             (and (some? va) (some? vb) (<= (double va) (double vb))))
+      :ties (let [tol (double (nth guard 3))
+                  v (:val (eval-formula a by-li))
+                  vb (:val (get by-li b))]
+              (and (some? v) (some? vb)
+                   (<= (Math/abs (- (double v) (double vb)))
+                       (* tol (Math/abs (double vb))))))
       :concept-not-in (let [c (:concept (get by-li a))]
                         (or (nil? c) (not (contains? b c))))
       :concept-in (let [row (get by-li a)]
@@ -168,7 +200,7 @@
       (let [;; rules apply SEQUENTIALLY within a pass: each emitted row is
             ;; visible to later rules immediately, so e.g. :special-items
             ;; lands before :oiadp reads its [:opt ...] operand
-            [acc' by-li' emitted?]
+            [acc' _ emitted?]
             (reduce (fn [[rows by-li emitted?] {:keys [id target formula guards]}]
                       (if (contains? by-li target)
                         [rows by-li emitted?]
@@ -210,8 +242,10 @@
     (let [marked-aux (map #(assoc % ::aux true) aux-rows)]
       ;; aux rows FIRST: the {line-item row} operand lookup is built with
       ;; later-wins semantics, so a statement row shadows a same-labeled aux
-      ;; row (aux only fills gaps — e.g. REIT income statements carry a
-      ;; first-class "D&A" line that must win over the cash-flow aux "D&A")
+      ;; row (aux only fills gaps — e.g. custom :concepts chains that put a
+      ;; "D&A" line on the income statement must win over the cash-flow aux
+      ;; "D&A"; the built-in REIT chains do too, but :view :compustat does
+      ;; not apply the income rules to REITs)
       (->> (concat marked-aux rows)
            (group-by (juxt :unit :start :end))
            (mapcat (fn [[_ grows]] (apply-rules-to-group grows (:rules ruleset))))))))

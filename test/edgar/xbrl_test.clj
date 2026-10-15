@@ -24,79 +24,40 @@
            (xbrl/concept-frame-url "dei" "EntityPublicFloat" "USD" "CY2023Q4I")))))
 
 ;;; ---------------------------------------------------------------------------
-;;; get-concept-frame keyword-arg defaults
-;;; We test the URL builder directly since get-concept-frame makes HTTP calls.
-;;; The default values (us-gaap / USD) are exercised via concept-frame-url.
+;;; get-concept-frame keyword-arg defaults — core/edgar-get is stubbed to
+;;; capture the URL get-concept-frame actually requests.
 ;;; ---------------------------------------------------------------------------
 
 (deftest concept-frame-url-defaults-test
-  (testing "default taxonomy is us-gaap"
-    (is (clojure.string/includes?
-         (xbrl/concept-frame-url "us-gaap" "Assets" "USD" "CY2023Q4I")
-         "/us-gaap/")))
-  (testing "default unit is USD"
-    (is (clojure.string/includes?
-         (xbrl/concept-frame-url "us-gaap" "Assets" "USD" "CY2023Q4I")
-         "/USD/"))))
+  (let [url (atom nil)]
+    (with-redefs [core/edgar-get (fn [u & _] (reset! url u) {:data []})]
+      (testing "get-concept-frame defaults to taxonomy us-gaap and unit USD"
+        (xbrl/get-concept-frame "Assets" "CY2023Q4I")
+        (is (= "https://data.sec.gov/api/xbrl/frames/us-gaap/Assets/USD/CY2023Q4I.json" @url)))
+      (testing "explicit :taxonomy and :unit override the defaults"
+        (xbrl/get-concept-frame "EntityCommonStockSharesOutstanding" "CY2023Q4I"
+                                :taxonomy "dei" :unit "shares")
+        (is (= "https://data.sec.gov/api/xbrl/frames/dei/EntityCommonStockSharesOutstanding/shares/CY2023Q4I.json"
+               @url))))))
 
-(deftest get-concept-frame-test
-  ;; All cases use with-redefs on core/edgar-get to avoid network calls.
-  (let [normal-resp {:taxonomy "us-gaap"
-                     :tag "Assets"
-                     :columns ["accn" "cik" "entityName" "loc" "end" "val"]
-                     :data [["acc1" "320193" "Apple Inc." "US-CA" "2023-09-30" 352583000000]
-                            ["acc2" "789019" "Microsoft" "US-WA" "2023-06-30" 411976000000]]}]
-    (testing "normal response — :columns present — returns correct dataset"
-      (with-redefs [core/edgar-get (fn [_] normal-resp)]
-        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")
-              cols (set (map name (ds/column-names result)))]
-          (is (= 2 (ds/row-count result)))
-          (is (contains? cols "accn"))
-          (is (contains? cols "cik"))
-          (is (contains? cols "entityName"))
-          (is (contains? cols "loc"))
-          (is (contains? cols "end"))
-          (is (contains? cols "val")))))
-
-    (testing "missing :columns key — falls back to canonical column names"
-      ;; Regression for Issue #13: (mapv keyword nil) crashed with ClassCastException
-      (with-redefs [core/edgar-get (fn [_] (dissoc normal-resp :columns))]
-        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")
-              cols (set (map name (ds/column-names result)))]
-          (is (= 2 (ds/row-count result))
-              "data rows must still be returned when :columns is absent")
-          (is (= #{"accn" "cik" "entityName" "loc" "end" "val"} cols)
-              "canonical column names used as fallback"))))
-
-    (testing "empty :columns vector — falls back to canonical column names"
-      (with-redefs [core/edgar-get (fn [_] (assoc normal-resp :columns []))]
-        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")
-              cols (set (map name (ds/column-names result)))]
-          (is (= 2 (ds/row-count result)))
-          (is (= #{"accn" "cik" "entityName" "loc" "end" "val"} cols)))))
-
+(deftest get-concept-frame-empty-test
+  ;; the real frames shape: :data is a list of maps (no :columns key)
+  (let [base {:taxonomy "us-gaap" :tag "Assets" :ccp "CY2023Q4I" :uom "USD" :pts 0}]
     (testing "empty :data — returns empty dataset with canonical columns"
-      (with-redefs [core/edgar-get (fn [_] (assoc normal-resp :data []))]
+      (with-redefs [core/edgar-get (fn [_] (assoc base :data []))]
         (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")]
           (is (= 0 (ds/row-count result)))
-          (is (contains? (set (map name (ds/column-names result))) "val")))))
-
-    (testing "nil :data — returns empty dataset with canonical columns"
-      (with-redefs [core/edgar-get (fn [_] {:columns ["accn" "cik" "entityName" "loc" "end" "val"] :data nil})]
-        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")]
-          (is (= 0 (ds/row-count result))))))
-
-    (testing "non-standard column count — uses positional :col0 :col1 ... names"
-      (with-redefs [core/edgar-get (fn [_] {:data [["a" "b" "c"] ["d" "e" "f"]]})]
-        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")
-              cols (set (map name (ds/column-names result)))]
-          (is (= 2 (ds/row-count result)))
-          (is (= #{"col0" "col1" "col2"} cols)))))
-
+          (is (= #{"accn" "cik" "entityName" "loc" "end" "val"}
+                 (set (map name (ds/column-names result))))))))
+    (testing "nil / missing :data — returns empty dataset"
+      (with-redefs [core/edgar-get (fn [_] (assoc base :data nil))]
+        (is (= 0 (ds/row-count (xbrl/get-concept-frame "Assets" "CY2023Q4I")))))
+      (with-redefs [core/edgar-get (fn [_] base)]
+        (is (= 0 (ds/row-count (xbrl/get-concept-frame "Assets" "CY2023Q4I"))))))
     (testing "dataset-name is set to concept/frame"
-      (with-redefs [core/edgar-get (fn [_] normal-resp)]
-        (let [result (xbrl/get-concept-frame "Assets" "CY2023Q4I")]
-          (is (= "Assets/CY2023Q4I" (ds/dataset-name result))))))))
+      (with-redefs [core/edgar-get (fn [_] (assoc base :data [{:accn "a" :cik 1 :entityName "X"
+                                                               :loc "US-CA" :end "2023-12-31" :val 5}]))]
+        (is (= "Assets/CY2023Q4I" (ds/dataset-name (xbrl/get-concept-frame "Assets" "CY2023Q4I"))))))))
 
 (deftest get-concept-frame-real-format-test
   ;; The REAL SEC frames response: no :columns key, :data is a seq of MAPS

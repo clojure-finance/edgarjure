@@ -46,9 +46,15 @@
   (testing "throws when :ticker-or-cik is nil"
     (is (thrown? clojure.lang.ExceptionInfo
                  (schema/validate! schema/CompanyArgs {:ticker-or-cik nil}))))
-  (testing "throws when :ticker-or-cik is not a string"
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (schema/validate! schema/CompanyArgs {:ticker-or-cik 320193})))))
+  (testing "valid with a positive integer CIK"
+    (is (nil? (schema/validate! schema/CompanyArgs {:ticker-or-cik 320193})))
+    (is (nil? (schema/validate! schema/FilingArgs {:ticker-or-cik 320193 :form "10-K"})))
+    (is (nil? (schema/validate! schema/PanelArgs {:tickers ["AAPL" 789019] :form "10-K"}))))
+  (testing "throws on zero, negative or non-integer numbers and other types"
+    (doseq [bad [0 -1 3.5 :AAPL ["AAPL"]]]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (schema/validate! schema/CompanyArgs {:ticker-or-cik bad}))
+          (pr-str bad)))))
 
 (deftest FilingArgs-required-fields
   (testing "valid with all fields"
@@ -110,10 +116,16 @@
   (testing "valid dashed accession number"
     (is (nil? (schema/validate! schema/FilingByAccessionArgs
                                 {:accession-number "0000320193-23-000106"}))))
-  (testing "throws on undashed format"
+  (testing "valid undashed accession number"
+    (is (nil? (schema/validate! schema/FilingByAccessionArgs
+                                {:accession-number "000032019323000106"}))))
+  (testing "throws on wrong length or misplaced dashes"
     (is (thrown? clojure.lang.ExceptionInfo
                  (schema/validate! schema/FilingByAccessionArgs
-                                   {:accession-number "000032019323000106"}))))
+                                   {:accession-number "00003201932300010"})))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (schema/validate! schema/FilingByAccessionArgs
+                                   {:accession-number "000032019-323-000106"}))))
   (testing "throws on empty string"
     (is (thrown? clojure.lang.ExceptionInfo
                  (schema/validate! schema/FilingByAccessionArgs

@@ -1,7 +1,9 @@
 (ns edgar.financials-test
   (:require [clojure.test :refer [deftest is testing]]
             [edgar.financials :as fin]
-            [tech.v3.dataset :as ds]))
+            [edgar.reclass :as reclass]
+            [tech.v3.dataset :as ds])
+  (:import [java.time LocalDate]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; instant? / duration?
@@ -589,23 +591,269 @@
         (is (nil? (:val-ltm (first rows)))
             "Q1 FY2023 has no prior three quarters")))))
 
+(defn- fact
+  "A companyfacts-shaped row for stubbed statement tests."
+  [concept start end val filed & {:keys [form unit] :or {form "10-K" unit "USD"}}]
+  {:taxonomy "us-gaap" :concept concept :unit unit :start start :end end
+   :val val :accn (str "acc-" filed) :fy nil :fp nil :form form :filed filed
+   :frame nil :label "" :description ""})
+
+(deftest non-additive-units-quarterly-test
+  ;; regression (AAPL live, 10-Q 2025-06-28): weighted-average shares were
+  ;; YTD-differenced and summed, giving an LTM share count ~3x the true one.
+  ;; Share counts and per-share amounts are neither differenced nor summed.
+  (let [f #'edgar.financials/add-quarterly-and-ltm
+        rows (for [[unit li vals] [["shares" "Shares Basic" [15.0 14.9 14.95]]
+                                   ["USD/shares" "EPS Diluted" [2.4 1.57 3.97]]
+                                   ["USD" "Revenue" [124.0 95.0 219.0]]]
+                   [[start end] v] (map vector [["2024-12-29" "2025-03-29"]
+                                                ["2025-03-30" "2025-06-28"]
+                                                ["2024-12-29" "2025-06-28"]]
+                                        vals)]
+               {:line-item li :unit unit :start start :end end :val v})
+        result (f (ds/->dataset rows) "10-Q" nil)
+        by (into {} (map (fn [r] [[(:line-item r) (str (:start r)) (str (:end r))] r]))
+                 (ds/rows result {:nil-missing? true}))]
+    (testing "a 3-month share count is its own :val-q"
+      (is (= 14.9 (:val-q (by ["Shares Basic" "2025-03-30" "2025-06-28"])))))
+    (testing "the YTD share-count row takes the directly reported 3-month value"
+      (is (= 14.9 (:val-q (by ["Shares Basic" "2024-12-29" "2025-06-28"])))
+          "not 14.95 - 15.0 = -0.05"))
+    (testing "per-share amounts likewise"
+      (is (= 1.57 (:val-q (by ["EPS Diluted" "2024-12-29" "2025-06-28"])))))
+    (testing ":val-ltm is nil for non-additive units"
+      (is (every? nil? (for [[k r] by
+                             :when (not= "Revenue" (first k))]
+                         (:val-ltm r)))))
+    (testing "currency amounts still difference"
+      (is (= 95.0 (:val-q (by ["Revenue" "2024-12-29" "2025-06-28"])))))
+    (testing "a quarter reported only inside a YTD share count gets no :val-q"
+      (let [out (f (ds/->dataset
+                    [{:line-item "Shares Basic" :unit "shares"
+                      :start "2024-12-29" :end "2025-03-29" :val 15.0}
+                     {:line-item "Shares Basic" :unit "shares"
+                      :start "2024-12-29" :end "2025-06-28" :val 14.95}])
+                   "10-Q" nil)
+            ytd (first (filter #(= "2025-06-28" (str (:end %)))
+                               (ds/rows out {:nil-missing? true})))]
+        (is (nil? (:val-q ytd)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; FSDS operand injection (offline: fsds/cache-enabled? and
+;;; fsds/annual-filing-context are stubbed)
+;;; ---------------------------------------------------------------------------
+
+(def ^:private fsds-ruleset
+  {:fsds {:da-marker "D&A Presented on Income Statement"
+          :da-tags ["DepreciationAndAmortization"]
+          :extension-labels [["(?i)fulfil?lment" "Fulfillment Expense"]
+                             ["(?i)technologyand(content|infrastructure)"
+                              "Technology and Content Expense"]]}})
+
+(defn- fsds-period [start end & {:keys [unit] :or {unit "USD"}}]
+  {:line-item "Cost of Revenue" :val 1.0 :unit unit :start start :end end
+   :filed "2024-02-02" :form "10-K"})
+
+(deftest fsds-aux-fn-test
+  (let [make #'edgar.financials/fsds-aux-fn
+        ctx {:placement {"DepreciationAndAmortization" #{"IS" "CF"}}
+             :is-extension-values
+             [;; 16 days off the fiscal-year end: outside the ±10-day window
+              {:tag "FulfillmentExpense" :value 1.0 :end (LocalDate/parse "2023-12-15")}
+              ;; within ±10 days (FSDS month-end vs a 52/53-week end date)
+              {:tag "FulfillmentExpense" :value 90.0 :end (LocalDate/parse "2024-01-05")}
+              ;; a second match for the same label: only the first is kept
+              {:tag "FulfilmentCosts" :value 91.0 :end (LocalDate/parse "2023-12-31")}
+              {:tag "TechnologyAndInfrastructureExpense" :value 80.0
+               :end (LocalDate/parse "2023-12-31")}
+              {:tag "SomeOtherExpense" :value 5.0 :end (LocalDate/parse "2023-12-31")}]}
+        annual (fsds-period "2023-01-01" "2023-12-31")
+        calls (atom [])
+        run (fn [form rows & {:keys [enabled? context] :or {enabled? true}}]
+              (with-redefs [edgar.fsds/cache-enabled? (fn [] enabled?)
+                            edgar.fsds/annual-filing-context
+                            (fn [cik filed & _] (swap! calls conj [cik filed]) (context))]
+                (vec ((make "0000320193" fsds-ruleset) form rows))))
+        by-li (fn [out] (group-by :line-item out))]
+    (testing "extension labels via regex, ±10-day end match, one row per label"
+      (let [out (by-li (run "10-K" [annual] :context (constantly ctx)))]
+        (is (= [90.0] (mapv :val (get out "Fulfillment Expense"))))
+        (is (= [80.0] (mapv :val (get out "Technology and Content Expense"))))
+        (is (= "TechnologyAndInfrastructureExpense"
+               (:fsds-tag (first (get out "Technology and Content Expense")))))
+        (is (not-any? #(= "SomeOtherExpense" (:fsds-tag %)) (apply concat (vals out))))))
+    (testing "rows copy the statement period and carry :method :fsds"
+      (let [r (first (get (by-li (run "10-K" [annual] :context (constantly ctx)))
+                          "Fulfillment Expense"))]
+        (is (= ["USD" "2023-01-01" "2023-12-31" :fsds nil]
+               [(:unit r) (:start r) (:end r) (:method r) (:concept r)]))))
+    (testing "D&A placed on the income statement yields the marker row"
+      (let [m (get (by-li (run "10-K" [annual] :context (constantly ctx)))
+                   "D&A Presented on Income Statement")]
+        (is (= [1.0] (mapv :val m)))))
+    (testing "no marker when D&A sits on the cash flow only"
+      (let [cf-only (assoc ctx :placement {"DepreciationAndAmortization" #{"CF"}})]
+        (is (nil? (get (by-li (run "10-K" [annual] :context (constantly cf-only)))
+                       "D&A Presented on Income Statement")))))
+    (testing "quarterly windows and non-USD periods receive nothing"
+      (is (empty? (run "10-K" [(fsds-period "2023-10-01" "2023-12-31")]
+                       :context (constantly ctx))))
+      (is (empty? (run "10-K" [(fsds-period "2023-01-01" "2023-12-31" :unit "EUR")]
+                       :context (constantly ctx)))))
+    (testing "one context lookup per distinct period, keyed by the filing date"
+      (reset! calls [])
+      (run "10-K" [annual (assoc annual :line-item "Revenue")] :context (constantly ctx))
+      (is (= [["0000320193" "2024-02-02"]] @calls)))
+    (testing "10-Q forms and a disabled cache produce no rows"
+      (is (empty? (run "10-Q" [annual] :context (constantly ctx))))
+      (is (empty? (run "10-K" [annual] :enabled? false :context (constantly ctx)))))
+    (testing "context lookup failures degrade to no rows"
+      (is (empty? (run "10-K" [annual] :context #(throw (ex-info "boom" {}))))))
+    (testing "a ruleset without an :fsds spec yields no aux fn"
+      (is (nil? (make "0000320193" {:rules []}))))))
+
+(deftest fsds-10q-regime-consistency-test
+  ;; With FSDS enabled, the 10-K fiscal-year row gets the D&A-on-IS marker
+  ;; (COGS copied as reported) while the 10-Q YTD rows never get FSDS
+  ;; operands (COGS - D&A). Q4 = FY - 9M then pushed the whole year's D&A
+  ;; into Q4. In 10-Q mode the annual rows are built without FSDS operands.
+  (let [q (fn [concept start end val form filed] (fact concept start end val filed :form form))
+        facts (ds/->dataset
+               (concat
+                (for [[start end cor da form filed]
+                      [["2022-10-01" "2022-12-31" 100.0 10.0 "10-Q" "2023-02-01"]
+                       ["2022-10-01" "2023-03-31" 210.0 20.0 "10-Q" "2023-05-01"]
+                       ["2022-10-01" "2023-06-30" 330.0 30.0 "10-Q" "2023-08-01"]
+                       ["2022-10-01" "2023-09-30" 460.0 40.0 "10-K" "2023-11-03"]
+                       ["2023-10-01" "2023-12-31" 140.0 10.0 "10-Q" "2024-02-01"]]
+                      row [(q "CostOfRevenue" start end cor form filed)
+                           (q "DepreciationDepletionAndAmortization" start end da form filed)]]
+                  row)))
+        chains [["Cost of Revenue" "CostOfRevenue"]]
+        rs reclass/compustat-income-ruleset
+        reclass {:ruleset rs
+                 :aux-fn (#'edgar.financials/reclass-aux-fn facts nil rs)
+                 :fsds-aux-fn (#'edgar.financials/fsds-aux-fn "0000320193" rs)}
+        build (fn [form]
+                (with-redefs [edgar.fsds/cache-enabled? (constantly true)
+                              edgar.fsds/annual-filing-context
+                              (fn [& _] {:placement {"DepreciationDepletionAndAmortization" #{"IS"}}
+                                         :is-extension-values []})]
+                  (vec (ds/rows (#'edgar.financials/normalized-statement
+                                 facts chains form :duration nil
+                                 fin/income-statement-identities reclass)
+                                {:nil-missing? true}))))
+        cogs (fn [rows end]
+               (first (filter #(and (= "COGS (Compustat)" (:line-item %))
+                                    (= end (str (:end %)))
+                                    (or (= 3 (:duration-months %))
+                                        (= 12 (:duration-months %))))
+                              rows)))]
+    (testing "the stubbed FSDS context does reach 10-K output (marker rule)"
+      (let [fy (cogs (build "10-K") "2023-09-30")]
+        (is (= 460.0 (:val fy)))
+        (is (= :cogs-da-presented (:rule fy)))))
+    (testing "10-Q LTM derives Q4 under one rule regime"
+      ;; COGS ex D&A by quarter: Q1 90, Q2 100, Q3 110, Q4 (420 - 300) 120,
+      ;; next Q1 130 -> LTM 460. Mixing regimes gave Q4 = 460 - 300 = 160.
+      (let [q1 (cogs (build "10-Q") "2023-12-31")]
+        (is (= 130.0 (:val-q q1)))
+        (is (= 460.0 (:val-ltm q1)))))))
+
 (deftest to-wide-ytd-preference-test
   ;; When a 3-month and a YTD row share the same [end line-item], the wide
-  ;; pivot must deterministically use the YTD (longest duration) row for the
+  ;; pivot must deterministically use the YTD (longest window) row for the
   ;; plain value, and the period-level :val-q from whichever row has it.
+  ;; The window is read from :start/:end, in either row order.
   (let [f #'edgar.financials/to-wide
-        rows [{:end "2024-03-31" :line-item "Revenue" :val 210
-               :duration-months 3 :val-q 210 :val-ltm nil}
-              {:end "2024-03-31" :line-item "Revenue" :val 400
-               :duration-months 6 :val-q 210 :val-ltm nil}]
-        result (f (ds/->dataset rows))
-        row (first (ds/rows result {:nil-missing? true}))]
-    (testing "one output row for the period"
-      (is (= 1 (ds/row-count result))))
-    (testing "plain value comes from the YTD (6-month) row"
-      (is (= 400 (get row "Revenue"))))
-    (testing "(Q) value is the derived quarter"
-      (is (= 210 (get row "Revenue (Q)"))))))
+        q {:end "2024-03-31" :start "2024-01-01" :line-item "Revenue" :val 210
+           :duration-months 3 :val-q 210 :val-ltm nil}
+        ytd {:end "2024-03-31" :start "2023-10-01" :line-item "Revenue" :val 400
+             :duration-months 6 :val-q 210 :val-ltm nil}]
+    (doseq [rows [[q ytd] [ytd q]]]
+      (let [result (f (ds/->dataset rows) "10-Q")
+            row (first (ds/rows result {:nil-missing? true}))]
+        (testing "one output row for the period"
+          (is (= 1 (ds/row-count result))))
+        (testing "plain value comes from the YTD (6-month) row"
+          (is (= 400 (get row "Revenue"))))
+        (testing "(Q) value is the derived quarter"
+          (is (= 210 (get row "Revenue (Q)"))))))))
+
+(deftest to-wide-10k-annual-windows-test
+  ;; regression (AAPL live): 10-K facts carry quarterly-footnote windows. A Q4
+  ;; 3-month row shares the fiscal-year end date, and Q1-Q3 rows end on
+  ;; quarter-end dates. The old pick keyed on :duration-months, which 10-K
+  ;; output lacked, so FY2018 Net Income came out as the Q4 value (14.125B
+  ;; instead of 59.531B) and quarter ends appeared as extra annual rows.
+  (let [f #'edgar.financials/to-wide
+        rows [{:line-item "Net Income" :start "2017-10-01" :end "2018-09-29" :val 59531.0}
+              {:line-item "Net Income" :start "2018-07-01" :end "2018-09-29" :val 14125.0}
+              {:line-item "Net Income" :start "2018-04-01" :end "2018-06-30" :val 11519.0}
+              {:line-item "Revenue" :start "2018-07-01" :end "2018-09-29" :val 62900.0}
+              {:line-item "Revenue" :start "2017-10-01" :end "2018-09-29" :val 265595.0}]
+        rows-ds (ds/->dataset rows)]
+    (testing "10-K: only the annual window survives, quarter ends vanish"
+      (let [result (f rows-ds "10-K")
+            out (vec (ds/rows result {:nil-missing? true}))]
+        (is (= 1 (ds/row-count result)))
+        (is (= "2018-09-29" (:end (first out))))
+        (is (= 59531.0 (get (first out) "Net Income")))
+        (is (= 265595.0 (get (first out) "Revenue")))))
+    (testing "row order does not matter"
+      (let [out (first (ds/rows (f (ds/->dataset (reverse rows)) "10-K")
+                                {:nil-missing? true}))]
+        (is (= 59531.0 (get out "Net Income")))))
+    (testing "an irregular (transition-period) window is kept"
+      (let [result (f (ds/->dataset [{:line-item "Revenue" :start "2018-01-01"
+                                      :end "2018-07-31" :val 7.0}])
+                      "10-K")]
+        (is (= 1 (ds/row-count result)))))
+    (testing "instant rows are unaffected"
+      (let [result (f (ds/->dataset [{:line-item "Total Assets" :start nil
+                                      :end "2018-09-29" :val 365725.0}])
+                      "10-K")]
+        (is (= 365725.0 (get (first (ds/rows result {:nil-missing? true}))
+                             "Total Assets")))))))
+
+(def ^:private aapl-like-10k-facts
+  ;; FY2018 annual row plus the quarterly-footnote rows the same 10-K carries
+  [(fact "NetIncomeLoss" "2017-10-01" "2018-09-29" 59531.0 "2018-11-05")
+   (fact "NetIncomeLoss" "2018-07-01" "2018-09-29" 14125.0 "2018-11-05")
+   (fact "NetIncomeLoss" "2018-04-01" "2018-06-30" 11519.0 "2018-11-05")
+   (fact "NetIncomeLoss" "2016-09-25" "2017-09-30" 48351.0 "2017-11-03")
+   ;; a later restatement filed after an :as-of cutoff
+   (fact "NetIncomeLoss" "2016-09-25" "2017-09-30" 48000.0 "2019-10-31")])
+
+(deftest income-statement-10k-shapes-test
+  (with-redefs [edgar.company/company-cik (fn [t] t)
+                edgar.xbrl/get-facts-dataset (fn [_ & _] (ds/->dataset aapl-like-10k-facts))]
+    (testing ":shape :wide carries the fiscal-year value, one row per fiscal year"
+      (let [w (fin/income-statement "X" :industry :standard :shape :wide)
+            rows (vec (ds/rows w {:nil-missing? true}))]
+        (is (= ["2018-09-29" "2017-09-30"] (mapv (comp str :end) rows)))
+        (is (= 59531.0 (get (first rows) "Net Income")))
+        (is (= 48000.0 (get (second rows) "Net Income")) "latest restatement")))
+    (testing "long 10-K output keeps every window and labels it with :duration-months"
+      (let [l (fin/income-statement "X" :industry :standard)
+            by-window (into {} (map (juxt (juxt (comp str :start) (comp str :end))
+                                          :duration-months))
+                            (ds/rows l {:nil-missing? true}))]
+        (is (= 12 (by-window ["2017-10-01" "2018-09-29"])))
+        (is (= 3 (by-window ["2018-07-01" "2018-09-29"])))
+        (is (= 3 (by-window ["2018-04-01" "2018-06-30"])))))
+    (testing ":as-of applies to :view :as-reported too"
+      (let [r (fin/income-statement "X" :industry :standard :view :as-reported
+                                    :as-of "2018-12-31")]
+        (is (= 4 (ds/row-count r)))
+        (is (every? #(not (pos? (compare (str %) "2018-12-31")))
+                    (ds/column r :filed)))))
+    (testing ":as-of applies to :normalized wide output"
+      (let [w (fin/income-statement "X" :industry :standard :shape :wide
+                                    :as-of "2018-12-31")
+            fy17 (first (filter #(= "2017-09-30" (str (:end %)))
+                                (ds/rows w {:nil-missing? true})))]
+        (is (= 48351.0 (get fy17 "Net Income")))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Derived line items (imputation) — :view :standardized

@@ -35,6 +35,19 @@
     (testing ":neg-sum is nil when no operand is present with a non-zero value"
       (is (nil? (f [:neg-sum "Missing" "Z"] g))))))
 
+(deftest eval-formula-negated-operand-test
+  (let [f #'edgar.reclass/eval-formula
+        g (by-li [{:line-item "A" :val 100.0}
+                  {:line-item "Net" :val -30.0}])]
+    (testing "[:neg x] contributes the negated value and names x in :used"
+      (is (= {:val 130.0 :used ["A" "Net"]} (f [:+ "A" [:neg "Net"]] g))))
+    (testing "[:opt [:neg x]] negates when present"
+      (is (= {:val 130.0 :used ["A" "Net"]} (f [:+ "A" [:opt [:neg "Net"]]] g))))
+    (testing "[:opt [:neg x]] contributes 0 when absent"
+      (is (= {:val 100.0 :used ["A"]} (f [:+ "A" [:opt [:neg "Missing"]]] g))))
+    (testing "a required [:neg x] blocks the formula when absent"
+      (is (nil? (f [:+ "A" [:neg "Missing"]] g))))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Guards
 ;;; ---------------------------------------------------------------------------
@@ -68,6 +81,28 @@
       (is (not (f [:absent "COGS"] g))))
     (testing "unknown guard op fails closed"
       (is (not (f [:unknown "A" "B"] g))))))
+
+(deftest guard-lte-and-ties-test
+  (let [f #'edgar.reclass/guard-passes?
+        g (by-li [{:line-item "Revenue" :val 1000.0}
+                  {:line-item "Cost of Revenue" :val 300.0}
+                  {:line-item "Excise Taxes" :val 250.0}
+                  {:line-item "Gross Profit" :val 451.0}
+                  {:line-item "Goodwill" :val 250.0}])]
+    (testing ":lte passes on equality and strictly-less, fails otherwise"
+      (is (f [:lte "Goodwill" "Excise Taxes"] g))
+      (is (f [:lte "Cost of Revenue" "Revenue"] g))
+      (is (not (f [:lte "Revenue" "Cost of Revenue"] g)))
+      (is (not (f [:lte "Missing" "Revenue"] g))))
+    (testing ":ties passes when the formula is within tolerance of the label"
+      (is (f [:ties [:- "Revenue" "Cost of Revenue" "Excise Taxes"] "Gross Profit" 0.005] g)
+          "450 vs 451: 0.2% off"))
+    (testing ":ties fails outside tolerance"
+      (is (not (f [:ties [:- "Revenue" "Cost of Revenue"] "Gross Profit" 0.005] g))
+          "700 vs 451"))
+    (testing ":ties fails when the formula or the label cannot be resolved"
+      (is (not (f [:ties [:- "Revenue" "Missing"] "Gross Profit" 0.005] g)))
+      (is (not (f [:ties [:- "Revenue" "Cost of Revenue"] "Missing" 0.005] g))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; apply-ruleset — engine mechanics
@@ -120,9 +155,41 @@
     (is (= -110.0 (:val spi)))
     (is (= :special-items (:rule spi)))))
 
+(deftest special-items-aggregate-impairment-test
+  ;; modeled on INTC FY2024 (verified against the 10-K text): the
+  ;; AssetImpairmentCharges aggregate (3631) already contains the goodwill
+  ;; impairment that is also tagged separately (2984)
+  (let [spi (fn [rows]
+              (->> (reclass/apply-ruleset rows [] reclass/compustat-income-ruleset)
+                   (filter #(= "Special Items (Compustat)" (:line-item %))) first))
+        base [(row "Operating Income" -11678.0 {:concept "OperatingIncomeLoss"})
+              (row "Restructuring Charges" 3491.0 {:concept "RestructuringCharges"})
+              (row "Impairment Charges" 3631.0 {:concept "AssetImpairmentCharges"})]]
+    (testing "goodwill inside the aggregate is not counted twice"
+      (let [s (spi (conj base (row "Goodwill Impairment" 2984.0
+                                   {:concept "GoodwillImpairmentLoss"})))]
+        (is (= -7122.0 (:val s)))
+        (is (= :special-items-aggregate-impairment (:rule s)))))
+    (testing "a goodwill amount larger than the aggregate is added separately"
+      (let [s (spi (conj base (row "Goodwill Impairment" 5000.0
+                                   {:concept "GoodwillImpairmentLoss"})))]
+        (is (= -12122.0 (:val s)))
+        (is (= :special-items (:rule s)))))
+    (testing "a narrower impairment concept keeps goodwill separate"
+      (let [s (spi [(row "Impairment Charges" 300.0
+                         {:concept "ImpairmentOfLongLivedAssetsHeldAndUsed"})
+                    (row "Goodwill Impairment" 200.0 {:concept "GoodwillImpairmentLoss"})])]
+        (is (= -500.0 (:val s)))
+        (is (= :special-items (:rule s)))))
+    (testing "no goodwill tag: the general rule applies unchanged"
+      (let [s (spi base)]
+        (is (= -7122.0 (:val s)))
+        (is (= :special-items (:rule s)))))))
+
 (deftest apply-ruleset-statement-row-shadows-aux-test
-  ;; REIT income statements carry a first-class "D&A" line; the cash-flow aux
-  ;; row with the same label must NOT shadow it as a rule operand
+  ;; an income statement carrying its own "D&A" line (e.g. via custom
+  ;; :concepts chains); the cash-flow aux row with the same label must NOT
+  ;; shadow it as a rule operand
   (let [rules {:rules [{:id :dp
                         :target "DP (Compustat)"
                         :formula [:= "D&A"]}]}
@@ -493,7 +560,7 @@
     (testing "XSGA sums the operating expense lines incl. FSDS extensions"
       (let [xsga (get-row "XSGA (Compustat)")]
         (is (= 200.0 (:val xsga)))
-        (is (= :xsga-opex-lines (:rule xsga)))))
+        (is (= :xsga-opex-lines-net-other (:rule xsga)))))
     (testing "XRD falls back to the technology extension line"
       (let [xrd (get-row "XRD (Compustat)")]
         (is (= 80.0 (:val xrd)))
@@ -506,6 +573,42 @@
                      (filter #(= "XRD (Compustat)" (:line-item %))) first)]
         (is (= 42.0 (:val xrd)))
         (is (= :xrd-reported (:rule xrd)))))))
+
+(deftest compustat-xsga-other-operating-sign-test
+  ;; AMZN FY2023: "other operating expense (income), net" is a 767 net
+  ;; EXPENSE tagged OtherOperatingIncomeExpenseNet = -767 (positive = income);
+  ;; it must raise XSGA, not lower it. Earlier years carried the same line as
+  ;; the expense-signed OtherCostAndExpenseOperating.
+  (let [base [(row "General and Administrative Expense" 100.0
+                   {:concept "GeneralAndAdministrativeExpense"})
+              (row "Marketing Expense" 200.0 {:concept "MarketingExpense"})]
+        xsga (fn [rows]
+               (->> (reclass/apply-ruleset rows [] reclass/compustat-income-ruleset)
+                    (filter #(= "XSGA (Compustat)" (:line-item %))) first))]
+    (testing "income-signed net line enters negated"
+      (let [x (xsga (conj base (row "Other Operating Income (Expense), Net" -767.0
+                                    {:concept "OtherOperatingIncomeExpenseNet"})))]
+        (is (= 1067.0 (:val x)))
+        (is (= :xsga-opex-lines-net-other (:rule x)))
+        (is (= ["General and Administrative Expense" "Marketing Expense"
+                "Other Operating Income (Expense), Net"]
+               (:derived-from x)))))
+    (testing "net other operating INCOME lowers XSGA"
+      (is (= 225.0 (:val (xsga (conj base (row "Other Operating Income (Expense), Net" 75.0
+                                               {:concept "OtherOperatingIncomeExpenseNet"})))))))
+    (testing "expense-signed line enters as is"
+      (let [x (xsga (conj base (row "Other Operating Expense" 296.0
+                                    {:concept "OtherCostAndExpenseOperating"})))]
+        (is (= 596.0 (:val x)))
+        (is (= :xsga-opex-lines (:rule x)))))
+    (testing "both tags for one period: only the expense-signed one counts"
+      (let [x (xsga (conj base
+                          (row "Other Operating Expense" 296.0
+                               {:concept "OtherCostAndExpenseOperating"})
+                          (row "Other Operating Income (Expense), Net" -296.0
+                               {:concept "OtherOperatingIncomeExpenseNet"})))]
+        (is (= 596.0 (:val x)))
+        (is (= :xsga-opex-lines (:rule x)))))))
 
 (deftest compustat-xsga-components-fallback-test
   (let [rows [(row "Selling and Marketing Expense" 60.0 {:concept "SellingAndMarketingExpense"})
@@ -529,6 +632,35 @@
       (is (= 950.0 (v gross))))
     (testing "not netted when revenue is already net of assessed taxes"
       (is (nil? (v net))))))
+
+(deftest compustat-excise-gp-tieout-test
+  ;; modeled on MO FY2016: revenue tagged ExcludingAssessedTax still includes
+  ;; excise — the reported GrossProfit ties out to Revenue - COGS - Excise
+  (let [mo [(row "Revenue" 25744.0
+                 {:concept "RevenueFromContractWithCustomerExcludingAssessedTax"})
+            (row "Cost of Revenue" 7746.0 {:concept "CostOfGoodsSold"})
+            (row "Excise Taxes" 6407.0 {:concept "ExciseAndSalesTaxes"})
+            (row "Gross Profit" 11572.0 {:concept "GrossProfit"})]
+        aux [(row "D&A" 204.0)]
+        out (fn [rows] (vec (reclass/apply-ruleset rows aux reclass/compustat-income-ruleset)))
+        get-row (fn [result li] (first (filter #(= li (:line-item %)) result)))]
+    (testing "the tie-out nets excise despite the ExcludingAssessedTax concept name"
+      (let [r (get-row (out mo) "Revenue (Compustat)")]
+        (is (= 19337.0 (:val r)))
+        (is (= :revt-ex-excise-gp-tieout (:rule r)))))
+    (testing "Gross Profit (Compustat) uses the excise-netted revenue"
+      (let [gp (get-row (out mo) "Gross Profit (Compustat)")]
+        (is (= (- 19337.0 (- 7746.0 204.0)) (:val gp)))
+        (is (= :gross-profit-net-revenue (:rule gp)))
+        (is (= ["Revenue (Compustat)" "COGS (Compustat)"] (:derived-from gp)))))
+    (testing "no tie-out (gross profit already excludes only COGS): not netted"
+      (let [genuine-net (assoc-in mo [3 :val] 17998.0)
+            result (out genuine-net)]
+        (is (nil? (get-row result "Revenue (Compustat)")))
+        (is (= :gross-profit (:rule (get-row result "Gross Profit (Compustat)"))))))
+    (testing "a derived (imputed) Gross Profit never licenses the tie-out"
+      (let [derived-gp (assoc-in mo [3 :concept] nil)]
+        (is (nil? (get-row (out derived-gp) "Revenue (Compustat)")))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; financials wiring — :view :compustat
@@ -578,3 +710,12 @@
         (is (contains? labels li) li))
       (is (not (contains? labels "Fulfillment Expense"))
           "extension-tag labels are FSDS-only, not chain entries"))))
+
+(deftest other-operating-chains-sign-separated-test
+  ;; a chain must not mix sign conventions: the expense-signed and the
+  ;; income-signed other-operating concepts are separate line items
+  (let [chain (fn [label] (set (rest (first (filter #(= label (first %))
+                                                    fin/income-statement-concepts)))))]
+    (is (= #{"OtherCostAndExpenseOperating"} (chain "Other Operating Expense")))
+    (is (= #{"OtherOperatingIncomeExpenseNet"}
+           (chain "Other Operating Income (Expense), Net")))))

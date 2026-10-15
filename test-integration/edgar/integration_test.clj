@@ -4,6 +4,7 @@
             [clojure.java.io :as io]
             [edgar.core :as core]
             [edgar.api :as e]
+            [edgar.company]
             [edgar.filings :as filings]
             [edgar.forms]
             [tech.v3.dataset :as ds]))
@@ -31,6 +32,13 @@
     (is (= "0000320193" (e/cik "AAPL"))))
   (testing "CIK input round-trips correctly"
     (is (= "0000320193" (e/cik "0000320193"))))
+  (testing "integer CIK input is accepted"
+    (is (= "0000320193" (e/cik 320193)))
+    (is (= "0000320193" (:cik (e/filing 320193)))))
+  (testing "share-class dot tickers resolve like the SEC's dash form"
+    (is (= "0001067983" (e/cik "BRK.B"))))
+  (testing "multi-class CIK reverse-resolves to the primary share class"
+    (is (= "GOOGL" (edgar.company/cik->ticker 1652044))))
   (testing "company-name returns a non-blank string"
     (is (string? (e/company-name "AAPL")))
     (is (not (str/blank? (e/company-name "AAPL"))))))
@@ -44,10 +52,12 @@
       (is (contains? m :addresses)))))
 
 (deftest search-companies-test
-  (testing "search returns a non-empty seq of maps"
+  (testing "search matches current entity names, best match first"
     (let [results (e/search "apple" :limit 5)]
-      (is (seq results))
-      (is (every? map? results))))
+      (is (= {:cik "0000320193" :name "Apple Inc." :tickers ["AAPL"]} (first results)))
+      (is (every? #(re-matches #"\d{10}" (:cik %)) results))
+      (is (every? #(str/includes? (str/lower-case (:name %)) "apple") results)
+          "no companies that merely mention the query in a filing")))
   (testing "search result count respects :limit"
     (let [results (e/search "microsoft" :limit 3)]
       (is (<= (count results) 3)))))
@@ -100,8 +110,8 @@
     ;; SBUX 2012 DEF 14A submitted by Donnelley (0001193125) — the agent's
     ;; archive path 404s on the primary document
     (let [f (e/filing-by-accession "0001193125-12-025113")]
-      (is (= "829224" (:cik f)))
-      (is (= [{:name "STARBUCKS CORP" :role "Filer" :cik "829224"}] (:filers f)))
+      (is (= "0000829224" (:cik f)))
+      (is (= [{:name "STARBUCKS CORP" :role "Filer" :cik "0000829224"}] (:filers f)))
       (is (str/includes? (:url f) "/829224/"))
       (is (pos? (count (e/html f)))))))
 
@@ -112,20 +122,27 @@
       (is (pos? (ds/row-count ds))))))
 
 (deftest search-filings-test
-  (testing "search-filings returns a non-empty seq for a broad query"
-    (let [results (e/search-filings "climate risk" :forms ["10-K"] :limit 3)]
-      (is (seq results))
-      (is (every? map? results)))))
+  (testing "search-filings returns one filing map per accession"
+    (let [results (vec (e/search-filings "climate risk" :forms ["10-K"] :limit 120))]
+      (is (= 120 (count results)))
+      (is (= 120 (count (distinct (map :accessionNumber results)))))
+      (is (every? #(re-matches #"\d{10}" (:cik %)) results))
+      (is (every? #(str/starts-with? (:url %) "https://www.sec.gov/Archives/edgar/data/") results)))))
 
 (deftest daily-filings-test
-  (testing "daily-filings returns a seq for a known past date"
-    (let [results (take 5 (e/daily-filings "2026-03-10"))]
+  (testing "daily-filings returns one map per filing for a known past date"
+    (let [results (vec (e/daily-filings "2026-03-10"))]
+      (is (> (count results) 1000))
+      (is (= (count results) (count (distinct (map :accessionNumber results)))))
+      (is (every? #(re-matches #"\d{10}" (:cik %)) results))))
+  (testing ":form is an exact match (8-K excludes 8-K/A)"
+    (let [results (e/daily-filings "2026-03-10" :form "8-K")]
       (is (seq results))
-      (is (every? #(contains? % :accessionNumber) results))))
-  (testing "daily-filings with :form filter returns only matching or amended forms"
-    (let [results (take 5 (e/daily-filings "2026-03-10" :form "8-K"))]
-      (when (seq results)
-        (is (every? #(str/starts-with? (:form %) "8-K") results))))))
+      (is (every? #(= "8-K" (:form %)) results))))
+  (testing "a weekend has no daily index → empty"
+    (is (empty? (e/daily-filings "2026-03-08"))))
+  (testing "daily results load with e/html"
+    (is (pos? (count (e/html (first (e/daily-filings "2026-03-10" :form "8-K"))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Filing content
@@ -176,12 +193,16 @@
       (is (= "4" (:form result)))
       (is (contains? result :issuer))
       (is (contains? result :reporting-owner))
+      (is (seq (:reporting-owners result)))
       (is (contains? result :transactions))))
   (testing "obj on 13F-HR returns holdings dataset"
     (let [f13 (e/filing "GS" :form "13F-HR")
           result (e/obj f13)]
       (is (map? result))
       (is (= "13F-HR" (:form result)))
+      (is (re-matches #"\d{4}-\d{2}-\d{2}" (str (:period-of-report result))))
+      (is (number? (:table-entry-count result)))
+      (is (pos? (or (:table-entry-count result) 0)))
       (is (ds/dataset? (:holdings result)))
       (is (pos? (ds/row-count (:holdings result)))))))
 
@@ -298,7 +319,7 @@
     (let [idx (filings/get-quarterly-index 2024 1)
           row (first idx)]
       (is (> (count idx) 100000) "a real quarter has hundreds of thousands of filings")
-      (is (re-matches #"\d+" (:cik row)))
+      (is (re-matches #"\d{10}" (:cik row)))
       (is (re-matches #"\d{4}-\d{2}-\d{2}" (:date-filed row)))
       (is (str/starts-with? (:filename row) "edgar/data/")))))
 

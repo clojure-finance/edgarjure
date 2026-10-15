@@ -1,6 +1,17 @@
 (ns edgar.core-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [edgar.core :as core]))
+
+;; These tests set a throwaway identity and clear the caches; restore the
+;; caller's identity (e.g. a REPL session's) and leave clean caches behind.
+(use-fixtures :once
+  (fn [f]
+    (let [saved core/*identity*]
+      (try (f)
+           (finally
+             (alter-var-root #'core/*identity* (constantly saved))
+             (core/disable-disk-cache!)
+             (core/clear-cache!))))))
 
 (deftest cik-url-test
   (testing "zero-pads CIK to 10 digits"
@@ -15,13 +26,12 @@
     (is (= "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"
            (core/facts-endpoint "320193")))))
 
-(deftest archives-path-test
-  (testing "strips dashes from accession number"
-    (is (= "https://www.sec.gov/Archives/edgar/data/320193/000032019323000064"
-           (core/archives-path "320193" "0000320193-23-000064"))))
-  (testing "already undashed accession number is unchanged"
-    (is (= "https://www.sec.gov/Archives/edgar/data/320193/000032019323000064"
-           (core/archives-path "320193" "000032019323000064")))))
+(deftest pad-cik-test
+  (testing "integers and numeric strings, padded or not, normalise to 10 digits"
+    (is (= "0000320193" (core/pad-cik 320193)))
+    (is (= "0000320193" (core/pad-cik "320193")))
+    (is (= "0000320193" (core/pad-cik "0000320193")))
+    (is (= "0000320193" (core/pad-cik " 320193 ")))))
 
 (deftest set-identity-test
   (testing "set-identity! updates *identity*"
@@ -308,3 +318,127 @@
       (finally
         (core/clear-disk-cache! :dir dir)
         (core/disable-disk-cache!)))))
+
+(deftest disk-cache-index-ttl-test
+  ;; full-index/daily-index files change while their period is open, so
+  ;; they must not get the 30-day immutable-document TTL
+  (let [ttl #'edgar.core/disk-ttl-ms
+        config {:ttl-json-ms 1 :ttl-raw-ms 2}]
+    (testing "raw filing documents get the long raw TTL"
+      (is (= 2 (ttl config "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm" true))))
+    (testing "full-index and daily-index files get the short JSON TTL"
+      (is (= 1 (ttl config "https://www.sec.gov/Archives/edgar/full-index/2026/QTR4/master.idx" true)))
+      (is (= 1 (ttl config "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR4/master.20261013.idx" true)))
+      (is (= 1 (ttl config "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR4/index.json" false))))
+    (testing "JSON endpoints get the JSON TTL"
+      (is (= 1 (ttl config "https://data.sec.gov/submissions/CIK0000320193.json" false))))))
+
+(deftest disk-cache-index-expiry-round-trip-test
+  (core/clear-cache!)
+  (let [dir (temp-cache-dir)
+        calls (atom {})]
+    (try
+      ;; JSON TTL already expired, raw TTL 30 days
+      (core/enable-disk-cache! :dir dir :ttl-json-ms -1)
+      (core/set-identity! "Test test@example.com")
+      (with-redefs [hato.client/get (fn [url _] (swap! calls update url (fnil inc 0))
+                                      {:status 200 :body "body"})
+                    edgar.core/throttle! (fn [] nil)]
+        (let [idx "https://www.sec.gov/Archives/edgar/full-index/2026/QTR4/master.idx"
+              doc "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/a.htm"]
+          (core/edgar-get idx :raw? true)
+          (core/edgar-get doc :raw? true)
+          (core/clear-cache!)
+          (core/edgar-get idx :raw? true)
+          (core/edgar-get doc :raw? true)
+          (is (= 2 (@calls idx)) "index file re-fetched once its short TTL lapsed")
+          (is (= 1 (@calls doc)) "filing document served from disk")))
+      (finally
+        (core/clear-disk-cache! :dir dir)
+        (core/disable-disk-cache!)))))
+
+(deftest cache-option-test
+  (core/clear-cache!)
+  (core/disable-disk-cache!)
+  (let [calls (atom 0)]
+    (with-redefs [hato.client/get (fn [_ _] (swap! calls inc) {:status 200 :body "\"v\""})
+                  edgar.core/throttle! (fn [] nil)]
+      (core/set-identity! "Test test@example.com")
+      (testing ":cache :disk skips the in-memory raw cache"
+        (core/edgar-get "https://example.com/big.idx" :raw? true :cache :disk)
+        (core/edgar-get "https://example.com/big.idx" :raw? true :cache :disk)
+        (is (= 2 @calls))
+        (is (not (contains? @@#'edgar.core/raw-cache "https://example.com/big.idx"))))
+      (testing ":cache :none skips the JSON cache too"
+        (reset! calls 0)
+        (core/edgar-get "https://example.com/listing.json" :cache :none)
+        (core/edgar-get "https://example.com/listing.json" :cache :none)
+        (is (= 2 @calls))
+        (is (not (contains? @@#'edgar.core/cache "https://example.com/listing.json"))))
+      (testing "default :cache :all memoises"
+        (reset! calls 0)
+        (core/edgar-get "https://example.com/doc.htm" :raw? true)
+        (core/edgar-get "https://example.com/doc.htm" :raw? true)
+        (is (= 1 @calls))))))
+
+(deftest disk-cache-skipped-for-cache-none-test
+  (core/clear-cache!)
+  (let [dir (temp-cache-dir)]
+    (try
+      (core/enable-disk-cache! :dir dir)
+      (core/set-identity! "Test test@example.com")
+      (with-redefs [hato.client/get (fn [_ _] {:status 200 :body "\"v\""})
+                    edgar.core/throttle! (fn [] nil)]
+        (core/edgar-get "https://example.com/never-cached" :cache :none)
+        (is (= 0 (:entries (core/disk-cache-stats))))
+        (core/edgar-get "https://example.com/disk-only" :raw? true :cache :disk)
+        (is (= 1 (:entries (core/disk-cache-stats)))))
+      (finally
+        (core/clear-disk-cache! :dir dir)
+        (core/disable-disk-cache!)))))
+
+(deftest retries-exhausted-on-429-test
+  (testing "initial attempt + 3 retries, then ::http-error with the status"
+    (core/clear-cache!)
+    (let [calls (atom 0)]
+      (with-redefs [hato.client/get (fn [_ _] (swap! calls inc) {:status 429 :body ""})
+                    edgar.core/throttle! (fn [] nil)
+                    edgar.core/retry-base-ms 0]
+        (core/set-identity! "Test test@example.com")
+        (let [ex (try (core/edgar-get "https://example.com/always-429") nil
+                      (catch clojure.lang.ExceptionInfo e e))]
+          (is (= 4 @calls))
+          (is (= ::core/http-error (:type (ex-data ex))))
+          (is (= 429 (:status (ex-data ex))))
+          (is (= "https://example.com/always-429" (:url (ex-data ex)))))))))
+
+(deftest missing-identity-test
+  (testing "no identity → ::missing-identity before any network call"
+    (core/clear-cache!)
+    (let [calls (atom 0)]
+      (with-redefs [hato.client/get (fn [_ _] (swap! calls inc) {:status 200 :body "1"})
+                    edgar.core/throttle! (fn [] nil)]
+        (alter-var-root #'core/*identity* (constantly nil))
+        (let [ex (try (core/edgar-get "https://example.com/no-identity") nil
+                      (catch clojure.lang.ExceptionInfo e e))]
+          (is (= ::core/missing-identity (:type (ex-data ex))))
+          (is (zero? @calls)))))))
+
+(deftest cache-size-bounds-test
+  (core/clear-cache!)
+  (with-redefs [hato.client/get (fn [_ _] {:status 200 :body "\"v\""})
+                edgar.core/throttle! (fn [] nil)]
+    (core/set-identity! "Test test@example.com")
+    (testing "raw cache is trimmed to raw-cache-max-entries; the newest entry is kept"
+      (let [n @#'edgar.core/raw-cache-max-entries]
+        (doseq [i (range (+ n 5))]
+          (core/edgar-get (str "https://example.com/raw" i) :raw? true))
+        (let [ks (set (keys @@#'edgar.core/raw-cache))]
+          (is (= n (count ks)))
+          (is (contains? ks (str "https://example.com/raw" (+ n 4)))))))
+    (testing "JSON cache is trimmed to cache-max-entries"
+      (let [n @#'edgar.core/cache-max-entries]
+        (doseq [i (range (+ n 3))]
+          (core/edgar-get (str "https://example.com/json" i)))
+        (is (= n (count @@#'edgar.core/cache))))))
+  (core/clear-cache!))

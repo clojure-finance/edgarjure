@@ -1,7 +1,7 @@
 {:ruleset :compustat
  :statement :income
  :taxonomy "us-gaap"
- :version "2026-08-01"
+ :version "2026-10-15"
  :notes "Reclassification rules approximating Compustat income statement item
 definitions (roadmap 4.1c). Derived empirically against a licensed Compustat annual extract
 (18 large industrials; fitted on FY2010-2015, checked out-of-sample on
@@ -77,23 +77,77 @@ notes value (e.g. HON) are over-added; not detectable from companyfacts."}
              [:opt "R&D Expense"]]
    :notes "Component fallback for filers with no combined SG&A tag (MSFT, ORCL,
 CSCO tag S&M and G&A separately)."}
+  {:id :xsga-opex-lines-net-other
+   :target "XSGA (Compustat)"
+   :compustat "XSGA"
+   :formula [:+ "General and Administrative Expense" [:opt "Marketing Expense"]
+             [:opt "Fulfillment Expense"] [:opt "Technology and Content Expense"]
+             [:opt "R&D Expense"]
+             [:opt [:neg "Other Operating Income (Expense), Net"]]]
+   :guards [[:absent "Other Operating Expense"]]
+   :notes "E-commerce presentation fallback (AMZN): no SG&A or S&M tag; the
+operating expense lines besides cost of sales - fulfillment, marketing,
+technology, G&A - all land in Compustat XSGA (empirically, the operating
+expenses a filer reports alongside a COGS line resolve to XSGA). Fulfillment and
+Technology & Content are extension tags supplied as FSDS operand rows when the
+FSDS cache is enabled; without it this rule still fires but understates.
+The other-operating line enters with its sign flipped: it is tagged
+OtherOperatingIncomeExpenseNet, where positive means income (AMZN FY2023:
+-767M for a 767M net expense, which the previous unsigned sum subtracted
+from XSGA instead of adding). This variant applies when the expense-signed
+OtherCostAndExpenseOperating tag is absent for the period; the next rule
+covers periods carrying it (AMZN tagged that line with either concept in
+different years, so using both would double count)."}
   {:id :xsga-opex-lines
    :target "XSGA (Compustat)"
    :compustat "XSGA"
    :formula [:+ "General and Administrative Expense" [:opt "Marketing Expense"]
              [:opt "Fulfillment Expense"] [:opt "Technology and Content Expense"]
              [:opt "R&D Expense"] [:opt "Other Operating Expense"]]
-   :notes "E-commerce presentation fallback (AMZN): no SG&A or S&M tag; the
-operating expense lines besides cost of sales - fulfillment, marketing,
-technology, G&A - all land in Compustat XSGA (empirically, the operating
-expenses a filer reports alongside a COGS line resolve to XSGA). Fulfillment and
-Technology & Content are extension tags supplied as FSDS operand rows when the
-FSDS cache is enabled; without it this rule still fires but understates."}
+   :notes "Same e-commerce presentation fallback as above, for periods whose
+other-operating line is tagged expense-signed (OtherCostAndExpenseOperating,
+positive = expense)."}
+  {:id :revt-ex-excise-gp-tieout
+   :target "Revenue (Compustat)"
+   :compustat "REVT"
+   :formula [:- "Revenue" "Excise Taxes"]
+   :guards [[:concept-in "Gross Profit" #{"GrossProfit"}]
+            [:ties [:- "Revenue" "Cost of Revenue" "Excise Taxes"] "Gross Profit" 0.005]]
+   :notes "Compustat REVT is net of excise taxes. Arithmetic proof that the
+tagged revenue still contains excise: the filer's reported GrossProfit ties
+out (within 0.5%) to Revenue - Cost of Revenue - Excise Taxes. Catches filers
+whose revenue tag claims to exclude assessed taxes while the value includes
+them (MO FY2016-2019 tag RevenueFromContractWithCustomerExcludingAssessedTax
+for net revenues that include excise: FY2016 25.744B - 7.765B - 6.407B =
+reported GrossProfit 11.572B), which the concept-name guard below cannot
+see. Needs a reported GrossProfit tag and a tagged excise line."}
+  {:id :revt-ex-excise
+   :target "Revenue (Compustat)"
+   :compustat "REVT"
+   :formula [:- "Revenue" "Excise Taxes"]
+   :guards [[:concept-not-in "Revenue"
+             #{"RevenueFromContractWithCustomerExcludingAssessedTax"}]]
+   :notes "Compustat REVT is net of excise taxes. Applies only when the winning
+revenue concept is not already net of assessed taxes and the filer tags an
+excise-tax line. The guard trusts the concept name; the tie-out rule above
+covers filers whose ExcludingAssessedTax revenue still includes excise when
+they also report GrossProfit, but without a reported gross profit such
+mis-tagged revenue goes un-netted. Excise lines tagged outside the Excise
+Taxes chain (e.g. as a cost-of-revenue component) are not seen. Oil majors
+may still differ: some (CVX) include equity-affiliate and other income in
+their tagged Revenues."}
+  {:id :gross-profit-net-revenue
+   :target "Gross Profit (Compustat)"
+   :compustat "REVT - COGS"
+   :formula [:- "Revenue (Compustat)" "COGS (Compustat)"]
+   :notes "Gross profit under Compustat's definitions: excise-netted revenue
+(REVT) less COGS before D&A."}
   {:id :gross-profit
    :target "Gross Profit (Compustat)"
    :compustat "REVT - COGS"
    :formula [:- "Revenue" "COGS (Compustat)"]
-   :notes "Gross profit under Compustat's COGS definition (i.e. before D&A)."}
+   :notes "Fallback when no excise netting applies (no Revenue (Compustat)
+row): revenue as tagged less Compustat COGS (i.e. before D&A)."}
   {:id :xopr
    :target "XOPR (Compustat)"
    :compustat "XOPR"
@@ -113,6 +167,23 @@ impairments: the separate Impairment Charges operand would double-count, so
 it is dropped here (Goodwill Impairment stays - not inside the combined
 tags). No filer on the validation sample triggers this today (A/B measured
 identical, 2026-08-01), so the guard is pure protection."}
+  {:id :special-items-aggregate-impairment
+   :target "Special Items (Compustat)"
+   :compustat "SPI (operating portion)"
+   :formula [:neg-sum "Restructuring Charges" "Impairment Charges"
+             "Acquisition-Related Costs" "Litigation Settlement" "In-Process R&D"]
+   :guards [[:concept-in "Impairment Charges" #{"AssetImpairmentCharges"}]
+            [:lte "Goodwill Impairment" "Impairment Charges"]]
+   :notes "AssetImpairmentCharges is the aggregate asset write-down concept,
+goodwill included; when the filer also tags GoodwillImpairmentLoss no larger
+than it, the goodwill amount is taken to sit inside the aggregate and the
+separate Goodwill Impairment operand is dropped. Confirmed on INTC FY2024:
+AssetImpairmentCharges 3.631B is the 'asset impairment charges' line of its
+restructuring-and-other-charges note, which the filing says includes 3.1B
+of goodwill and acquired-intangible impairments (GoodwillImpairmentLoss
+2.984B); adding both counted the goodwill twice. A goodwill amount larger
+than the aggregate cannot be inside it and falls through to the rule
+below."}
   {:id :special-items
    :target "Special Items (Compustat)"
    :compustat "SPI (operating portion)"
@@ -134,12 +205,14 @@ excludes them). 24% -> 41%. Nonrecurring asset-sale gains/losses (Compustat
 GLP) are removed via subtraction because the XBRL tag is signed: a gain
 (positive) is taken out of operating income, a loss (negative) is added back.
 GLP is kept out of the Special Items row itself, whose :neg-sum operands are
-positively-tagged charges. Caveat: for oil/coal/transport filers Compustat
-treats recurring asset-sale gains as NOPI, not special - not modeled; and a
-gain reported below the operating line would be over-removed, which
-companyfacts cannot detect. Both concerns measured harmless on the
-validation sample (A/B with the operand removed: OIADP identical,
-2026-08-01, consistent with the 2026-07-31 zero-marginal-effect check)."}
+positively-tagged charges. Untested hypothesis, not modeled: for industries
+where asset sales are part of normal operations (e.g. oil, coal, transport)
+recurring gains may belong in nonoperating income rather than special items.
+A gain reported below the operating line would be over-removed, which
+companyfacts cannot detect. On the validation sample removing the GLP
+operand left OIADP unchanged (A/B 2026-08-01, consistent with the 2026-07-31
+zero-marginal-effect check). No recurrence gate (e.g. treating gains seen in
+three consecutive years as recurring) is implemented."}
   {:id :oibdp
    :target "OIBDP (Compustat)"
    :compustat "OIBDP"
@@ -162,14 +235,4 @@ non-additive: R&D is already folded into the XSGA reclassification)."}
 AMZN's Technology and content / Technology and infrastructure extension tag
 equals Compustat XRD exactly (verified on FY2025 vs the 2026Q1 FSDS). The
 operand is an FSDS extension row - without the FSDS cache this rule cannot
-fire."}
-  {:id :revt-ex-excise
-   :target "Revenue (Compustat)"
-   :compustat "REVT"
-   :formula [:- "Revenue" "Excise Taxes"]
-   :guards [[:concept-not-in "Revenue"
-             #{"RevenueFromContractWithCustomerExcludingAssessedTax"}]]
-   :notes "Compustat REVT is net of excise taxes. Applies only when the winning
-revenue concept is not already net of assessed taxes and the filer tags an
-excise-tax line. Oil majors may still differ: some (CVX) include equity-
-affiliate and other income in their tagged Revenues."}]}
+fire."}]}
