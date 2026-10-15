@@ -2,7 +2,6 @@
   (:require [edgar.core :as core]
             [edgar.filings :as filings]
             [edgar.filing :as filing]
-            [clojure.string :as str]
             [babashka.fs :as fs]))
 
 ;;; ---------------------------------------------------------------------------
@@ -17,15 +16,11 @@
 ;;; ---------------------------------------------------------------------------
 
 (defn- output-path
-  "Return the output file path for a filing's primary document."
+  "Return the output file path for a filing's primary document — the same
+   path filing/filing-save! writes to."
   [f dir]
-  (let [form (:form f)
-        cik (:cik f)
-        acc (:accessionNumber f)
-        idx (filing/filing-index f)
-        primary (filing/primary-doc idx)]
-    (when primary
-      (str (fs/path dir form cik acc (:name primary))))))
+  (when-let [primary (filing/primary-doc (filing/filing-index f))]
+    (str (fs/path (filing/save-dir f dir) (:name primary)))))
 
 (defn download-filings!
   "Download filings for a ticker or CIK to a local directory.
@@ -106,7 +101,9 @@
 (defn download-index!
   "Download all quarterly index files for a year range to a directory.
    Returns a seq of result maps {:status :ok :path ...} or {:status :error ...}.
-   type: \"company\" | \"form\" | \"master\" (default \"company\")"
+   type: \"company\" | \"form\" | \"master\" (default \"company\")
+   Files (30-60 MB each) are written as fetched bytes and never enter the
+   in-memory or disk HTTP caches."
   [start-year end-year dir & {:keys [type quarters]
                               :or {type "company" quarters [1 2 3 4]}}]
   (doall
@@ -117,7 +114,9 @@
                out-file (fs/path out-dir (str type ".idx"))]]
      (try
        (fs/create-dirs out-dir)
-       (spit (str out-file) (core/edgar-get url :raw? true))
+       (let [^bytes body (core/edgar-get-bytes url)]
+         (with-open [out (java.io.FileOutputStream. (str out-file))]
+           (.write out body)))
        (ok (str out-file))
        (catch Exception e
          (err (str year "/QTR" q) :exception (.getMessage e)))))))

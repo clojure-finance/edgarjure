@@ -1,8 +1,8 @@
 {:statement :income-statement
  :industry :standard
  :taxonomy "us-gaap"
- :version "2026-07-28"
- :notes "Concept fallback chains for standard industrial filers. Each line item lists candidate XBRL concepts tried in order; the first present in the company's facts wins per period."
+ :version "2026-10-15"
+ :notes "Concept fallback chains for standard industrial filers. Each line item lists candidate XBRL concepts tried in order; the first present in the company's facts wins per period. A chain only groups concepts with the same sign convention: OtherCostAndExpenseOperating (positive = expense) and OtherOperatingIncomeExpenseNet (positive = income) are separate line items."
  :line-items
  [{:label "Revenue"
    :concepts ["RevenueFromContractWithCustomerExcludingAssessedTax"
@@ -33,8 +33,9 @@
    :concepts ["MarketingExpense"
               "MarketingAndAdvertisingExpense"]}
   {:label "Other Operating Expense"
-   :concepts ["OtherCostAndExpenseOperating"
-              "OtherOperatingIncomeExpenseNet"]}
+   :concepts ["OtherCostAndExpenseOperating"]}
+  {:label "Other Operating Income (Expense), Net"
+   :concepts ["OtherOperatingIncomeExpenseNet"]}
   {:label "Excise Taxes"
    :concepts ["ExciseAndSalesTaxes"
               "ExciseTaxes"]}

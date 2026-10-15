@@ -3,14 +3,12 @@
             [clojure.string :as str]
             [hickory.core :as hickory]
             [hickory.select :as sel]
-            [babashka.fs :as fs])
-  (:import [java.nio.file Path]
-           [java.io FileOutputStream]))
+            [babashka.fs :as fs]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Filing index — list of documents in a single filing
-;;; https://data.sec.gov/submissions/... gives accessionNumber
-;;; Index JSON: https://data.sec.gov/submissions/{accession-no}-index.json
+;;; HTML index page:
+;;;   https://www.sec.gov/Archives/edgar/data/{cik}/{acc-no-dashes}/{acc-no}-index.html
 ;;; ---------------------------------------------------------------------------
 
 (defn filing-index-url
@@ -32,7 +30,7 @@
 (defn- parse-filing-index-html
   "Parse an HTML filing index page into
    {:files [...] :formType \"...\" :filingDate \"YYYY-MM-DD\"
-    :filers [{:name \"...\" :role \"Filer\" :cik \"829224\"} ...]}.
+    :filers [{:name \"...\" :role \"Filer\" :cik \"0000829224\"} ...]}.
    :role is EDGAR's label for the entity: Filer, Subject, Filed by, Issuer,
    Reporting, ..."
   [html]
@@ -51,7 +49,7 @@
         filers (->> (sel/select (sel/class "companyName") tree)
                     (keep #(when-let [[_ nm role cik] (re-find #"(?s)^\s*(.*?)\s*\(\s*([^)]+?)\s*\)\s*CIK\s*:\s*(\d{10})"
                                                                (cell-text %))]
-                             {:name nm :role role :cik (str (Long/parseLong cik))}))
+                             {:name nm :role role :cik (core/pad-cik cik)}))
                     vec)
         rows (sel/select (sel/descendant (sel/tag :table) (sel/tag :tr)) tree)
         files (->> rows
@@ -159,39 +157,45 @@
   [filing doc out-file]
   (let [url (filing-doc-url filing (:name doc))]
     (if (binary-filename? (:name doc))
-      (let [bytes (core/edgar-get-bytes url)]
+      (let [^bytes bytes (core/edgar-get-bytes url)]
         (with-open [out (java.io.FileOutputStream. (str out-file))]
           (.write out bytes)))
       (spit (str out-file)
             (core/edgar-get url :raw? true)))))
 
+(defn save-dir
+  "Return the directory a filing is saved under by filing-save! and
+   filing-save-all!: dir/{form}/{cik}/{accession-no}. A \"/\" in the form
+   type is replaced by \"_\" so an amendment (\"10-K/A\" → \"10-K_A\") stays
+   a single directory level next to its original form."
+  [filing dir]
+  (fs/path dir
+           (str/replace (str (:form filing)) "/" "_")
+           (str (:cik filing))
+           (str (:accessionNumber filing))))
+
 (defn filing-save!
   "Download a filing's primary document to a directory.
    Creates subdirectory structure: dir/{form}/{cik}/{accession-no}/{filename}
+   (see save-dir; \"10-K/A\" is saved under \"10-K_A\").
    Returns the saved file path, or nil if the filing has no primary document."
   [filing dir]
   (let [idx (filing-index filing)
         primary (primary-doc idx)]
     (when primary
-      (let [form (:form filing)
-            cik (:cik filing)
-            acc (:accessionNumber filing)
-            out-dir (fs/path dir form cik acc)
+      (let [out-dir (save-dir filing dir)
             out-file (fs/path out-dir (:name primary))]
         (fs/create-dirs out-dir)
         (save-doc! filing primary out-file)
         (str out-file)))))
 
 (defn filing-save-all!
-  "Download all documents in a filing to a directory.
-   Duplicate filenames in the index are deduplicated (last entry wins).
-   Returns a seq of saved file paths."
+  "Download all documents in a filing to a directory (layout as in
+   filing-save!). Duplicate filenames in the index are deduplicated (last
+   entry wins). Returns a seq of saved file paths."
   [filing dir]
   (let [idx (filing-index filing)
-        cik (:cik filing)
-        acc (:accessionNumber filing)
-        form (:form filing)
-        out-dir (fs/path dir form cik acc)
+        out-dir (save-dir filing dir)
         unique-docs (vals (into {} (map (juxt :name identity) (:files idx))))]
     (fs/create-dirs out-dir)
     (doall
@@ -255,10 +259,11 @@
 
 (defn filing-by-accession
   "Hydrate a filing map from an accession number string.
-   Accepts dashed format: \"XXXXXXXXXX-YY-ZZZZZZ\"
+   Accepts dashed \"XXXXXXXXXX-YY-ZZZZZZ\" or undashed 18-digit format.
    Returns a filing map with :cik :accessionNumber :form :primaryDocument
    :filingDate :url :filers, ready for filing-html, filing-text, filing-obj,
-   extract-items, etc.
+   extract-items, etc. :cik and every :filers :cik are zero-padded 10-digit
+   strings.
    Throws ex-info with ::not-found if the accession number does not exist.
 
    The first 10 digits of an accession number are the SUBMITTER's CIK, which
@@ -270,10 +275,8 @@
    :filers as {:name :role :cik}."
   [accession-number]
   (let [digits (str/replace accession-number "-" "")
-        submitter-cik (str (Long/parseLong (subs digits 0 10)))
-        acc-dashed (if (re-matches #"\d{10}-\d{2}-\d{6}" accession-number)
-                     accession-number
-                     (str (subs digits 0 10) "-" (subs digits 10 12) "-" (subs digits 12)))
+        submitter-cik (core/pad-cik (subs digits 0 10))
+        acc-dashed (str (subs digits 0 10) "-" (subs digits 10 12) "-" (subs digits 12))
         ;; the index page resolves under the submitter's path, documents may not
         idx (try
               (filing-index {:cik submitter-cik :accessionNumber acc-dashed})

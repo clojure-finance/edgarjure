@@ -93,9 +93,7 @@
    Tries Long, then Double, then falls back to String."
   [cells]
   (let [non-blank (remove str/blank? cells)
-        parsed-non-blank (map parse-number non-blank)
-        all-numeric? (and (seq non-blank) (every? some? parsed-non-blank))
-        any-double? (some double? parsed-non-blank)]
+        all-numeric? (and (seq non-blank) (every? some? (map parse-number non-blank)))]
     (if all-numeric?
       (mapv #(when-not (str/blank? %) (parse-number %)) cells)
       (vec cells))))
@@ -106,9 +104,11 @@
 
 (defn- layout-table?
   "Return true if a table appears to be layout/navigation rather than data.
-   Heuristics: fewer than 2 data rows, or all rows have only 1 non-blank cell."
+   Heuristics: no data rows, or every data row has fewer than 2 non-blank
+   cells. The minimum number of data rows is governed by :min-rows in
+   extract-tables, not here."
   [data-rows]
-  (or (< (count data-rows) 2)
+  (or (empty? data-rows)
       (every? #(< (count (remove str/blank? %)) 2) data-rows)))
 
 ;;; ---------------------------------------------------------------------------
@@ -118,7 +118,8 @@
 (defn- matrix->dataset
   "Convert a seq of row-vectors (all strings) into a tech.ml.dataset.
    First row is used as column names. Remaining rows are data.
-   Pads short rows with nil; truncates overlong rows."
+   Pads short rows with nil; truncates overlong rows.
+   Columns keep their left-to-right order from the HTML table."
   [rows table-idx]
   (when (>= (count rows) 2)
     (let [header (first rows)
@@ -133,20 +134,20 @@
           col-seqs (for [ci (range ncols)]
                      (mapv #(nth % ci "") aligned))
           ;; Deduplicate column names
-          col-names (loop [names header seen {} result []]
+          col-names (loop [names header used #{} result []]
                       (if (empty? names)
                         result
                         (let [n (first names)
                               n (if (str/blank? n) (str "col_" (count result)) n)
-                              cnt (get seen n 0)
-                              uniq-n (if (zero? cnt) n (str n "_" cnt))]
+                              ;; first of n, n_1, n_2, ... not already taken
+                              uniq-n (first (remove used (cons n (map #(str n "_" %) (iterate inc 1)))))]
                           (recur (rest names)
-                                 (assoc seen n (inc cnt))
+                                 (conj used uniq-n)
                                  (conj result uniq-n)))))
-          ;; Infer types
-          typed-cols (mapv infer-column col-seqs)
-          col-map (zipmap col-names typed-cols)]
-      (ds/->dataset col-map {:dataset-name (str "table-" table-idx)}))))
+          ;; Infer types; build columns in order (a column map would be a
+          ;; hash map beyond 8 entries and scramble the column order)
+          columns (map ds/new-column col-names (map infer-column col-seqs))]
+      (ds/new-dataset {:dataset-name (str "table-" table-idx)} columns))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Main extraction pipeline
@@ -178,7 +179,8 @@
     (vec (concat tr-direct tr-from-sections))))
 
 (defn- extract-table
-  "Convert a single hickory table node into a dataset, or nil if it's a layout table."
+  "Convert a single hickory table node into a dataset, or nil if it's a
+   layout table or has no data rows."
   [table-node table-idx]
   (let [rows (->> (direct-rows table-node)
                   (mapv row-texts)
@@ -198,17 +200,21 @@
 (defn extract-tables
   "Extract HTML tables from a filing as a seq of tech.ml.dataset objects.
 
-   filing    — a filing map (from e/filing, filings/get-filing, etc.)
+   filing    — a filing map (from e/filing, e/filings, e/filing-by-accession, etc.)
    Options:
-     :nth      — return only the nth table (0-indexed); returns a single dataset or nil
-     :min-rows — only return tables with at least this many data rows (default 2)
+     :nth      — return only the nth table (0-indexed) among the tables that
+                 pass the filters; returns a single dataset or nil
+     :min-rows — only return tables with at least this many data rows
+                 (default 2; :min-rows 1 also keeps single-row tables, and a
+                 table always needs at least one data row)
      :min-cols — only return tables with at least this many columns (default 2)
 
    Returns a seq of datasets (or a single dataset when :nth is used).
    Each dataset is named \"table-N\" where N is the original index in the HTML.
+   Columns are in the table's left-to-right order.
 
-   Tables that appear to be layout/navigation (single-column, <2 data rows)
-   are automatically filtered out.
+   Tables that appear to be layout/navigation (no data row with at least two
+   non-blank cells) are automatically filtered out.
 
    Returns nil (for :nth) or an empty seq when the filing has no HTML content
    or the HTML contains no tables.

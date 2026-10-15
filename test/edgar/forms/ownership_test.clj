@@ -1,7 +1,7 @@
 (ns edgar.forms.ownership-test
   (:require [clojure.test :refer [deftest is testing]]
-            [edgar.forms.ownership]
-            [edgar.forms.form4 :as form4]
+            [edgar.forms.ownership :as ownership]
+            [edgar.forms.xml :as x]
             [edgar.filing :as filing]))
 
 ;;; ---------------------------------------------------------------------------
@@ -167,8 +167,60 @@
   </nonDerivativeTable>
 </ownershipDocument>")
 
+(def ^:private joint-form4a-xml
+  "Joint Form 4/A — current true/false flag encoding, two reporting owners.
+   Modeled on the Berkshire Hathaway / Buffett joint Form 4 on Lennar,
+   accession 0001193125-26-414744; the amendment fields and the second
+   owner's director/officer flags (one upper-case) are altered to exercise
+   the parser."
+  "<?xml version=\"1.0\"?>
+<ownershipDocument>
+    <schemaVersion>X0609</schemaVersion>
+    <documentType>4/A</documentType>
+    <periodOfReport>2026-10-01</periodOfReport>
+    <dateOfOriginalSubmission>2026-10-03</dateOfOriginalSubmission>
+    <notSubjectToSection16>false</notSubjectToSection16>
+    <issuer>
+        <issuerCik>0000920760</issuerCik>
+        <issuerName>LENNAR CORP /NEW/</issuerName>
+        <issuerTradingSymbol>LEN</issuerTradingSymbol>
+    </issuer>
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001067983</rptOwnerCik>
+            <rptOwnerName>BERKSHIRE HATHAWAY INC</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerStreet1>3555 FARNAM STREET</rptOwnerStreet1>
+            <rptOwnerCity>OMAHA</rptOwnerCity>
+            <rptOwnerState>NE</rptOwnerState>
+            <rptOwnerZipCode>68131</rptOwnerZipCode>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>false</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0000315090</rptOwnerCik>
+            <rptOwnerName>BUFFETT WARREN E</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerRelationship>
+            <isDirector>TRUE</isDirector>
+            <isOfficer>true</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+            <officerTitle>Chairman and CEO</officerTitle>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+    <nonDerivativeTable/>
+</ownershipDocument>")
+
 (defn- parse-str [s]
-  (#'edgar.forms.ownership/parse-xml-str s))
+  (x/parse-str s))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Issuer and owner (Form 4 fixture)
@@ -182,13 +234,30 @@
       (is (= "AAPL" (:ticker issuer))))))
 
 (deftest parse-owner-test
-  (let [owner (#'edgar.forms.ownership/parse-owner (parse-str form4-xml))]
-    (testing "extracts owner identity and relationship"
+  (let [[owner :as owners] (#'ownership/parse-owners (parse-str form4-xml))]
+    (testing "extracts owner identity and relationship (legacy 1/0 flags)"
+      (is (= 1 (count owners)))
       (is (= "0001214128" (:cik owner)))
       (is (= "COOK TIMOTHY D" (:name owner)))
       (is (true? (:is-officer? owner)))
       (is (false? (:is-director? owner)))
       (is (= "Chief Executive Officer" (:officer-title owner))))))
+
+(deftest parse-owners-joint-true-false-test
+  (let [[o1 o2 :as owners] (#'ownership/parse-owners (parse-str joint-form4a-xml))]
+    (testing "every reportingOwner parsed, in filing order"
+      (is (= 2 (count owners)))
+      (is (= ["0001067983" "0000315090"] (mapv :cik owners)))
+      (is (= "OMAHA" (:city o1)))
+      (is (nil? (:city o2)) "second owner carries no address block"))
+    (testing "true/false flags (case-insensitive)"
+      (is (true? (:is-10pct? o1)))
+      (is (false? (:is-director? o1)))
+      (is (false? (:is-officer? o1)))
+      (is (true? (:is-director? o2)) "TRUE")
+      (is (true? (:is-officer? o2)))
+      (is (false? (:is-other? o2)))
+      (is (= "Chairman and CEO" (:officer-title o2))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Transactions (Form 4 fixture)
@@ -283,15 +352,33 @@
       (doseq [ft ["3" "3/A" "4" "4/A" "5" "5/A"]]
         (is (contains? methods ft) ft)))))
 
-(deftest parse-form4-delegation-test
+(deftest filing-obj-form4-test
   (with-redefs [filing/filing-index
                 (fn [_] {:files [{:name "ownership.xml" :type "4" :sequence "1"}]})
                 filing/filing-document
                 (fn [_ _ & _] form4-xml)]
-    (testing "edgar.forms.form4/parse-form4 still works via delegation"
-      (let [result (form4/parse-form4 {:form "4"})]
+    (testing "filing-obj on a Form 4 filing map dispatches to the ownership parser"
+      (let [result (filing/filing-obj {:form "4"})]
         (is (= "4" (:form result)))
-        (is (= 1 (count (:transactions result))))))))
+        (is (= 1 (count (:transactions result))))
+        (is (true? (get-in result [:reporting-owner :is-officer?])))))))
+
+(deftest parse-joint-amendment-full-test
+  (with-redefs [filing/filing-index
+                (fn [_] {:files [{:name "ownership.xml" :type "4/A" :sequence "1"}]})
+                filing/filing-document
+                (fn [_ _ & _] joint-form4a-xml)]
+    (let [result (ownership/parse-ownership-form {:form "4/A"})]
+      (testing ":form, period and original-submission date"
+        (is (= "4/A" (:form result)))
+        (is (= "2026-10-01" (:period-of-report result)))
+        (is (= "2026-10-03" (:date-of-original-submission result)))
+        (is (not (contains? result :date-of-change))))
+      (testing ":reporting-owner is the first of :reporting-owners"
+        (is (= 2 (count (:reporting-owners result))))
+        (is (= (first (:reporting-owners result)) (:reporting-owner result)))
+        (is (= "BERKSHIRE HATHAWAY INC" (get-in result [:reporting-owner :name])))
+        (is (= "BUFFETT WARREN E" (get-in result [:reporting-owners 1 :name])))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; XML document locator

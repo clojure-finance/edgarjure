@@ -11,14 +11,21 @@
 (def ^:private tickers-cache (atom nil))
 (def ^:private tickers-by-ticker-cache (atom nil))
 
+(defn- rank
+  "Numeric rank of a company_tickers.json entry key (:0, :1, ...). For a
+   multi-class CIK the lowest-ranked entry is the primary share class
+   (GOOGL ranks before GOOG, BRK-B before BRK-A)."
+  [k]
+  (Long/parseLong (if (keyword? k) (name k) (str k))))
+
 (defn- load-tickers! []
   (when-not @tickers-cache
     (let [data (core/edgar-get core/tickers-url)]
-      (reset! tickers-cache data)
       (reset! tickers-by-ticker-cache
               (into {}
                     (map (fn [[_ v]] [(str/upper-case (:ticker v)) v]))
-                    data))))
+                    data))
+      (reset! tickers-cache data)))
   @tickers-cache)
 
 (defn- tickers-by-ticker []
@@ -35,41 +42,62 @@
 
 (core/register-cache-clearer! ::tickers clear-ticker-cache!)
 
+(defn- normalize-ticker
+  "Map share-class dots to the SEC's dash form: \"BRK.B\" → \"BRK-B\"."
+  [ticker]
+  (str/replace ticker "." "-"))
+
 (defn ticker->cik
   "Resolve a ticker symbol to a CIK string (zero-padded to 10 digits).
+   Case-insensitive; share-class dots are accepted (\"BRK.B\" = \"BRK-B\").
    Returns nil if not found."
   [ticker]
-  (when-let [entry (get (tickers-by-ticker) (str/upper-case ticker))]
-    (format "%010d" (Long/parseLong (str (:cik_str entry))))))
+  (let [by-ticker (tickers-by-ticker)
+        t (str/upper-case (str/trim (str ticker)))]
+    (when-let [entry (or (get by-ticker t)
+                         (get by-ticker (normalize-ticker t)))]
+      (core/pad-cik (:cik_str entry)))))
 
 (defn cik->ticker
-  "Reverse lookup: CIK integer or string → ticker symbol."
+  "Reverse lookup: CIK integer or string → ticker symbol.
+   For a CIK with several share classes the primary (lowest-ranked) listing
+   in company_tickers.json is returned, e.g. 1652044 → \"GOOGL\".
+   Returns nil if the CIK has no ticker."
   [cik]
-  (let [cik-long (Long/parseLong (str cik))]
-    (->> (load-tickers!)
-         vals
-         (filter #(= cik-long (Long/parseLong (str (:cik_str %)))))
-         first
-         :ticker)))
+  (let [cik-long (Long/parseLong (str/trim (str cik)))]
+    (some->> (load-tickers!)
+             (filter (fn [[_ v]] (= cik-long (Long/parseLong (str (:cik_str v))))))
+             seq
+             (apply min-key (comp rank key))
+             val
+             :ticker)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Company metadata
 ;;; SEC endpoint: https://data.sec.gov/submissions/CIK##########.json
 ;;; ---------------------------------------------------------------------------
 
+(defn company-cik
+  "Return the zero-padded 10-digit CIK for a ticker or CIK input.
+   A CIK may be an integer (320193) or a numeric string with or without
+   leading zeros. Throws ex-info with :type ::unknown-ticker when a ticker
+   cannot be resolved."
+  [ticker-or-cik]
+  (if (or (integer? ticker-or-cik)
+          (re-matches #"\d+" (str/trim (str ticker-or-cik))))
+    (core/pad-cik ticker-or-cik)
+    (or (ticker->cik ticker-or-cik)
+        (throw (ex-info (str "Unknown ticker: " ticker-or-cik)
+                        {:type ::unknown-ticker :ticker ticker-or-cik})))))
+
 (defn get-company
   "Fetch full company metadata map from SEC submissions endpoint.
    Accepts ticker string or CIK (string or integer).
    Returns a map with keys :cik :name :tickers :sic :sic-description
-   :state-of-incorporation :fiscal-year-end :filings and more."
+   :state-of-incorporation :fiscal-year-end :filings and more.
+   Throws ex-info with :type ::unknown-ticker when a ticker cannot be resolved."
   [ticker-or-cik]
-  (let [cik (if (re-matches #"\d+" (str ticker-or-cik))
-              (format "%010d" (Long/parseLong (str ticker-or-cik)))
-              (ticker->cik (str ticker-or-cik)))]
-    (when-not cik
-      (throw (ex-info (str "Could not resolve CIK for: " ticker-or-cik)
-                      {:ticker-or-cik ticker-or-cik})))
-    (core/edgar-get (core/cik-url cik))))
+  (core/edgar-get (core/cik-url (company-cik ticker-or-cik))))
 
 (defn company-name
   "Return the company name for a ticker or CIK."
@@ -111,7 +139,7 @@
       :former-names      [{:name \"...\" :date \"...\"}]}"
   [ticker-or-cik]
   (let [raw (get-company ticker-or-cik)]
-    {:cik (format "%010d" (Long/parseLong (str (:cik raw))))
+    {:cik (core/pad-cik (:cik raw))
      :name (:name raw)
      :tickers (:tickers raw)
      :exchanges (:exchanges raw)
@@ -131,65 +159,50 @@
      :former-names (mapv #(hash-map :name (:name %) :date (:date %))
                          (:formerNames raw))}))
 
-(defn company-cik
-  "Return the zero-padded 10-digit CIK for a ticker or CIK input.
-   Throws ex-info with :type ::unknown-ticker when a ticker cannot be resolved."
-  [ticker-or-cik]
-  (if (re-matches #"\d+" (str ticker-or-cik))
-    (format "%010d" (Long/parseLong (str ticker-or-cik)))
-    (or (ticker->cik ticker-or-cik)
-        (throw (ex-info (str "Unknown ticker: " ticker-or-cik)
-                        {:type ::unknown-ticker :ticker ticker-or-cik})))))
-
 ;;; ---------------------------------------------------------------------------
-;;; Company search via EFTS full-text search
+;;; Company search via the EDGAR entity index (the company-name typeahead
+;;; behind efts.sec.gov/LATEST/search-index?keysTyped=...). Each hit is one
+;;; entity: {:_id "320193" :_source {:entity "Apple Inc. (AAPL)"
+;;; :tickers "AAPL" ...}}. At most 10 hits are returned per query and
+;;; from= paging is ignored by the endpoint.
 ;;; ---------------------------------------------------------------------------
 
-(defn- shape-search-hit [hit]
-  (let [src (:_source hit)
-        cik (first (:ciks src))
-        display (first (:display_names src))]
-    (when (and cik display)
-      {:entity-name (-> display
-                        (str/replace #"\s*\(CIK [^)]+\)" "")
-                        (str/replace #"\s*\([^)]+\)\s*$" "")
-                        str/trim)
-       :cik cik
-       :location (first (:biz_locations src))
-       :inc-states (vec (:inc_states src))})))
+(defn- shape-search-hit
+  "Shape one entity-index hit. The display name carries the tickers in a
+   trailing parenthetical — \"Alphabet Inc. (GOOG, GOOGL)\" — which is
+   stripped from :name only when the hit actually has tickers, so names
+   such as \"ACME (HOLDINGS) INC\" stay intact."
+  [hit]
+  (let [{:keys [entity tickers]} (:_source hit)
+        cik (:_id hit)
+        tickers (if (str/blank? tickers) [] (str/split (str/trim tickers) #"\s*,\s*"))]
+    (when (and (some? cik) (re-matches #"\d+" (str cik)) (not (str/blank? entity)))
+      {:cik (core/pad-cik cik)
+       :name (str/trim (if (seq tickers)
+                         (str/replace entity #"\s*\([^()]*\)\s*$" "")
+                         entity))
+       :tickers tickers})))
 
 (defn search-companies
-  "Search EDGAR for companies matching a name query string.
-   Returns a seq of shaped result maps with keys:
-     :entity-name - company display name (parsed from display_names)
-     :cik         - zero-padded 10-digit CIK
-     :location    - business location string or nil
-     :inc-states  - vector of incorporation state codes
+  "Search EDGAR entities (companies, funds, individual filers) by name.
+   Uses the EDGAR company-name index — the typeahead behind the SEC's
+   company search box — so only entities whose CURRENT name matches the
+   query are returned, best match first. Ticker and CIK queries match too.
 
-   Results are deduplicated by CIK. Pages through the EFTS search-index
-   until :limit distinct companies are collected or results are exhausted."
+   Returns a vector of maps:
+     :cik     - zero-padded 10-digit CIK
+     :name    - current entity name, ticker suffix removed
+     :tickers - vector of ticker strings (empty for entities without one)
+
+   Options:
+     :limit - max results (default 10; the SEC endpoint returns at most 10)"
   [query & {:keys [limit] :or {limit 10}}]
-  (let [base-url (str core/efts-url
-                      "?q=" (java.net.URLEncoder/encode query "UTF-8")
-                      "&hits.hits._source=display_names,ciks,biz_locations,inc_states")]
-    (loop [from 0
-           seen #{}
-           results []]
-      (let [resp (core/edgar-get (str base-url "&from=" from))
-            hits (get-in resp [:hits :hits])
-            total (get-in resp [:hits :total :value] 0)
-            {seen' :seen results' :results}
-            (reduce (fn [{:keys [seen results] :as acc} m]
-                      (if (or (contains? seen (:cik m))
-                              (>= (count results) limit))
-                        acc
-                        {:seen (conj seen (:cik m))
-                         :results (conj results m)}))
-                    {:seen seen :results results}
-                    (keep shape-search-hit hits))
-            from' (+ from (count hits))]
-        (if (or (>= (count results') limit)
-                (empty? hits)
-                (>= from' total))
-          results'
-          (recur from' seen' results'))))))
+  (let [q (str/replace (java.net.URLEncoder/encode (str query) "UTF-8") "+" "%20")
+        resp (core/edgar-get (str core/efts-url "?keysTyped=" q))]
+    (->> (get-in resp [:hits :hits])
+         (keep shape-search-hit)
+         (reduce (fn [acc m]
+                   (if (some #(= (:cik m) (:cik %)) acc) acc (conj acc m)))
+                 [])
+         (take limit)
+         vec)))

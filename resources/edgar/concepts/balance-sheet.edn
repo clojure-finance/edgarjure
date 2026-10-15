@@ -1,7 +1,7 @@
 {:statement :balance-sheet
  :industry :standard
  :taxonomy "us-gaap"
- :version "2026-07-31"
+ :version "2026-10-15"
  :notes "Concept fallback chains for the balance sheet (instant observations).
 2026-07-31: added component line items for the Compustat balance-sheet
 reclassification rules (AOCI, redeemable NCI/preferred, finance leases,
@@ -94,8 +94,7 @@ components instead of the old first-match fallback."
   {:label "Non-Current Liabilities"
    :concepts ["LiabilitiesNoncurrent"]}
   {:label "Stockholders Equity"
-   :concepts ["StockholdersEquity"
-              "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]}
+   :concepts ["StockholdersEquity"]}
   {:label "Retained Earnings"
    :concepts ["RetainedEarningsAccumulatedDeficit"]}
   {:label "AOCI"

@@ -4,8 +4,12 @@
    Four output views for each statement (:view option):
      :as-reported   - raw XBRL observations for the statement's concepts,
                       exactly as filed; no deduplication, no label mapping
+                      (:as-of still excludes filings made after the date)
      :normalized    - (default) fallback chains map variant tags to canonical
-                      labels; restatements deduplicated by most-recent-filed
+                      labels; restatements of the same concept deduplicated
+                      by most-recent-filed, and where several concepts of one
+                      chain report the same period, chain priority (the
+                      earlier concept) wins
      :standardized  - :normalized plus derived line items imputed from
                       arithmetic identities (e.g. Gross Profit = Revenue -
                       Cost of Revenue). Derived rows carry :method :derived
@@ -26,14 +30,22 @@
    from EDN files under resources/edgar/concepts/ and exposed as public vars,
    so power users can inspect them or pass their own via :concepts.
 
-   Industry routing: banks (SIC 6000-6199, 6712) and insurers (SIC 6300-6399,
-   6411) use fundamentally different income statement line items. When no
-   explicit :industry or :concepts is given, income-statement auto-routes on
-   the company's SIC code. Pass :industry :standard to force generic chains.
+   Industry routing: banks (SIC 6000-6199, 6712), insurers (SIC 6300-6399,
+   6411) and REITs (SIC 6798, 6500-6553) use fundamentally different income
+   statement line items. When no explicit :industry or :concepts is given,
+   income-statement auto-routes on the company's SIC code. Pass :industry
+   :standard to force generic chains.
 
    Duration vs instant:
      Income statement + cash flow -> duration observations (row has :start date)
      Balance sheet               -> instant observations  (row has no :start date)
+
+   10-K duration statements: the facts filed with a 10-K include quarterly-
+   footnote observations (e.g. fourth-quarter or selected quarterly data)
+   alongside the fiscal-year figures. Long output keeps every window and
+   carries a :duration-months column (3/6/9/12, nil for irregular windows)
+   so callers can select (= 12 :duration-months); :shape :wide keeps only the
+   annual (non-quarterly) windows.
 
    Point-in-time / look-ahead-safe mode:
      Pass :as-of \"YYYY-MM-DD\" to any public function to restrict to filings
@@ -52,6 +64,14 @@
                 matched on period-end dates (±14 days tolerance for 52/53-week
                 fiscal calendars). 10-K annual rows participate in the
                 derivation so that Q4 = FY - 9M YTD.
+     Non-additive units — share counts (\"shares\") and per-share amounts
+     (\"USD/shares\") — are never differenced or summed: their :val-q is the
+     directly reported 3-month value when one exists (else nil) and their
+     :val-ltm is always nil.
+     Under :view :compustat the 10-K rows feeding Q4 = FY - 9M are built
+     WITHOUT the FSDS operands even when the FSDS cache is enabled: 10-Q
+     periods never receive FSDS operands, and mixing the two rule regimes
+     would push a full year's reclassification effect into the derived Q4.
 
    Unmapped-concept logging: every statement call records us-gaap concepts in
    the company's facts that no active chain matched. See unmapped-concepts,
@@ -62,6 +82,7 @@
             [edgar.fsds :as fsds]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [tech.v3.dataset :as ds])
   (:import [java.time LocalDate]
            [java.time.temporal ChronoUnit]))
@@ -382,6 +403,17 @@
 (defn- line-key [row]
   (or (:line-item row) (:concept row)))
 
+(defn- additive-unit?
+  "True when values in this unit add up over time (currency amounts).
+   Share counts (\"shares\"), per-share amounts (\"USD/shares\" and any other
+   ratio unit) and pure numbers do not: a year's weighted-average share count
+   or EPS is not the sum of its quarters', and a YTD-minus-YTD difference of
+   either is meaningless. A nil unit counts as additive."
+  [unit]
+  (or (nil? unit)
+      (not (or (str/includes? (str unit) "/")
+               (contains? #{"shares" "pure"} unit)))))
+
 (defn- quarter-values
   "Derive single-quarter values from duration rows.
    Returns {[line-item unit] {end-LocalDate quarter-value}}.
@@ -390,7 +422,9 @@
      1. YTD differencing — a k-month row minus the (k-3)-month row sharing the
         same fiscal-year :start yields the quarter ending at the longer row's
         end. 12-month 10-K rows participate here, yielding Q4 = FY - 9M.
-     2. Directly reported ~3-month rows (used as-is; override diffs)."
+        Skipped for non-additive units (see additive-unit?).
+     2. Directly reported ~3-month rows (used as-is; override diffs). For
+        non-additive units (shares, EPS) these are the only source."
   [rows]
   (->> rows
        (keep (fn [row]
@@ -404,13 +438,14 @@
         (fn [acc group-key grows]
           (let [by-start-months (into {} (map (fn [r] [[(::start-d r) (::months r)] r]))
                                       grows)
-                diffs (keep (fn [r]
-                              (when (> (long (::months r)) 3)
-                                (when-let [prior (get by-start-months
-                                                      [(::start-d r) (- (long (::months r)) 3)])]
-                                  (when (and (:val r) (:val prior))
-                                    [(::end-d r) (- (:val r) (:val prior))]))))
-                            grows)
+                diffs (when (additive-unit? (second group-key))
+                        (keep (fn [r]
+                                (when (> (long (::months r)) 3)
+                                  (when-let [prior (get by-start-months
+                                                        [(::start-d r) (- (long (::months r)) 3)])]
+                                    (when (and (:val r) (:val prior))
+                                      [(::end-d r) (- (:val r) (:val prior))]))))
+                              grows))
                 directs (keep (fn [r]
                                 (when (and (= 3 (::months r)) (:val r))
                                   [(::end-d r) (:val r)]))
@@ -438,8 +473,11 @@
       (= 3 m) (:val row)
       :else (lookup-quarter qmap (parse-date (:end row)) 5))))
 
-(defn- row-val-ltm [row qmap]
-  (when (and qmap (duration-months row))
+(defn- row-val-ltm
+  "Trailing-twelve-month sum of four derived quarters; nil for non-additive
+   units (summing four quarters' share counts or EPS is meaningless)."
+  [row qmap]
+  (when (and qmap (additive-unit? (:unit row)) (duration-months row))
     (when-let [e (parse-date (:end row))]
       (let [targets (map #(.minusMonths e (long %)) [0 3 6 9])
             qvals (map #(lookup-quarter qmap % 14) targets)]
@@ -576,15 +614,21 @@
 (defn- as-reported-statement
   "Layer 1 (:view :as-reported): observations exactly as filed for the
    statement's candidate concepts + form + duration type. No deduplication,
-   no label mapping, no derived rows."
-  [facts-ds chains form duration-type]
-  (let [all-concepts (set (mapcat rest chains))
-        rows (-> facts-ds
-                 (ds/filter-column :concept #(contains? all-concepts %))
-                 (ds/filter-column :form #(= % form))
-                 (ds/rows {:nil-missing? true})
-                 (filter-by-duration-type duration-type))]
-    (ds/->dataset (vec rows))))
+   no label mapping, no derived rows. as-of (ISO date string or nil) still
+   applies: observations filed after it are excluded, as in every view."
+  ([facts-ds chains form duration-type]
+   (as-reported-statement facts-ds chains form duration-type nil))
+  ([facts-ds chains form duration-type as-of]
+   (let [all-concepts (set (mapcat rest chains))
+         rows (-> facts-ds
+                  (ds/filter-column :concept #(contains? all-concepts %))
+                  (ds/filter-column :form #(= % form))
+                  (ds/rows {:nil-missing? true})
+                  (filter-by-duration-type duration-type))
+         rows (if as-of
+                (filter #(not (pos? (compare (str (:filed %)) as-of))) rows)
+                rows)]
+     (ds/->dataset (vec rows)))))
 
 (defn- statement-rows
   "Filter, dedup, and label facts rows for one statement/form combination.
@@ -715,16 +759,21 @@
      4. Deduplicate overlapping chain candidates via chain priority
      5. Attach :line-item and :method :direct
      6. When identities given: impute missing items per period (:method :derived)
-     7. When reclass given ({:ruleset rs :aux-fn f}): add reclassified line
-        items per period (:method :reclassified), with cross-statement
-        operands supplied by aux-fn
+     7. When reclass given ({:ruleset rs :aux-fn f :fsds-aux-fn g}): add
+        reclassified line items per period (:method :reclassified), with
+        cross-statement operands supplied by aux-fn and FSDS operands by
+        fsds-aux-fn
      8. For 10-Q duration statements: derive :duration-months/:val-q/:val-ltm,
-        blending the company's 10-K annual rows for Q4/LTM computation
+        blending the company's 10-K annual rows for Q4/LTM computation. Those
+        annual rows are reclassified WITHOUT fsds-aux-fn, so Q4 = FY - 9M
+        never mixes an FSDS-assisted fiscal year with a non-FSDS 9M YTD.
+        For 10-K duration statements: add :duration-months (10-K facts carry
+        quarterly-footnote windows alongside the fiscal-year ones)
      9. Sort :end descending, :line-item ascending within each period"
   ([facts-ds chains form duration-type as-of identities]
    (normalized-statement facts-ds chains form duration-type as-of identities nil))
   ([facts-ds chains form duration-type as-of identities reclass]
-   (let [build-rows (fn [f]
+   (let [build-rows (fn [f fsds?]
                       (let [rows (build-statement-rows facts-ds chains f
                                                        duration-type as-of identities)]
                         (if (and reclass (seq rows))
@@ -732,18 +781,23 @@
                                                  (concat
                                                   (when-let [aux-fn (:aux-fn reclass)]
                                                     (aux-fn f))
-                                                  (when-let [ff (:fsds-aux-fn reclass)]
-                                                    (ff f rows)))
+                                                  (when fsds?
+                                                    (when-let [ff (:fsds-aux-fn reclass)]
+                                                      (ff f rows))))
                                                  (:ruleset reclass))
                           rows)))
-         rows (build-rows form)
+         rows (build-rows form true)
          annual-rows (when (and (= form "10-Q") (= duration-type :duration))
-                       (build-rows "10-K"))
+                       (build-rows "10-K" false))
          result-ds (ds/->dataset (vec rows))]
      (if (zero? (ds/row-count result-ds))
        result-ds
        (-> result-ds
            (add-quarterly-and-ltm form annual-rows)
+           (cond-> (and (= form "10-K") (= duration-type :duration))
+             (ds/add-or-update-column :duration-months
+                                      (mapv duration-months
+                                            (ds/rows result-ds {:nil-missing? true}))))
            (ds/sort-by
             (fn [row] [(:end row) (:line-item row)])
             (fn [a b]
@@ -756,46 +810,63 @@
 ;;; Wide-format pivot
 ;;; ---------------------------------------------------------------------------
 
+(defn- window-days
+  "Length of a duration row's window in days; -1 for instant rows."
+  ^long [row]
+  (let [s (parse-date (:start row))
+        e (parse-date (:end row))]
+    (if (and s e) (days-between s e) -1)))
+
 (defn- to-wide
   "Pivot a long-format statement dataset to wide format.
    One row per period (:end), one column per line item.
 
-   When both a ~3-month and a YTD row exist for the same [end line-item]
-   (10-Q flow statements), the longest-duration row supplies the plain value
-   (the reported YTD figure) and the derived :val-q/:val-ltm — which are
-   period-level, not row-level — are taken from whichever row has them.
-   They appear as \"<line-item> (Q)\" and \"<line-item> (LTM)\" columns."
-  [ds]
-  (if (zero? (ds/row-count ds))
-    ds
-    (let [has-q? (boolean (some #{:val-q} (ds/column-names ds)))
-          has-ltm? (boolean (some #{:val-ltm} (ds/column-names ds)))
-          reps (->> (ds/rows ds {:nil-missing? true})
-                    (group-by (juxt :end :line-item))
-                    vals
-                    (map (fn [grows]
-                           (-> (apply max-key #(or (:duration-months %) 0) grows)
-                               (assoc :val-q (some :val-q grows)
-                                      :val-ltm (some :val-ltm grows))))))]
-      (ds/->dataset
-       (->> reps
-            (group-by :end)
-            (sort-by key #(compare %2 %1))
-            (map (fn [[period rows]]
-                   (reduce (fn [m r]
-                             (let [li (:line-item r)]
-                               (cond-> (assoc m li (:val r))
-                                 has-q? (assoc (str li " (Q)") (:val-q r))
-                                 has-ltm? (assoc (str li " (LTM)") (:val-ltm r)))))
-                           {:end period}
-                           rows))))))))
+   For 10-K statements (form \"10-K\") duration rows classified as 3, 6 or 9
+   months are dropped first: 10-K facts carry quarterly-footnote windows that
+   share the fiscal-year end date (or end on a quarter end) and must not
+   surface as annual values or as extra annual periods. Instant rows and
+   irregular windows (e.g. transition periods) are kept.
+
+   When several windows exist for the same [end line-item] (10-Q flow
+   statements: a ~3-month and a YTD row), the longest window — by its
+   :start/:end dates — supplies the plain value (the reported YTD figure) and
+   the derived :val-q/:val-ltm — which are period-level, not row-level — are
+   taken from whichever row has them. They appear as \"<line-item> (Q)\" and
+   \"<line-item> (LTM)\" columns."
+  ([ds] (to-wide ds nil))
+  ([ds form]
+   (if (zero? (ds/row-count ds))
+     ds
+     (let [has-q? (boolean (some #{:val-q} (ds/column-names ds)))
+           has-ltm? (boolean (some #{:val-ltm} (ds/column-names ds)))
+           reps (->> (ds/rows ds {:nil-missing? true})
+                     (remove #(and (= form "10-K")
+                                   (contains? #{3 6 9} (duration-months %))))
+                     (group-by (juxt :end :line-item))
+                     vals
+                     (map (fn [grows]
+                            (-> (apply max-key window-days grows)
+                                (assoc :val-q (some :val-q grows)
+                                       :val-ltm (some :val-ltm grows))))))]
+       (ds/->dataset
+        (->> reps
+             (group-by :end)
+             (sort-by key #(compare %2 %1))
+             (map (fn [[period rows]]
+                    (reduce (fn [m r]
+                              (let [li (:line-item r)]
+                                (cond-> (assoc m li (:val r))
+                                  has-q? (assoc (str li " (Q)") (:val-q r))
+                                  has-ltm? (assoc (str li " (LTM)") (:val-ltm r)))))
+                            {:end period}
+                            rows)))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Public API
 ;;; ---------------------------------------------------------------------------
 
-(defn- shape-result [result shape]
-  (if (= shape :wide) (to-wide result) result))
+(defn- shape-result [result shape form]
+  (if (= shape :wide) (to-wide result form) result))
 
 (defn- statement-identities [statement-key]
   (case statement-key
@@ -825,7 +896,7 @@
     (record-unmapped! cik facts chains form)
     (shape-result
      (case view
-       :as-reported (as-reported-statement facts chains form duration-type)
+       :as-reported (as-reported-statement facts chains form duration-type as-of)
        :normalized (normalized-statement facts chains form duration-type as-of
                                          nil nil)
        :standardized (normalized-statement facts chains form duration-type as-of
@@ -838,7 +909,7 @@
                                           {:ruleset rs
                                            :aux-fn (reclass-aux-fn facts as-of rs)
                                            :fsds-aux-fn (fsds-aux-fn cik rs)})))
-     shape)))
+     shape form)))
 
 (defn income-statement
   "Return normalized income statement as a long-format dataset.
@@ -863,7 +934,7 @@
                  :method :reclassified, :rule and :derived-from; see
                  edgar.reclass and resources/edgar/reclass/)
      :industry - :standard | :bank | :insurance | :reit. When omitted, auto-detected
-                 from the company's SIC code (banks and insurers get
+                 from the company's SIC code (banks, insurers and REITs get
                  industry-specific chains). The :compustat reclassification
                  rules were fitted on :standard chains and only apply there;
                  for :bank/:insurance/:reit, :view :compustat equals
@@ -871,11 +942,19 @@
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, excludes filings where :filed > as-of-date,
                  giving point-in-time / look-ahead-safe results suitable
-                 for backtesting and event studies.
+                 for backtesting and event studies. Applies to every view,
+                 :as-reported included.
 
    For 10-Q queries, long-format output includes :duration-months, :val-q
    (single-quarter value) and :val-ltm (trailing twelve months) columns
-   derived from actual period-date windows."
+   derived from actual period-date windows. Share counts and per-share
+   amounts are not differenced or summed: their :val-q is the reported
+   3-month value (nil when only YTD is reported) and :val-ltm is nil.
+
+   For 10-K queries, long-format output keeps the quarterly-footnote windows
+   filed with the 10-K (e.g. fourth-quarter figures sharing the fiscal-year
+   end date) and carries :duration-months (3/6/9/12) to tell them apart;
+   :shape :wide keeps only the annual windows."
   [ticker-or-cik & {:as opts}]
   (build-statement ticker-or-cik :income :duration income-statement-concepts opts))
 
@@ -919,7 +998,11 @@
 
    For 10-Q queries, long-format output includes :duration-months, :val-q
    (single-quarter value) and :val-ltm (trailing twelve months) columns
-   derived from actual period-date windows."
+   derived from actual period-date windows.
+
+   For 10-K queries, long-format output carries :duration-months so that
+   quarterly-footnote windows filed with the 10-K can be told apart from the
+   fiscal-year ones; :shape :wide keeps only the annual windows."
   [ticker-or-cik & {:as opts}]
   (build-statement ticker-or-cik :cash-flow :duration cash-flow-concepts opts))
 

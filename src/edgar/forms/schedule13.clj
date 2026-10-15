@@ -19,52 +19,9 @@
      ;    :issuer {:cik ... :name ... :cusip ...}
      ;    :reporting-persons [{:name ... :aggregate-owned ... :percent-of-class ...} ...]}"
   (:require [edgar.filing :as filing]
-            [clojure.xml :as xml]
+            [edgar.forms.xml :refer [parse-str find-tag find-tags tag-text
+                                     parse-double-safe]]
             [clojure.string :as str]))
-
-;;; ---------------------------------------------------------------------------
-;;; XML helpers — namespace-prefix tolerant (mirrors form13f)
-;;; ---------------------------------------------------------------------------
-
-(defn- parse-xml-str [s]
-  (xml/parse (java.io.ByteArrayInputStream. (.getBytes s "UTF-8"))))
-
-(defn- tag-matches? [tag node-tag]
-  (or (= tag node-tag)
-      (when (keyword? node-tag)
-        (= (name tag) (last (str/split (name node-tag) #":"))))))
-
-(defn- find-tag
-  "First descendant element whose tag matches (namespace prefixes ignored)."
-  [node tag]
-  (when (map? node)
-    (if (tag-matches? tag (:tag node))
-      node
-      (some #(find-tag % tag) (:content node)))))
-
-(defn- find-tags
-  "All descendant elements whose tag matches (namespace prefixes ignored)."
-  [node tag]
-  (when (map? node)
-    (let [here (if (tag-matches? tag (:tag node)) [node] [])]
-      (into here (mapcat #(find-tags % tag) (:content node))))))
-
-(defn- tag-text
-  "Text of the first descendant matching any of the given tags, tried in
-   order (the 13D and 13G schemas spell several fields differently)."
-  [node & tags]
-  (some (fn [tag]
-          (some-> (find-tag node tag)
-                  :content
-                  first
-                  str
-                  str/trim
-                  not-empty))
-        tags))
-
-(defn- parse-double-safe [s]
-  (when s
-    (try (parse-double s) (catch Exception _ nil))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Reporting persons
@@ -89,8 +46,8 @@
    :comments (tag-text node :comments)})
 
 (defn- reporting-persons [root]
-  (let [d (find-tags root :reportingPersonInfo)                        ; 13D
-        g (find-tags root :coverPageHeaderReportingPersonDetails)]     ; 13G
+  (let [d (find-tags root :reportingPersonInfo) ; 13D
+        g (find-tags root :coverPageHeaderReportingPersonDetails)] ; 13G
     (mapv reporting-person (concat d g))))
 
 ;;; ---------------------------------------------------------------------------
@@ -131,7 +88,7 @@
                            :fund-type :comments} ...]}"
   [filing]
   (when-let [raw (schedule-xml filing)]
-    (let [root (parse-xml-str raw)
+    (let [root (parse-str raw)
           subtype (tag-text root :submissionType)
           form (or subtype (:form filing))]
       {:form form

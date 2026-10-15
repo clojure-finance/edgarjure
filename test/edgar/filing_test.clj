@@ -320,6 +320,29 @@
           (doseq [f (file-seq tmp-dir)]
             (.delete f)))))))
 
+(deftest filing-save-amendment-dir-test
+  ;; "10-K/A" used to become a nested 10-K/A/ directory pair
+  (let [amended {:cik "0000320193" :accessionNumber "0001193125-10-012091" :form "10-K/A"}]
+    (testing "save-dir flattens the \"/\" in an amendment form type"
+      (is (= (str (babashka.fs/path "/data" "10-K_A" "0000320193" "0001193125-10-012091"))
+             (str (filing/save-dir amended "/data")))))
+    (testing "filing-save! and filing-save-all! write under dir/10-K_A/..."
+      (let [tmp-dir (str (babashka.fs/create-temp-dir))]
+        (try
+          (with-redefs [edgar.filing/filing-index
+                        (fn [_] {:files [{:name "d10ka.htm" :type "10-K/A" :sequence "1" :size "10"}
+                                         {:name "ex31.htm" :type "EX-31" :sequence "2" :size "10"}]})
+                        edgar.core/edgar-get (fn [& _] "<html/>")]
+            (let [p (filing/filing-save! amended tmp-dir)
+                  ps (filing/filing-save-all! amended tmp-dir)
+                  form-dirs (map str (babashka.fs/list-dir tmp-dir))]
+              (is (= [(str (babashka.fs/path tmp-dir "10-K_A"))] form-dirs)
+                  "exactly one form directory, no nested 10-K/A")
+              (is (= (str (babashka.fs/path tmp-dir "10-K_A" "0000320193" "0001193125-10-012091" "d10ka.htm")) p))
+              (is (every? #(babashka.fs/exists? %) (cons p ps)))))
+          (finally
+            (babashka.fs/delete-tree tmp-dir)))))))
+
 (deftest binary-filename-test
   (let [f #'edgar.filing/binary-filename?]
     (testing "known binary extensions are recognised"
@@ -390,36 +413,62 @@
 
 ;;; ---------------------------------------------------------------------------
 
-(deftest accession-format-normalization
-  (testing "dashes are stripped to produce the path component"
-    (let [acc "0000320193-23-000106"
-          digits (str/replace acc "-" "")]
-      (is (= "000032019323000106" digits))))
-  (testing "CIK extracted from first 10 digits of undashed accession"
-    (let [digits "000032019323000106"
-          cik (str (Long/parseLong (subs digits 0 10)))]
-      (is (= "320193" cik))))
-  (testing "undashed 18-char string is reformatted to dashed"
-    (let [digits "000032019323000106"
-          dashed (str (subs digits 0 10) "-" (subs digits 10 12) "-" (subs digits 12))]
-      (is (= "0000320193-23-000106" dashed)))))
-
-(deftest filing-by-accession-form-type-test
-  (testing "throws ex-info with ::not-found when :formType is absent from index"
-    (let [acc "0000320193-23-000106"
-          bad-idx {}
-          ex (try
-               (or (:formType bad-idx)
-                   (throw (ex-info "Could not determine form type from filing index"
-                                   {:type :edgar.filing/not-found
-                                    :accession-number acc})))
-               (catch clojure.lang.ExceptionInfo e e))]
-      (is (instance? clojure.lang.ExceptionInfo ex))
-      (is (= :edgar.filing/not-found (:type (ex-data ex))))
-      (is (= acc (:accession-number (ex-data ex))))))
-  (testing ":formType key is returned when present"
-    (let [idx {:formType "10-K"}]
-      (is (= "10-K" (:formType idx))))))
+(deftest filing-by-accession-test
+  (let [requested (atom [])
+        stub (fn [idx]
+               (fn [f]
+                 (swap! requested conj f)
+                 (if (instance? Exception idx) (throw idx) idx)))
+        primary {:sequence "1" :name "d269120ddef14a.htm" :type "DEF 14A" :size "100"}
+        agent-idx {:formType "DFAN14A"
+                   :filingDate "2012-01-20"
+                   :files [primary]
+                   :filers [{:name "Strategic Organizing Center" :role "Filed by" :cik "0002001721"}
+                            {:name "STARBUCKS CORP" :role "Subject" :cik "0000829224"}]}]
+    (testing "index is fetched under the submitter path; :cik comes from :filers by role"
+      (reset! requested [])
+      (with-redefs [filing/filing-index (stub agent-idx)]
+        (let [f (filing/filing-by-accession "0001193125-12-025113")]
+          (is (= [{:cik "0001193125" :accessionNumber "0001193125-12-025113"}] @requested))
+          (is (= "0000829224" (:cik f)) "Subject beats Filed by")
+          (is (= "0001193125-12-025113" (:accessionNumber f)))
+          (is (= "DFAN14A" (:form f)))
+          (is (= "2012-01-20" (:filingDate f)))
+          (is (= "d269120ddef14a.htm" (:primaryDocument f)))
+          (is (= (:filers agent-idx) (:filers f)))
+          (is (= "https://www.sec.gov/Archives/edgar/data/829224/000119312512025113/d269120ddef14a.htm"
+                 (:url f))
+              ":url is built from the resolved company CIK, not the agent's"))))
+    (testing "undashed input is normalised to the dashed form"
+      (reset! requested [])
+      (with-redefs [filing/filing-index (stub agent-idx)]
+        (is (= "0001193125-12-025113"
+               (:accessionNumber (filing/filing-by-accession "000119312512025113"))))
+        (is (= "0001193125-12-025113" (:accessionNumber (first @requested))))))
+    (testing "no :filers → the zero-padded submitter CIK"
+      (with-redefs [filing/filing-index (stub (dissoc agent-idx :filers))]
+        (let [f (filing/filing-by-accession "0000320193-23-000106")]
+          (is (= "0000320193" (:cik f)))
+          (is (= "https://www.sec.gov/Archives/edgar/data/320193/000032019323000106/d269120ddef14a.htm"
+                 (:url f))))))
+    (testing "no primary document → :primaryDocument and :url are nil"
+      (with-redefs [filing/filing-index (stub (assoc agent-idx :files []))]
+        (let [f (filing/filing-by-accession "0001193125-12-025113")]
+          (is (nil? (:primaryDocument f)))
+          (is (nil? (:url f))))))
+    (testing "missing :formType → ::not-found"
+      (with-redefs [filing/filing-index (stub (dissoc agent-idx :formType))]
+        (let [ex (try (filing/filing-by-accession "0001193125-12-025113") nil
+                      (catch clojure.lang.ExceptionInfo e e))]
+          (is (= ::filing/not-found (:type (ex-data ex))))
+          (is (= "0001193125-12-025113" (:accession-number (ex-data ex)))))))
+    (testing "index fetch failure → ::not-found wrapping the cause"
+      (let [cause (ex-info "HTTP 404 from SEC API" {:type :edgar.core/http-error :status 404})]
+        (with-redefs [filing/filing-index (stub cause)]
+          (let [ex (try (filing/filing-by-accession "0001193125-12-025113") nil
+                        (catch clojure.lang.ExceptionInfo e e))]
+            (is (= ::filing/not-found (:type (ex-data ex))))
+            (is (identical? cause (ex-cause ex)))))))))
 
 (defn- company-info-html
   "Filing index fixture with one companyName span per [name role cik], in the
@@ -434,9 +483,9 @@
        "</body></html>"))
 
 (deftest parse-filing-index-html-filers-test
-  (testing "every companyName span becomes {:name :role :cik} with an unpadded CIK"
-    (is (= [{:name "STARBUCKS CORP" :role "Subject" :cik "829224"}
-            {:name "Strategic Organizing Center" :role "Filed by" :cik "2001721"}]
+  (testing "every companyName span becomes {:name :role :cik} with a 10-digit padded CIK"
+    (is (= [{:name "STARBUCKS CORP" :role "Subject" :cik "0000829224"}
+            {:name "Strategic Organizing Center" :role "Filed by" :cik "0002001721"}]
            (:filers (#'filing/parse-filing-index-html
                      (company-info-html ["STARBUCKS CORP" "Subject" "0000829224"]
                                         ["Strategic Organizing Center" "Filed by" "0002001721"]))))))
@@ -455,13 +504,13 @@
 (deftest primary-cik-test
   (let [pick #'filing/primary-cik]
     (testing "Filer wins (agent-filed DEF 14A lists the company only)"
-      (is (= "829224" (pick [{:role "Filer" :cik "829224"}]))))
+      (is (= "0000829224" (pick [{:role "Filer" :cik "0000829224"}]))))
     (testing "Subject beats Filed by (activist DFAN14A resolves to the target)"
-      (is (= "829224" (pick [{:role "Filed by" :cik "2001721"} {:role "Subject" :cik "829224"}]))))
+      (is (= "0000829224" (pick [{:role "Filed by" :cik "0002001721"} {:role "Subject" :cik "0000829224"}]))))
     (testing "Issuer beats Reporting (Form 4 resolves to the company, not the insider)"
-      (is (= "829224" (pick [{:role "Reporting" :cik "1971792"} {:role "Issuer" :cik "829224"}]))))
+      (is (= "0000829224" (pick [{:role "Reporting" :cik "0001971792"} {:role "Issuer" :cik "0000829224"}]))))
     (testing "unknown roles fall back to the first listed entity"
-      (is (= "7" (pick [{:role "Depositor" :cik "7"} {:role "Other" :cik "8"}]))))
+      (is (= "0000000007" (pick [{:role "Depositor" :cik "0000000007"} {:role "Other" :cik "0000000008"}]))))
     (testing "nil when nothing is listed, so the caller keeps the submitter CIK"
       (is (nil? (pick []))))))
 

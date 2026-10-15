@@ -199,8 +199,10 @@
    Options: :dir (default ~/.edgarjure/fsds). Returns the active config.
    When enabled, the income statement's :view :compustat augments its
    reclassification rules with FSDS statement placement and extension-tag
-   operands for 10-K periods (10-Q queries build 10-K rows internally for
-   Q4/LTM derivation, so they can trigger quarter downloads too)."
+   operands for 10-K periods. 10-Q queries are unaffected: the 10-K rows
+   they build internally for Q4/LTM derivation deliberately skip the FSDS
+   operands (so no quarter downloads are triggered), keeping the fiscal year
+   and the 9-month YTD under the same rule regime."
   [& {:keys [dir]}]
   (reset! cache-config {:dir (or dir default-cache-dir)}))
 
@@ -217,7 +219,7 @@
   "The FSDS [year quarter] whose dataset contains filings RECEIVED on date
    (ISO string or LocalDate)."
   [d]
-  (let [ld (if (instance? LocalDate d) d (LocalDate/parse (str d)))]
+  (let [^LocalDate ld (if (instance? LocalDate d) d (LocalDate/parse (str d)))]
     [(.getYear ld) (inc (quot (dec (.getMonthValue ld)) 3))]))
 
 (defonce ^:private missing-quarters (atom #{}))
@@ -306,10 +308,13 @@
                             extension tags presented on the income statement;
                             :end is the FSDS month-end period date)}
    Returns nil when the quarter isn't cached/published or the filing isn't
-   found. Results are cached per [cik year quarter] for the session."
+   found. Results are cached per [cik year quarter cache-dir] for the
+   session (the directory is part of the key, so contexts built from
+   different cache directories never shadow each other)."
   [cik filed-date & {:keys [dir]}]
   (let [[y q] (quarter-of-date filed-date)
-        ck [(str cik) y q]]
+        ck [(str (Long/parseLong (str cik))) y q
+            (or dir (when (cache-enabled?) (active-dir)))]]
     (if-let [hit (find @context-cache ck)]
       (val hit)
       (let [ctx

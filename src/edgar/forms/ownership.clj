@@ -14,52 +14,11 @@
      (require '[edgar.forms.ownership])   ; side-effectful load registers methods
      (edgar.filing/filing-obj filing)
      ;=> {:form \"3\" :issuer {...} :reporting-owner {...}
-     ;    :transactions [...] :holdings [...]}"
+     ;    :reporting-owners [...] :transactions [...] :holdings [...]}"
   (:require [edgar.filing :as filing]
-            [clojure.xml :as xml]
+            [edgar.forms.xml :refer [parse-str find-tag find-tags tag-text
+                                     nested-text parse-double-safe]]
             [clojure.string :as str]))
-
-;;; ---------------------------------------------------------------------------
-;;; XML helpers (plain clojure.xml — no extra deps)
-;;; ---------------------------------------------------------------------------
-
-(defn- parse-xml-str [s]
-  (xml/parse (java.io.ByteArrayInputStream. (.getBytes s "UTF-8"))))
-
-(defn- find-tag
-  "Return the first descendant element with the given tag (depth-first)."
-  [node tag]
-  (when (map? node)
-    (if (= tag (:tag node))
-      node
-      (some #(find-tag % tag) (:content node)))))
-
-(defn- find-tags
-  "Return all descendant elements with the given tag."
-  [node tag]
-  (when (map? node)
-    (let [here (if (= tag (:tag node)) [node] [])]
-      (into here (mapcat #(find-tags % tag) (:content node))))))
-
-(defn- tag-text
-  "Find a descendant node by tag and return its text content."
-  [node tag]
-  (some-> (find-tag node tag)
-          :content
-          first
-          str
-          str/trim
-          not-empty))
-
-(defn- nested-text
-  "Walk a path of tags from node and return the leaf text."
-  [node & tags]
-  (let [leaf (reduce find-tag node tags)]
-    (some-> leaf :content first str str/trim not-empty)))
-
-(defn- parse-double-safe [s]
-  (when s
-    (try (parse-double s) (catch Exception _ nil))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Issuer and reporting owner
@@ -71,9 +30,16 @@
      :name (tag-text issuer :issuerName)
      :ticker (tag-text issuer :issuerTradingSymbol)}))
 
-(defn- parse-owner [root]
-  (let [owner (find-tag root :reportingOwner)
-        id (find-tag owner :reportingOwnerId)
+(defn- flag?
+  "Relationship flags are encoded \"1\"/\"0\" in older filings and
+   \"true\"/\"false\" in current ones."
+  [s]
+  (contains? #{"1" "true"} (some-> s str/lower-case)))
+
+(defn- parse-owner
+  "Parse one <reportingOwner> element."
+  [owner]
+  (let [id (find-tag owner :reportingOwnerId)
         addr (find-tag owner :reportingOwnerAddress)
         rel (find-tag owner :reportingOwnerRelationship)]
     {:cik (tag-text id :rptOwnerCik)
@@ -82,11 +48,16 @@
      :city (tag-text addr :rptOwnerCity)
      :state (tag-text addr :rptOwnerState)
      :zip (tag-text addr :rptOwnerZipCode)
-     :is-director? (= "1" (tag-text rel :isDirector))
-     :is-officer? (= "1" (tag-text rel :isOfficer))
-     :is-10pct? (= "1" (tag-text rel :isTenPercentOwner))
-     :is-other? (= "1" (tag-text rel :isOther))
+     :is-director? (flag? (tag-text rel :isDirector))
+     :is-officer? (flag? (tag-text rel :isOfficer))
+     :is-10pct? (flag? (tag-text rel :isTenPercentOwner))
+     :is-other? (flag? (tag-text rel :isOther))
      :officer-title (tag-text rel :officerTitle)}))
+
+(defn- parse-owners
+  "Parse every <reportingOwner> (joint filings list several)."
+  [root]
+  (mapv parse-owner (find-tags root :reportingOwner)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Transactions (Forms 4 and 5)
@@ -182,21 +153,28 @@
      {:form             \"3\" | \"4\" | \"5\" (from the XML documentType;
                         falls back to the filing's :form)
       :period-of-report \"YYYY-MM-DD\"
-      :date-of-change   \"YYYY-MM-DD\" (when present)
+      :date-of-original-submission
+                        \"YYYY-MM-DD\" (amendments only: the filing date of
+                        the original report being amended)
       :issuer           {:cik ... :name ... :ticker ...}
-      :reporting-owner  {:cik ... :name ... :is-director? ... :officer-title ...}
+      :reporting-owner  first reporting owner (convenience):
+                        {:cik ... :name ... :is-director? ... :officer-title ...}
+      :reporting-owners every reporting owner, in filing order (joint
+                        filings list several), same shape as :reporting-owner
       :transactions     [{:type :non-derivative|:derivative ...} ...]
       :holdings         [{:type :non-derivative|:derivative ...} ...]}
    Forms 3 have holdings and no transactions; Forms 4/5 mainly transactions,
    possibly holdings as well."
   [filing]
   (when-let [raw (ownership-xml filing)]
-    (let [root (parse-xml-str raw)]
+    (let [root (parse-str raw)
+          owners (parse-owners root)]
       {:form (or (tag-text root :documentType) (:form filing))
        :period-of-report (tag-text root :periodOfReport)
-       :date-of-change (tag-text root :dateOfOriginalSubmission)
+       :date-of-original-submission (tag-text root :dateOfOriginalSubmission)
        :issuer (parse-issuer root)
-       :reporting-owner (parse-owner root)
+       :reporting-owner (first owners)
+       :reporting-owners owners
        :transactions (concat (parse-non-derivative-transactions root)
                              (parse-derivative-transactions root))
        :holdings (concat (parse-non-derivative-holdings root)

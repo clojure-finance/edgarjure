@@ -39,6 +39,9 @@
 ;; (the default) maps variant tags to canonical labels and deduplicates
 ;; restatements; `:standardized` imputes missing line items from arithmetic
 ;; identities; `:compustat` reclassifies toward Compustat definitions.
+;; `:shape :wide` gives one row per fiscal year: the quarterly-footnote
+;; figures a 10-K also carries stay in the long output (tagged by
+;; `:duration-months`) and never displace the annual values.
 (-> (e/income "AAPL" :shape :wide)
     (ds/select-columns [:end "Revenue" "Gross Profit" "Operating Income" "Net Income"])
     (ds/head 5))

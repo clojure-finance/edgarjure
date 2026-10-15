@@ -24,10 +24,10 @@
  {:nrepl
   {:extra-deps {nrepl/nrepl {:mvn/version "1.7.0"}}
    :main-opts ["-m" "nrepl.cmdline" "--port" "0"]
-   :extra-paths ["test"]}
+   :extra-paths ["test" "test-resources"]}
 
   :test
-  {:extra-paths ["test"]
+  {:extra-paths ["test" "test-resources"]
    :main-opts ["-m" "edgar.test-runner"]}
 
   :test-integration

@@ -1,16 +1,64 @@
 (ns edgar.company-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
             [edgar.core :as core]
             [edgar.company :as company]))
+
+;; several tests load stubbed ticker data into the ticker caches — never let
+;; it leak into other test namespaces
+(use-fixtures :each (fn [f] (try (f) (finally (company/clear-ticker-cache!)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; ticker->cik / cik->ticker — pure normalization logic
 ;;; ---------------------------------------------------------------------------
 
-(deftest ticker->cik-returns-nil-for-unknown
-  (testing "unknown ticker returns nil without throwing"
-    (is (nil? (company/ticker->cik "ZZZNOTTICKER")))))
+(def ^:private tickers-fixture
+  ;; company_tickers.json shape after jsonista keyword-keys parsing: rank
+  ;; keys :0 :1 ..., delivered in hash-map order, so the lower-ranked share
+  ;; class may well come first in (vals ...)
+  {:7479 {:cik_str 1067983 :ticker "BRK-A" :title "BERKSHIRE HATHAWAY INC"}
+   :0 {:cik_str 320193 :ticker "AAPL" :title "Apple Inc."}
+   :4 {:cik_str 1652044 :ticker "GOOG" :title "Alphabet Inc."}
+   :2 {:cik_str 1652044 :ticker "GOOGL" :title "Alphabet Inc."}
+   :8 {:cik_str 1067983 :ticker "BRK-B" :title "BERKSHIRE HATHAWAY INC"}})
+
+(defn- with-tickers-fixture [f]
+  (with-redefs [core/edgar-get (fn [& _] tickers-fixture)]
+    (company/clear-ticker-cache!)
+    (try (f) (finally (company/clear-ticker-cache!)))))
+
+(deftest cik->ticker-primary-share-class-test
+  (with-tickers-fixture
+    (fn []
+      (testing "multi-class CIK resolves to the lowest-ranked ticker"
+        (is (= "GOOGL" (company/cik->ticker 1652044)))
+        (is (= "GOOGL" (company/cik->ticker "0001652044")))
+        (is (= "BRK-B" (company/cik->ticker "1067983"))))
+      (testing "single-class CIK"
+        (is (= "AAPL" (company/cik->ticker 320193)))))))
+
+(deftest ticker->cik-normalization-test
+  (with-tickers-fixture
+    (fn []
+      (testing "share-class dot is accepted for the SEC's dash form"
+        (is (= "0001067983" (company/ticker->cik "BRK.B")))
+        (is (= "0001067983" (company/ticker->cik "brk.a")))
+        (is (= "0001067983" (company/ticker->cik "BRK-B"))))
+      (testing "case and surrounding whitespace are ignored"
+        (is (= "0001652044" (company/ticker->cik " googl "))))
+      (testing "unknown ticker returns nil without throwing"
+        (is (nil? (company/ticker->cik "ZZZNOTTICKER")))))))
+
+(deftest integer-cik-test
+  (testing "integer CIKs resolve without a ticker lookup"
+    (with-redefs [company/ticker->cik (fn [_] (throw (AssertionError. "no ticker lookup expected")))]
+      (is (= "0000320193" (company/company-cik 320193)))
+      (is (= "0000000042" (company/company-cik 42)))))
+  (testing "get-company fetches the submissions URL for an integer CIK"
+    (let [url (atom nil)]
+      (with-redefs [core/edgar-get (fn [u & _] (reset! url u) {:cik "320193"})]
+        (company/get-company 320193)
+        (is (= "https://data.sec.gov/submissions/CIK0000320193.json" @url))))))
 
 (deftest company-cik-numeric-string
   (testing "numeric string input is zero-padded to 10 digits"
@@ -114,82 +162,62 @@
     (testing "nil addr returns nil"
       (is (nil? (f nil))))))
 
+(defn- entity-hit
+  "One hit as returned live by efts.sec.gov/LATEST/search-index?keysTyped=
+   (captured 2026-10-15): _id is the unpadded CIK."
+  ([cik entity] (entity-hit cik entity nil))
+  ([cik entity tickers]
+   {:_index "edgar_entity_20261015_040139"
+    :_id cik
+    :_score 21.6
+    :_source (cond-> {:entity entity :entity_words entity :rank 181}
+               tickers (assoc :tickers tickers))}))
+
+(def ^:private apple-response
+  {:took 68
+   :timed_out false
+   :hits {:total {:value 230 :relation "eq"}
+          :max_score 30.12
+          :hits [(entity-hit "320193" "Apple Inc. (AAPL)" "AAPL")
+                 (entity-hit "1134982" "Apple iSports Group, Inc. (AAPI)" "AAPI")
+                 (entity-hit "1418121" "Apple Hospitality REIT, Inc. (APLE)" "APLE")
+                 (entity-hit "1215379" "APPLE JIM B")]}})
+
 (deftest search-companies-shape-test
-  (testing "returns shaped maps with :entity-name :cik :location :inc-states"
-    (with-redefs [edgar.core/edgar-get
-                  (fn [_]
-                    {:hits {:hits
-                            [{:_source {:display_names ["Apple Inc.  (AAPL)  (CIK 0000320193)"]
-                                        :ciks ["0000320193"]
-                                        :biz_locations ["Cupertino, CA"]
-                                        :inc_states ["CA"]}}
-                             {:_source {:display_names ["Apple Hospitality REIT, Inc.  (APLE)  (CIK 0001418121)"]
-                                        :ciks ["0001418121"]
-                                        :biz_locations ["Richmond, VA"]
-                                        :inc_states ["VA"]}}]}})]
-      (let [results (company/search-companies "apple" :limit 10)]
-        (is (= 2 (count results)))
-        (is (every? #(contains? % :entity-name) results))
-        (is (every? #(contains? % :cik) results))
-        (is (every? #(contains? % :location) results))
-        (is (every? #(contains? % :inc-states) results)))))
-  (testing "entity-name strips CIK and ticker suffixes"
-    (with-redefs [edgar.core/edgar-get
-                  (fn [_]
-                    {:hits {:hits
-                            [{:_source {:display_names ["Apple Inc.  (AAPL)  (CIK 0000320193)"]
-                                        :ciks ["0000320193"]
-                                        :biz_locations ["Cupertino, CA"]
-                                        :inc_states ["CA"]}}
-                             {:_source {:display_names ["CITIGROUP INC  (C, C-PN)  (CIK 0000831001)"]
-                                        :ciks ["0000831001"]
-                                        :biz_locations ["New York, NY"]
-                                        :inc_states ["DE"]}}
-                             {:_source {:display_names ["MULTI FINELINE ELECTRONIX INC  (CIK 0000830916)"]
-                                        :ciks ["0000830916"]
-                                        :biz_locations ["Anaheim, CA"]
-                                        :inc_states []}}]}})]
-      (let [results (company/search-companies "test" :limit 10)
-            by-cik (into {} (map (juxt :cik identity) results))]
-        (is (= "Apple Inc." (get-in by-cik ["0000320193" :entity-name])))
-        (is (= "CITIGROUP INC" (get-in by-cik ["0000831001" :entity-name])))
-        (is (= "MULTI FINELINE ELECTRONIX INC" (get-in by-cik ["0000830916" :entity-name]))))))
-  (testing "deduplicates hits by CIK"
-    (with-redefs [edgar.core/edgar-get
-                  (fn [_]
-                    {:hits {:hits
-                            [{:_source {:display_names ["Apple Inc.  (AAPL)  (CIK 0000320193)"]
-                                        :ciks ["0000320193"]
-                                        :biz_locations ["Cupertino, CA"]
-                                        :inc_states ["CA"]}}
-                             {:_source {:display_names ["Apple Inc.  (AAPL)  (CIK 0000320193)"]
-                                        :ciks ["0000320193"]
-                                        :biz_locations ["Cupertino, CA"]
-                                        :inc_states ["CA"]}}]}})]
-      (let [results (company/search-companies "apple" :limit 10)]
-        (is (= 1 (count results)) "duplicate CIKs must be deduplicated"))))
+  (testing "queries the entity index (keysTyped), not full-text search"
+    (let [url (atom nil)]
+      (with-redefs [core/edgar-get (fn [u & _] (reset! url u) apple-response)]
+        (company/search-companies "berkshire hathaway")
+        (is (= "https://efts.sec.gov/LATEST/search-index?keysTyped=berkshire%20hathaway" @url)))))
+  (testing "hits become {:cik :name :tickers} with padded CIK and ticker suffix removed"
+    (with-redefs [core/edgar-get (fn [& _] apple-response)]
+      (is (= [{:cik "0000320193" :name "Apple Inc." :tickers ["AAPL"]}
+              {:cik "0001134982" :name "Apple iSports Group, Inc." :tickers ["AAPI"]}
+              {:cik "0001418121" :name "Apple Hospitality REIT, Inc." :tickers ["APLE"]}
+              {:cik "0001215379" :name "APPLE JIM B" :tickers []}]
+             (company/search-companies "Apple")))))
+  (testing "multi-class tickers are split; parenthesised names without tickers stay intact"
+    (with-redefs [core/edgar-get
+                  (fn [& _]
+                    {:hits {:hits [(entity-hit "1652044" "Alphabet Inc. (GOOG, GOOGN, GOOGM, GOOGL)"
+                                               "GOOG, GOOGN, GOOGM, GOOGL")
+                                   (entity-hit "42" "ACME (HOLDINGS) INC")]}})]
+      (is (= [{:cik "0001652044" :name "Alphabet Inc." :tickers ["GOOG" "GOOGN" "GOOGM" "GOOGL"]}
+              {:cik "0000000042" :name "ACME (HOLDINGS) INC" :tickers []}]
+             (company/search-companies "a")))))
   (testing ":limit is respected"
-    (with-redefs [edgar.core/edgar-get
-                  (fn [_]
-                    {:hits {:hits
-                            (vec (for [i (range 10)]
-                                   {:_source {:display_names [(str "Corp " i "  (CIK 000000000" i ")")]
-                                              :ciks [(str "000000000" i)]
-                                              :biz_locations ["New York, NY"]
-                                              :inc_states ["NY"]}}))}})]
-      (let [results (company/search-companies "corp" :limit 3)]
-        (is (= 3 (count results))))))
-  (testing "hits with missing cik or display_names are skipped"
-    (with-redefs [edgar.core/edgar-get
-                  (fn [_]
-                    {:hits {:hits
-                            [{:_source {:display_names nil :ciks [] :biz_locations [] :inc_states []}}
-                             {:_source {:display_names ["Apple Inc.  (AAPL)  (CIK 0000320193)"]
-                                        :ciks ["0000320193"]
-                                        :biz_locations ["Cupertino, CA"]
-                                        :inc_states ["CA"]}}]}})]
-      (let [results (company/search-companies "apple" :limit 10)]
-        (is (= 1 (count results)))))))
+    (with-redefs [core/edgar-get (fn [& _] apple-response)]
+      (is (= ["0000320193" "0001134982"] (map :cik (company/search-companies "Apple" :limit 2))))))
+  (testing "duplicate CIKs and malformed hits are dropped; no hits → empty vector"
+    (with-redefs [core/edgar-get
+                  (fn [& _]
+                    {:hits {:hits [(entity-hit "320193" "Apple Inc. (AAPL)" "AAPL")
+                                   (entity-hit "320193" "Apple Inc. (AAPL)" "AAPL")
+                                   {:_id nil :_source {:entity "X"}}
+                                   {:_id "5" :_source {}}]}})]
+      (is (= ["0000320193"] (map :cik (company/search-companies "Apple")))))
+    (with-redefs [core/edgar-get (fn [& _] {:hits {:hits [] :total {:value 0 :relation "eq"}}})]
+      (is (= [] (company/search-companies "zzzqqqxx"))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; tickers-by-ticker-cache — populated once alongside tickers-cache

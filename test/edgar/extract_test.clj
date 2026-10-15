@@ -15,6 +15,10 @@
     (is (contains? extract/items-10k "7"))
     (is (contains? extract/items-10k "7A"))
     (is (contains? extract/items-10k "8")))
+  (testing "contains the newer items 1C, 9C and 16"
+    (is (= "Cybersecurity" (get extract/items-10k "1C")))
+    (is (contains? extract/items-10k "9C"))
+    (is (= "Form 10-K Summary" (get extract/items-10k "16"))))
   (testing "all values are non-blank strings"
     (is (every? #(and (string? %) (seq %)) (vals extract/items-10k)))))
 
@@ -27,10 +31,15 @@
     (is (every? #(and (string? %) (seq %)) (vals extract/items-10q)))))
 
 (deftest items-8k-test
-  (testing "contains standard 8-K items"
-    (is (contains? extract/items-8k "2.02"))
-    (is (contains? extract/items-8k "5.02"))
-    (is (contains? extract/items-8k "9.01")))
+  (testing "contains every current 8-K item"
+    (is (= #{"1.01" "1.02" "1.03" "1.04" "1.05"
+             "2.01" "2.02" "2.03" "2.04" "2.05" "2.06"
+             "3.01" "3.02" "3.03"
+             "4.01" "4.02"
+             "5.01" "5.02" "5.03" "5.04" "5.05" "5.06" "5.07" "5.08"
+             "6.01" "6.02" "6.03" "6.04" "6.05" "6.06" "6.10"
+             "7.01" "8.01" "9.01"}
+           (set (keys extract/items-8k)))))
   (testing "all values are non-blank strings"
     (is (every? #(and (string? %) (seq %)) (vals extract/items-8k)))))
 
@@ -83,6 +92,21 @@
     (is (nil? (re-find extract/item-pattern "The following table shows")))
     (is (nil? (re-find extract/item-pattern "Total revenues 1,234")))))
 
+(deftest item-pattern-letter-suffix-test
+  (let [id+title (fn [s] (when-let [m (re-find extract/item-pattern s)]
+                           [(str/upper-case (nth m 1)) (str/trim (nth m 2))]))]
+    (testing "1C and 9C are their own items, not item 1/9 with a \"C.\" title"
+      (is (= ["1C" "Cybersecurity"] (id+title "Item 1C. Cybersecurity")))
+      (is (= ["9C" "Disclosure Regarding Foreign Jurisdictions that Prevent Inspections"]
+             (id+title "Item 9C.    Disclosure Regarding Foreign Jurisdictions that Prevent Inspections")))
+      (is (= ["16" "Form 10-K Summary"] (id+title "Item 16. Form 10-K Summary"))))
+    (testing "8-K dotted ids"
+      (is (= ["5.07" "Submission of Matters to a Vote of Security Holders"]
+             (id+title "Item 5.07 Submission of Matters to a Vote of Security Holders"))))
+    (testing "a title glued to the id is not read as a letter suffix"
+      (is (= ["1" "Business"] (id+title "Item 1Business")))
+      (is (= ["1A" "Risk Factors"] (id+title "Item 1ARisk Factors"))))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Inline HTML fixture — simple
 ;;; ---------------------------------------------------------------------------
@@ -131,6 +155,30 @@
           boundaries (f flat)]
       (is (some #(= "7" (:item-id %)) boundaries)
           "Item 7 heading with nbsp must be detected"))))
+
+(deftest extract-items-1c-9c-do-not-overwrite-1-9-test
+  ;; Regression: "Item 1C." used to parse as item "1" with title "C. ...",
+  ;; and the last match per id won, so it replaced the real Item 1.
+  (let [html "<html><body>
+               <p>Item 1. Business</p><p>Business body.</p>
+               <p>Item 1A. Risk Factors</p><p>Risk body.</p>
+               <p>Item 1B. Unresolved Staff Comments</p><p>None.</p>
+               <p>Item 1C. Cybersecurity</p><p>Cyber body.</p>
+               <p>Item 9. Changes in and Disagreements with Accountants</p><p>None 9.</p>
+               <p>Item 9C. Disclosure Regarding Foreign Jurisdictions that Prevent Inspections</p><p>Not applicable 9C.</p>
+               <p>Item 16. Form 10-K Summary</p><p>Summary body.</p>
+              </body></html>"
+        result (with-redefs [edgar.filing/filing-html (fn [_] html)]
+                 (extract/extract-items {:form "10-K"}))]
+    (is (= #{"1" "1A" "1B" "1C" "9" "9C" "16"} (set (keys result))))
+    (is (= "Business" (get-in result ["1" :title])))
+    (is (= "Business body." (get-in result ["1" :text])))
+    (is (= "Cybersecurity" (get-in result ["1C" :title])))
+    (is (= "Cyber body." (get-in result ["1C" :text])))
+    (is (= "Changes in and Disagreements with Accountants" (get-in result ["9" :title])))
+    (is (= "None 9." (get-in result ["9" :text])))
+    (is (= "Not applicable 9C." (get-in result ["9C" :text])))
+    (is (= "Summary body." (get-in result ["16" :text])))))
 
 (deftest find-item-boundaries-10q-test
   (let [f #'edgar.extract/find-item-boundaries
@@ -359,10 +407,89 @@
   (testing "no :items extracts all 10-Q sections"
     (let [result (with-redefs [edgar.filing/filing-html (fn [_] mock-10q-html)]
                    (extract/extract-items {:form "10-Q"}))]
-      (is (contains? result "I-1"))
-      (is (contains? result "I-2"))
-      (is (contains? result "II-1A"))
-      (is (contains? result "II-6")))))
+      (is (= #{"I-1" "I-2" "II-1A" "II-6"} (set (keys result)))))))
+
+;; Real 10-Q layout: "Item 1." appears in both parts, distinguished only by
+;; the preceding PART heading; a table of contents repeats the headings.
+(def ^:private real-10q-html
+  "<html><body>
+   <table>
+    <tr><td>Part I</td></tr>
+    <tr><td>Item 1.</td><td>Financial Statements</td><td>1</td></tr>
+    <tr><td>Item 2.</td><td>Management's Discussion and Analysis</td><td>10</td></tr>
+    <tr><td>Item 3.</td><td>Quantitative and Qualitative Disclosures About Market Risk</td><td>15</td></tr>
+    <tr><td>Item 4.</td><td>Controls and Procedures</td><td>16</td></tr>
+    <tr><td>Part II</td></tr>
+    <tr><td>Item 1.</td><td>Legal Proceedings</td><td>17</td></tr>
+    <tr><td>Item 1A.</td><td>Risk Factors</td><td>17</td></tr>
+    <tr><td>Item 6.</td><td>Exhibits</td><td>20</td></tr>
+   </table>
+   <p>PART I — FINANCIAL INFORMATION</p>
+   <p>Item 1. Financial Statements</p>
+   <p>Condensed consolidated balance sheets.</p>
+   <p>Item 2. Management's Discussion and Analysis of Financial Condition and Results of Operations</p>
+   <p>Net sales increased during the quarter.</p>
+   <p>Item 3. Quantitative and Qualitative Disclosures About Market Risk</p>
+   <p>No material changes.</p>
+   <p>Item 4. Controls and Procedures</p>
+   <p>Controls are effective.</p>
+   <p>PART II — OTHER INFORMATION</p>
+   <p>Item 1. Legal Proceedings</p>
+   <p>Litigation matters.</p>
+   <p>Item 1A. Risk Factors</p>
+   <p>Updated risk factors.</p>
+   <p>Item 6. Exhibits</p>
+   <p>Exhibit index.</p>
+  </body></html>")
+
+(deftest extract-items-10q-part-tracking-test
+  (let [extract (fn [& opts]
+                  (with-redefs [edgar.filing/filing-html (fn [_] real-10q-html)]
+                    (apply extract/extract-items {:form "10-Q"} opts)))
+        result (extract)]
+    (testing "Part I and Part II items with the same number both survive"
+      (is (= #{"I-1" "I-2" "I-3" "I-4" "II-1" "II-1A" "II-6"} (set (keys result)))))
+    (testing "bodies come from the body headings, not the table of contents"
+      (is (= "Condensed consolidated balance sheets." (get-in result ["I-1" :text])))
+      ;; PART headings are not section boundaries, so the Part II heading
+      ;; trails the last Part I item (as "PART II" trails 10-K Item 4)
+      (is (str/starts-with? (get-in result ["I-4" :text]) "Controls are effective."))
+      (is (= "Litigation matters." (get-in result ["II-1" :text])))
+      (is (= "Updated risk factors." (get-in result ["II-1A" :text])))
+      (is (= "Exhibit index." (get-in result ["II-6" :text]))))
+    (testing "I-2 is MD&A"
+      (let [mdna (with-redefs [edgar.filing/filing-html (fn [_] real-10q-html)]
+                   (extract/extract-item {:form "10-Q"} "I-2"))]
+        (is (str/starts-with? (:title mdna) "Management's Discussion"))
+        (is (= "Net sales increased during the quarter." (:text mdna)))))
+    (testing "user-supplied ids are normalized"
+      (is (= "Net sales increased during the quarter."
+             (:text (with-redefs [edgar.filing/filing-html (fn [_] real-10q-html)]
+                      (extract/extract-item {:form "10-Q"} "i 2")))))
+      (is (= #{"II-1A"} (set (keys (extract :items #{"ii-1a"}))))))
+    (testing "10-Q/A uses the same part-prefixed ids"
+      (is (contains? (with-redefs [edgar.filing/filing-html (fn [_] real-10q-html)]
+                       (extract/extract-items {:form "10-Q/A"}))
+                     "II-1A")))
+    (testing "10-K extraction does not prefix ids with the part"
+      (is (= #{"1" "2" "3" "4" "1A" "6"}
+             (set (keys (with-redefs [edgar.filing/filing-html (fn [_] real-10q-html)]
+                          (extract/extract-items {:form "10-K"})))))))))
+
+(def ^:private mock-8k-html
+  "<html><body>
+   <p>Item 5.07</p><p>Submission of Matters to a Vote of Security Holders.</p>
+   <p>The annual meeting was held.</p>
+   <p>Item 9.01</p><p>Financial Statements and Exhibits.</p>
+   <p>Exhibit 104.</p>
+  </body></html>")
+
+(deftest extract-items-8k-test
+  (let [result (with-redefs [edgar.filing/filing-html (fn [_] mock-8k-html)]
+                 (extract/extract-items {:form "8-K"}))]
+    (is (= #{"5.07" "9.01"} (set (keys result))))
+    (is (str/includes? (get-in result ["5.07" :text]) "annual meeting"))
+    (is (not (str/includes? (get-in result ["5.07" :text]) "Exhibit 104")))))
 
 (deftest extract-items-remove-tables-mock-test
   (let [result (with-redefs [edgar.filing/filing-html (fn [_] mock-filing-html)]
@@ -394,10 +521,11 @@
 (def ^:private fixture-text
   (slurp (clojure.java.io/resource "fixtures/10k_plaintext.txt")))
 
+(def ^:private all-10k-ids (set (keys extract/items-10k)))
+
 (deftest extract-items-text-test
   (let [f #'edgar.extract/extract-items-text
-        items-map extract/items-10k
-        result (f fixture-text items-map)]
+        result (f fixture-text all-10k-ids)]
     (testing "returns a map"
       (is (map? result)))
     (testing "finds item 1"
@@ -419,8 +547,8 @@
   ;; Fixed: :text starts at (:end match) — after the matched heading —
   ;; consistent with the HTML path where heading nodes are excluded.
   (let [f #'edgar.extract/extract-items-text
-        text "ITEM 1. BUSINESS\nAcme Corp makes widgets.\n\nITEM 1A. RISK FACTORS\nCompetition is intense.\n\nITEM 7. DISCUSSION\nRevenue grew 10%."
-        result (f text extract/items-10k)]
+        text "ITEM 1. BUSINESS\nAcme Corp makes widgets.\n\nITEM 1A. RISK FACTORS\nCompetition is intense.\n\nITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS\nRevenue grew 10%."
+        result (f text all-10k-ids)]
     (testing "item 1 :text does NOT start with the heading line"
       (let [body (get-in result ["1" :text])]
         (is (some? body))
@@ -429,41 +557,62 @@
         (is (not (re-find #"(?i)^item\s+1" (str/triml body)))
             "heading text must be absent from body")))
     (testing "item 1 :text contains only body content"
-      (is (str/includes? (get-in result ["1" :text]) "widgets"))
-      (is (not (str/includes? (get-in result ["1" :text]) "BUSINESS"))
-          "title word from heading must not appear in body"))
+      (is (= "Acme Corp makes widgets." (get-in result ["1" :text]))))
     (testing "item 1A :text does NOT include its heading"
-      (let [body (get-in result ["1A" :text])]
-        (is (not (re-find #"(?i)^item\s+1a" (str/triml body))))
-        (is (str/includes? body "Competition"))))
+      (is (= "Competition is intense." (get-in result ["1A" :text]))))
     (testing "item 7 :text does NOT include its heading"
-      (let [body (get-in result ["7" :text])]
-        (is (not (re-find #"(?i)^item\s+7" (str/triml body))))
-        (is (str/includes? body "Revenue"))))
-    (testing ":title is still correctly populated from heading"
+      (is (= "Revenue grew 10%." (get-in result ["7" :text]))))
+    (testing ":title is populated from the whole heading line, punctuation included"
       (is (= "BUSINESS" (get-in result ["1" :title])))
       (is (= "RISK FACTORS" (get-in result ["1A" :title])))
-      (is (= "DISCUSSION" (get-in result ["7" :title]))))
-    (testing "body content does not bleed from one item into the next"
-      (let [body-1 (get-in result ["1" :text])]
-        (is (not (str/includes? body-1 "Competition"))
-            "item 1 body must not include item 1A content")))))
+      (is (= "MANAGEMENT'S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS"
+             (get-in result ["7" :title]))))))
 
 (deftest extract-items-text-fixture-content-test
   (let [f #'edgar.extract/extract-items-text
-        result (f fixture-text extract/items-10k)]
-    (testing "finds item 1A risk factors"
-      (is (contains? result "1A")))
+        result (f fixture-text all-10k-ids)]
+    (testing "finds exactly the items present in the fixture"
+      (is (= #{"1" "1A" "2" "7" "7A" "8"} (set (keys result)))))
     (testing "item 1A text contains risk content"
       (is (str/includes? (str/lower-case (get-in result ["1A" :text])) "risk")))
-    (testing "at least one of item 2 or 7 is found (regex alternation order may merge them)"
-      (is (or (contains? result "2") (contains? result "7"))))
-    (testing "revenue content appears somewhere in the extracted items"
-      (let [all-text (str/join " " (map (comp :text val) result))]
-        (is (str/includes? all-text "Revenue"))))
-    (testing "item 2 text contains properties content when present"
-      (when (contains? result "2")
-        (is (str/includes? (str/lower-case (get-in result ["2" :text])) "offices"))))))
+    (testing "item 2 text is the properties section only"
+      (is (= "The company owns offices in New York and San Francisco."
+             (get-in result ["2" :text]))))
+    (testing "item 7 (heading with an apostrophe) is found with its full title"
+      (is (= "MANAGEMENT'S DISCUSSION AND ANALYSIS" (get-in result ["7" :title])))
+      (is (str/starts-with? (get-in result ["7" :text]) "Revenue for fiscal year 2023"))
+      (is (not (str/includes? (get-in result ["7" :text]) "interest rate"))
+          "item 7 must stop at the item 7A heading"))
+    (testing "only the requested ids are returned, with full-document boundaries"
+      (let [only-7 (f fixture-text #{"7"})]
+        (is (= #{"7"} (set (keys only-7))))
+        (is (= (get result "7") (get only-7 "7")))))))
+
+(deftest extract-items-text-prose-lines-test
+  (testing "a wrapped prose line starting with \"Item 7 of ...\" is not a heading"
+    (let [f #'edgar.extract/extract-items-text
+          text (str "ITEM 1. BUSINESS\nApple designs computers. See Part II,\n"
+                    "Item 7 of this Form 10-K under the heading \"Net Sales,\" for details.\n"
+                    "More business text.\n\n"
+                    "ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS\nNet sales rose.")
+          result (f text all-10k-ids)]
+      (is (= #{"1" "7"} (set (keys result))))
+      (is (str/includes? (get-in result ["1" :text]) "More business text."))
+      (is (= "Net sales rose." (get-in result ["7" :text]))))))
+
+(deftest extract-items-text-10q-parts-test
+  (let [f #'edgar.extract/extract-items-text
+        text (str "PART I. FINANCIAL INFORMATION\n\n"
+                  "ITEM 1. FINANCIAL STATEMENTS\nBalance sheet.\n\n"
+                  "ITEM 2. MANAGEMENT'S DISCUSSION AND ANALYSIS\nSales grew.\n\n"
+                  "PART II. OTHER INFORMATION\n\n"
+                  "ITEM 1. LEGAL PROCEEDINGS\nLawsuits.\n\n"
+                  "ITEM 6. EXHIBITS AND REPORTS ON FORM 8-K\nExhibit list.")
+        result (f text (set (keys extract/items-10q)) {:parts? true})]
+    (is (= #{"I-1" "I-2" "II-1" "II-6"} (set (keys result))))
+    (is (str/starts-with? (get-in result ["I-1" :text]) "Balance sheet."))
+    (is (str/starts-with? (get-in result ["I-2" :text]) "Sales grew."))
+    (is (= "Lawsuits." (get-in result ["II-1" :text])))))
 
 (deftest html-content-predicate-test
   (let [f #'edgar.extract/html-content?]
@@ -491,7 +640,7 @@ ITEM 1A. RISK FACTORS
 Competition is intense in the widget market.
 Raw material costs present a risk.
 
-ITEM 7. DISCUSSION AND ANALYSIS
+ITEM 7. MANAGEMENT'S DISCUSSION AND ANALYSIS
 Revenue increased 10% driven by volume growth.
 Operating income improved year over year.")
 
@@ -530,3 +679,21 @@ Operating income improved year over year.")
     (let [result (with-redefs [edgar.filing/filing-html (fn [_] mock-filing-html)]
                    (extract/extract-items {:form "10-K"} :items #{"1A"}))]
       (is (= :html-heading-boundaries (get-in result ["1A" :method]))))))
+
+(deftest extract-items-plain-text-only-test
+  ;; Regression: the plain-text path ignored :items and returned every item.
+  (let [extract (fn [& opts]
+                  (with-redefs [edgar.filing/filing-html (fn [_] plain-text-filing-content)]
+                    (apply extract/extract-items {:form "10-K"} opts)))]
+    (testing ":items restricts the result to the requested ids"
+      (is (= #{"7"} (set (keys (extract :items #{"7"})))))
+      (is (= #{"1A"} (set (keys (extract :items #{"1a"}))))))
+    (testing "a requested item still ends at the next (unrequested) heading"
+      (is (= "Competition is intense in the widget market.\nRaw material costs present a risk."
+             (get-in (extract :items #{"1A"}) ["1A" :text]))))
+    (testing "without :items all items are returned"
+      (is (= #{"1" "1A" "7"} (set (keys (extract))))))
+    (testing "extract-item works on plain text"
+      (is (= "MANAGEMENT'S DISCUSSION AND ANALYSIS"
+             (:title (with-redefs [edgar.filing/filing-html (fn [_] plain-text-filing-content)]
+                       (extract/extract-item {:form "10-K"} "7"))))))))
