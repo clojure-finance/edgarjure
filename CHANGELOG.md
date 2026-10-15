@@ -2,6 +2,14 @@
 
 All notable changes to edgarjure are documented here.
 
+## [0.4.2] — 2026-10-15
+
+### Fixed
+- **`filing-by-accession` on agent-filed accessions.** The CIK was taken from the accession prefix, which is the *submitter* — for filings sent in by an agent (Donnelley `0001193125…`, Toppan, etc.) that's the agent, and the agent's archive path 404s on the filing's documents, so `e/html`, `e/text`, `e/exhibits` and friends all failed. The filing index page lists the real entities; `:cik` now comes from those, preferring the Filer, then Subject, Issuer, Reporting and Filed-by roles (a Form 4 resolves to the issuer, an activist DFAN14A to the target company), falling back to the submitter only when the index lists no entities. Live check: 18 of 25 Starbucks proxy/8-K/10-K accessions from 2004–2025 previously 404'd; all now resolve.
+
+### Added
+- `filing-by-accession` maps and `filing-index` results carry `:filers` — every entity on the filing index as `{:name :role :cik}` (e.g. both the target and the activist on a DFAN14A).
+
 ## [0.4.1] — 2026-08-01
 
 ### Fixed

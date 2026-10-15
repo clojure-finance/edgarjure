@@ -31,7 +31,10 @@
 
 (defn- parse-filing-index-html
   "Parse an HTML filing index page into
-   {:files [...] :formType \"...\" :filingDate \"YYYY-MM-DD\"}."
+   {:files [...] :formType \"...\" :filingDate \"YYYY-MM-DD\"
+    :filers [{:name \"...\" :role \"Filer\" :cik \"829224\"} ...]}.
+   :role is EDGAR's label for the entity: Filer, Subject, Filed by, Issuer,
+   Reporting, ..."
   [html]
   (let [tree (hickory/as-hickory (hickory/parse html))
         node-str (fn [n] (str/trim (apply str (filter string? (tree-seq map? :content n)))))
@@ -44,6 +47,12 @@
                                   (map node-str (sel/select (sel/class "infoHead") tree))
                                   (map node-str (sel/select (sel/class "info") tree)))
                              (some (fn [[k v]] (when (= k "Filing Date") (not-empty v)))))
+        ;; one companyName span per entity: "STARBUCKS CORP (Filer) CIK: 0000829224 (see all ...)"
+        filers (->> (sel/select (sel/class "companyName") tree)
+                    (keep #(when-let [[_ nm role cik] (re-find #"(?s)^\s*(.*?)\s*\(\s*([^)]+?)\s*\)\s*CIK\s*:\s*(\d{10})"
+                                                               (cell-text %))]
+                             {:name nm :role role :cik (str (Long/parseLong cik))}))
+                    vec)
         rows (sel/select (sel/descendant (sel/tag :table) (sel/tag :tr)) tree)
         files (->> rows
                    (map (fn [row]
@@ -65,12 +74,13 @@
                    (remove #(= "Seq" (:sequence %)))
                    (remove #(str/blank? (:name %)))
                    (remove #(str/blank? (:size %))))]
-    {:files files :formType form-type :filingDate filing-date}))
+    {:files files :formType form-type :filingDate filing-date :filers filers}))
 
 (defn filing-index
   "Fetch the filing index — list of all documents/attachments in a filing.
-   Returns a map with :files (seq of {:sequence :name :type :description :size})
-   and :formType (the SEC form type string)."
+   Returns a map with :files (seq of {:sequence :name :type :description :size}),
+   :formType (the SEC form type string), :filingDate, and :filers (the
+   entities the filing is associated with, as {:name :role :cik})."
   [filing]
   (parse-filing-index-html
    (core/edgar-get (filing-index-url filing) :raw? true)))
@@ -231,43 +241,60 @@
 ;;; This multimethod is the extension point.
 ;;; ---------------------------------------------------------------------------
 
+(def ^:private filer-role-priority
+  "EDGAR entity roles, most to least likely to be the company a filing is about."
+  ["Filer" "Subject" "Issuer" "Reporting" "Filed by"])
+
+(defn- primary-cik
+  "Pick the CIK a filing is about from a filing index's :filers.
+   Returns nil when :filers is empty."
+  [filers]
+  (or (some (fn [role] (some #(when (= role (:role %)) (:cik %)) filers))
+            filer-role-priority)
+      (:cik (first filers))))
+
 (defn filing-by-accession
   "Hydrate a filing map from an accession number string.
    Accepts dashed format: \"XXXXXXXXXX-YY-ZZZZZZ\"
-   Returns a filing map with :cik :accessionNumber :form :primaryDocument,
-   ready for filing-html, filing-text, filing-obj, extract-items, etc.
+   Returns a filing map with :cik :accessionNumber :form :primaryDocument
+   :filingDate :url :filers, ready for filing-html, filing-text, filing-obj,
+   extract-items, etc.
    Throws ex-info with ::not-found if the accession number does not exist.
 
-   Caveat: the first 10 digits of an accession number are the CIK of the
-   SUBMITTER, which for agent-filed documents (e.g. 0001193125... = Donnelley)
-   is a filing agent, not the subject company. Content URLs still resolve —
-   EDGAR indexes filings under every associated CIK — but the :cik in the
-   returned map may not be the company the filing is about."
+   The first 10 digits of an accession number are the SUBMITTER's CIK, which
+   for agent-filed documents (e.g. 0001193125... = Donnelley) is a filing
+   agent whose archive path does not serve the documents. :cik is therefore
+   taken from the entities the filing index lists, preferring the Filer, then
+   Subject, Issuer, Reporting and Filed-by roles (a Form 4 resolves to the
+   issuer, a DFAN14A to the target company). All listed entities are in
+   :filers as {:name :role :cik}."
   [accession-number]
   (let [digits (str/replace accession-number "-" "")
-        cik (str (Long/parseLong (subs digits 0 10)))
+        submitter-cik (str (Long/parseLong (subs digits 0 10)))
         acc-dashed (if (re-matches #"\d{10}-\d{2}-\d{6}" accession-number)
                      accession-number
                      (str (subs digits 0 10) "-" (subs digits 10 12) "-" (subs digits 12)))
-        stub {:cik cik :accessionNumber acc-dashed}
+        ;; the index page resolves under the submitter's path, documents may not
         idx (try
-              (filing-index stub)
+              (filing-index {:cik submitter-cik :accessionNumber acc-dashed})
               (catch Exception e
                 (throw (ex-info "Filing not found"
                                 {:type ::not-found
                                  :accession-number accession-number}
                                 e))))
-        primary (primary-doc idx)]
-    (let [form-type (or (:formType idx)
-                        (throw (ex-info "Could not determine form type from filing index"
-                                        {:type ::not-found
-                                         :accession-number accession-number})))]
-      (let [m (assoc stub
-                     :form form-type
-                     :primaryDocument (:name primary)
-                     :filingDate (:filingDate idx))]
-        (assoc m :url (when (:primaryDocument m)
-                        (filing-doc-url m (:primaryDocument m))))))))
+        primary (primary-doc idx)
+        form-type (or (:formType idx)
+                      (throw (ex-info "Could not determine form type from filing index"
+                                      {:type ::not-found
+                                       :accession-number accession-number})))
+        m {:cik (or (primary-cik (:filers idx)) submitter-cik)
+           :accessionNumber acc-dashed
+           :form form-type
+           :primaryDocument (:name primary)
+           :filingDate (:filingDate idx)
+           :filers (:filers idx)}]
+    (assoc m :url (when (:primaryDocument m)
+                    (filing-doc-url m (:primaryDocument m))))))
 
 (defmulti filing-obj
   "Parse a filing into a structured form-specific map.

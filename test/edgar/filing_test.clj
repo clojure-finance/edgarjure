@@ -421,6 +421,50 @@
     (let [idx {:formType "10-K"}]
       (is (= "10-K" (:formType idx))))))
 
+(defn- company-info-html
+  "Filing index fixture with one companyName span per [name role cik], in the
+   SEC's markup (acronym-wrapped CIK label, padded CIK inside a link)."
+  [& entities]
+  (str "<html><body><div id=\"formName\"><strong>Form DFAN14A</strong></div>"
+       (str/join (for [[nm role cik] entities]
+                   (str "<div class=\"companyInfo\"><span class=\"companyName\">" nm " (" role ")\n"
+                        " <acronym title=\"Central Index Key\">CIK</acronym>: "
+                        "<a href=\"/cgi-bin/browse-edgar?CIK=" cik "&amp;action=getcompany\">"
+                        cik " (see all company filings)</a></span></div>")))
+       "</body></html>"))
+
+(deftest parse-filing-index-html-filers-test
+  (testing "every companyName span becomes {:name :role :cik} with an unpadded CIK"
+    (is (= [{:name "STARBUCKS CORP" :role "Subject" :cik "829224"}
+            {:name "Strategic Organizing Center" :role "Filed by" :cik "2001721"}]
+           (:filers (#'filing/parse-filing-index-html
+                     (company-info-html ["STARBUCKS CORP" "Subject" "0000829224"]
+                                        ["Strategic Organizing Center" "Filed by" "0002001721"]))))))
+  (testing "Form 4 role labels padded with spaces — \"( Issuer )\" — are trimmed"
+    (is (= ["Issuer" "Reporting"]
+           (map :role (:filers (#'filing/parse-filing-index-html
+                                (company-info-html ["STARBUCKS CORP" " Issuer " "0000829224"]
+                                                   ["KELLY SARA" " Reporting " "0001971792"])))))))
+  (testing "names containing parentheses keep everything before the role"
+    (is (= "ACME (HOLDINGS) INC"
+           (:name (first (:filers (#'filing/parse-filing-index-html
+                                   (company-info-html ["ACME (HOLDINGS) INC" "Filer" "0000000042"]))))))))
+  (testing ":filers is empty when the page has no company blocks"
+    (is (= [] (:filers (#'filing/parse-filing-index-html form10k-index-html))))))
+
+(deftest primary-cik-test
+  (let [pick #'filing/primary-cik]
+    (testing "Filer wins (agent-filed DEF 14A lists the company only)"
+      (is (= "829224" (pick [{:role "Filer" :cik "829224"}]))))
+    (testing "Subject beats Filed by (activist DFAN14A resolves to the target)"
+      (is (= "829224" (pick [{:role "Filed by" :cik "2001721"} {:role "Subject" :cik "829224"}]))))
+    (testing "Issuer beats Reporting (Form 4 resolves to the company, not the insider)"
+      (is (= "829224" (pick [{:role "Reporting" :cik "1971792"} {:role "Issuer" :cik "829224"}]))))
+    (testing "unknown roles fall back to the first listed entity"
+      (is (= "7" (pick [{:role "Depositor" :cik "7"} {:role "Other" :cik "8"}]))))
+    (testing "nil when nothing is listed, so the caller keeps the submitter CIK"
+      (is (nil? (pick []))))))
+
 (deftest filing-doc-url-test
   (testing "builds correct SEC archives URL from filing map and doc name"
     (let [f {:cik "0000320193" :accessionNumber "0000320193-23-000106"}]

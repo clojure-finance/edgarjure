@@ -95,7 +95,15 @@
   (testing "filing-by-accession includes :filingDate"
     (let [f (e/filing-by-accession (:accessionNumber *aapl-10k*))]
       (is (string? (:filingDate f)))
-      (is (re-matches #"\d{4}-\d{2}-\d{2}" (:filingDate f))))))
+      (is (re-matches #"\d{4}-\d{2}-\d{2}" (:filingDate f)))))
+  (testing "agent-filed accession resolves to the company, and its documents load"
+    ;; SBUX 2012 DEF 14A submitted by Donnelley (0001193125) — the agent's
+    ;; archive path 404s on the primary document
+    (let [f (e/filing-by-accession "0001193125-12-025113")]
+      (is (= "829224" (:cik f)))
+      (is (= [{:name "STARBUCKS CORP" :role "Filer" :cik "829224"}] (:filers f)))
+      (is (str/includes? (:url f) "/829224/"))
+      (is (pos? (count (e/html f)))))))
 
 (deftest filings-dataset-test
   (testing "filings-dataset returns a tech.ml.dataset"
