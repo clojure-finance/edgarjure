@@ -117,6 +117,18 @@
        vintage of :view :compustat; the rest comes from DP tag selection,
        the FSDS R&D-placement guard, and presentation rules for oil
        (CVX) and expense-by-nature (UPS) filers.
+     Out of sample for the 2026-10-20 rules: 60 randomly drawn US firms
+       outside the samples above (non-financial, non-utility, assets >=
+       $1B; seed 42), FY2010-2015, 2016-vintage FUNDA, :as-of 2016-08-30,
+       FSDS enabled, 0.5.1 -> 0.5.2 code: Revenue (Compustat) 90% (newly
+       emitted), DP 65 -> 73%, XSGA 33 -> 43%, XOPR 30 -> 36%, COGS
+       38 -> 41%, Gross Profit 33 -> 36%, OIBDP 25 -> 27%, OIADP 25 -> 26%,
+       XRD 74 -> 79%; balance SEQ/CEQ/TEQ 97%, RE 97%, DLTT 87%, CHE 79%,
+       DLC 78%, RECT 73%. Excluding revenue, 205 firm-year items moved to
+       a match and 22 away from one. Foreign filers (20-F) and utilities
+       (subsidiaries inside a parent's combined 10-K have no companyfacts
+       of their own) were excluded; the 2016 file's tickers are stale, so
+       validate by CIK.
 
    Known matching pitfalls this study codified into the harness:
      - Compustat DATADATE is calendar month-end; XBRL :end is the exact
