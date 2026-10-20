@@ -584,12 +584,15 @@
                  :compustat = standardized plus line items reclassified to
                  approximate Compustat definitions (\"COGS (Compustat)\",
                  \"XSGA (Compustat)\", \"OIADP (Compustat)\", ...; rows
-                 carry :method :reclassified) - see (e/reclass-rules :income)
+                 carry :method :reclassified) - see (e/reclass-rules :income);
+                 10-K values are the first-reported ones, not the latest
+                 restatement
      :industry - :standard | :bank | :insurance | :reit. Auto-detected from the
                  company's SIC code when omitted (banks/insurers/REITs get
                  industry-specific concept chains). The :compustat rules only
                  apply on :standard chains; for other industries
-                 :view :compustat equals :standardized
+                 :view :compustat equals :standardized with first-reported
+                 10-K values
      :concepts - override the fallback chains with your own
                  [[label concept ...] ...] vectors (disables industry routing)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
@@ -649,7 +652,8 @@
               | :compustat
               (:standardized adds a derived \"Free Cash Flow\" line item and
               imputes \"D&A\" from separately tagged components; :compustat
-              currently equals :standardized for the cash flow statement)
+              has no cash flow rules and differs from :standardized only in
+              keeping first-reported 10-K values)
      :concepts - override cash-flow-concepts with your own
                [[label concept ...] ...] vectors
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
@@ -673,7 +677,8 @@
      :form     - \"10-K\" (default) or \"10-Q\"
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
-                 | :compustat (income + balance sheet reclassification)
+                 | :compustat (income + balance sheet reclassification;
+                 first-reported 10-K values on all three statements)
      :industry - :standard | :bank | :insurance | :reit (income statement only)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  All three statements use point-in-time deduplication

@@ -14,37 +14,92 @@ D&A splits between COGS and SG&A, R&D embedded in COGS, INDL-format
 restatements of firms with finance arms, and expense lines carried only in
 filer extension taxonomies - AMZN's Fulfillment and Technology & Content,
 which Compustat folds into XSGA/XRD, are extension tags invisible here)."
- :aux {:cash-flow ["D&A" "Depreciation" "Amortization of Intangibles"]}
+ :aux {:cash-flow ["D&A" "Depreciation" "Amortization of Intangibles"]
+       :concepts ["DepreciationDepletionAndAmortization"
+                  "DepreciationAndAmortization"
+                  "DepreciationAmortizationAndAccretionNet"
+                  "ExplorationExpense"
+                  "OperatingCostsAndExpenses"
+                  "TaxesOther"
+                  "CostOfPurchasedOilAndGas"
+                  "OilAndGasRevenue"
+                  "RevenueFromContractWithCustomerIncludingAssessedTax"]}
  :fsds
- {:da-marker "D&A Presented on Income Statement"
-  :da-tags ["DepreciationDepletionAndAmortization"
-            "DepreciationAndAmortization"
-            "DepreciationAmortizationAndAccretionNet"
-            "Depreciation"
-            "DepreciationNonproduction"
-            "OtherDepreciationAndAmortization"]
+ {:markers
+  [{:label "D&A Presented on Income Statement"
+    :on-income-statement true
+    :tags ["DepreciationDepletionAndAmortization"
+           "DepreciationAndAmortization"
+           "DepreciationAmortizationAndAccretionNet"
+           "Depreciation"
+           "DepreciationNonproduction"
+           "OtherDepreciationAndAmortization"]}
+   {:label "R&D Not Presented on Income Statement"
+    :on-income-statement false
+    :tags ["ResearchAndDevelopmentExpense"
+           "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"
+           "ResearchAndDevelopmentExpenseSoftwareExcludingAcquiredInProcessCost"]}]
   :extension-labels
-  [["(?i)fulfil?lment" "Fulfillment Expense"]
-   ["(?i)technologyand(content|infrastructure)" "Technology and Content Expense"]]}
+  [["(?i)^fulfil?lment" "Fulfillment Expense"]
+   ["(?i)^technologyand(content|infrastructure)" "Technology and Content Expense"]]}
  :rules
  [{:id :dp-components
    :target "DP (Compustat)"
    :compustat "DP"
    :formula [:+ "Depreciation" [:opt "Amortization of Intangibles"]]
+   :guards [[:at-least [:+ "Depreciation" [:opt "Amortization of Intangibles"]]
+             "DepreciationDepletionAndAmortization" 0.5]
+            [:at-least [:+ "Depreciation" [:opt "Amortization of Intangibles"]]
+             "DepreciationAndAmortization" 0.5]
+            [:at-least [:+ "Depreciation" [:opt "Amortization of Intangibles"]]
+             "DepreciationAmortizationAndAccretionNet" 0.5]]
    :notes "Compustat DP = property depreciation + intangible amortization. When a
 filer tags Depreciation separately, the component sum beats the combined
 cash-flow D&A tag, whose scope can exceed Compustat DP (AMZN's includes
 capitalized-content amortization: 48.7B tagged vs 30.9B DP in 2023 =
 Depreciation 30.2B + intangible amortization 0.7B exactly). Out-of-sample
 FY2016+: DP 66% -> 76%, and COGS 43% -> 54% via the better operand, with
-no in-sample cost. Known tradeoff: KO/UPS tag partial Depreciation values
-(footnote scope) and lose a few years."}
+no in-sample cost. The guards reject a Depreciation tag that is a footnote
+fragment - less than half of any combined D&A tag the filer reports (UPS
+FY2019 tags Depreciation 212M against D&A 2.36B)."}
+  {:id :dp-largest-tag
+   :target "DP (Compustat)"
+   :compustat "DP"
+   :formula [:max "DepreciationDepletionAndAmortization" "DepreciationAndAmortization"
+             "DepreciationAmortizationAndAccretionNet"]
+   :notes "When no usable Depreciation component exists: the largest of the
+combined D&A tags the filer reports. Filers often tag more than one, and the
+smaller is typically a footnote subset (UPS FY2023-2025 tag
+DepreciationDepletionAndAmortization 2.8-3.0B in a note and
+DepreciationAndAmortization 3.4-3.7B on the cash flow statement, which
+equals Compustat DP; AAPL FY2010-2014 likewise). The cost: AMZN FY2012-2013,
+whose larger tag includes content amortization."}
   {:id :dp
    :target "DP (Compustat)"
    :compustat "DP"
    :formula [:= "D&A"]
-   :notes "Fallback when no separate Depreciation tag exists: the cash-flow
-statement's (possibly derived) D&A line item."}
+   :notes "Fallback: the cash-flow statement's D&A line item, including the
+standardized view's derived D&A."}
+  {:id :cogs-oil-gas
+   :target "COGS (Compustat)"
+   :compustat "COGS"
+   :formula [:+ "Cost of Revenue" "OperatingCostsAndExpenses" "TaxesOther"
+             [:opt [:neg "Excise Taxes"]]]
+   :guards [[:present "ExplorationExpense"]]
+   :notes "Integrated oil presentation (an ExplorationExpense line identifies it):
+Compustat COGS = purchased crude and products + operating expenses + taxes
+other than on income, net of the excise taxes those taxes include in earlier
+years. Exact for CVX FY2014-2025 (FY2023: 119196 + 24887 + 4220 = 148303M;
+FY2014: 157496 - excise 8186 = 149310M). D&A and exploration are separate
+lines and stay out."}
+  {:id :cogs-oil-gas-purchased
+   :target "COGS (Compustat)"
+   :compustat "COGS"
+   :formula [:+ "CostOfPurchasedOilAndGas" "OperatingCostsAndExpenses" "TaxesOther"
+             [:opt [:neg "Excise Taxes"]]]
+   :guards [[:present "ExplorationExpense"]]
+   :notes "Same construction for filers tagging purchases as
+CostOfPurchasedOilAndGas (outside the Cost of Revenue chain)."}
   {:id :cogs-da-presented
    :target "COGS (Compustat)"
    :compustat "COGS"
@@ -64,6 +119,23 @@ removes the FULL DP from COGS, none from SG&A (IBM, INTC, KO, WMT, AAPL, CAT
 all show a ~1.00 COGS fraction). 1% -> 57% in-sample. With the FSDS cache
 enabled, the D&A-on-CF-only placement signal is what licenses this strip;
 D&A-on-IS filers are caught by :cogs-da-presented above."}
+  {:id :xsga-oil-gas
+   :target "XSGA (Compustat)"
+   :compustat "XSGA"
+   :formula [:+ "SG&A Expense" "ExplorationExpense"]
+   :notes "Integrated oil presentation: Compustat XSGA = SG&A + exploration
+expense; R&D sits inside operating expenses and is not added (CVX FY2023:
+4141 + 914 = 5055M exactly; 13 of 17 CVX years within 1%)."}
+  {:id :xsga-rd-off-statement
+   :target "XSGA (Compustat)"
+   :compustat "XSGA"
+   :formula [:= "SG&A Expense"]
+   :guards [[:present "R&D Not Presented on Income Statement"]]
+   :notes "FSDS placement guard: a filer that discloses R&D only in the notes
+carries it inside another expense line already (SG&A or cost of sales), so
+adding the tagged R&D amount would count it twice (PG, PEP: SG&A + R&D runs
+5-10% above Compustat XSGA every year). The marker row comes from FSDS
+pre.txt and needs the FSDS cache; without it the rule below adds R&D."}
   {:id :xsga-plus-rd
    :target "XSGA (Compustat)"
    :compustat "XSGA"
@@ -94,6 +166,24 @@ The other-operating line is excluded whichever way it is tagged
 (OtherCostAndExpenseOperating or OtherOperatingIncomeExpenseNet):
 empirically Compustat XSGA leaves it out - adding it overshoots and
 subtracting it undershoots by the same amount (AMZN FY2018-2024)."}
+  {:id :revt-incl-tax-ex-excise
+   :target "Revenue (Compustat)"
+   :compustat "REVT"
+   :formula [:- "RevenueFromContractWithCustomerIncludingAssessedTax" "Excise Taxes"]
+   :notes "Compustat REVT is net of excise taxes: a filer that tags its gross
+revenue as IncludingAssessedTax and its excise taxes separately gets the
+difference. Preferred over the Revenue chain, whose generic Revenues tag can
+be a total that also includes equity-affiliate and other income (CVX
+FY2016: 110215 - 6905 = 103310M exactly, where Revenues is 114472M)."}
+  {:id :revt-oil-gas
+   :target "Revenue (Compustat)"
+   :compustat "REVT"
+   :formula [:- "OilAndGasRevenue" [:opt "Excise Taxes"]]
+   :guards [[:present "ExplorationExpense"]]
+   :notes "Integrated oil presentation: sales and other operating revenues
+(OilAndGasRevenue) net of excise, leaving out the income from equity
+affiliates and other income that the filer's Revenues total includes. Exact
+for CVX FY2009-2015 (FY2009: 167402 - 8109 = 159293M)."}
   {:id :revt-ex-excise-gp-tieout
    :target "Revenue (Compustat)"
    :compustat "REVT"
@@ -120,21 +210,20 @@ excise-tax line. The guard trusts the concept name; the tie-out rule above
 covers filers whose ExcludingAssessedTax revenue still includes excise when
 they also report GrossProfit, but without a reported gross profit such
 mis-tagged revenue goes un-netted. Excise lines tagged outside the Excise
-Taxes chain (e.g. as a cost-of-revenue component) are not seen. Oil majors
-may still differ: some (CVX) include equity-affiliate and other income in
-their tagged Revenues."}
+Taxes chain (e.g. as a cost-of-revenue component) are not seen."}
+  {:id :revt
+   :target "Revenue (Compustat)"
+   :compustat "REVT"
+   :formula [:= "Revenue"]
+   :notes "No excise netting applies: REVT is the Revenue line as tagged, so the
+item exists for every filer, not only excise filers. 92% within 1% on the
+13 industrials (first-reported values)."}
   {:id :gross-profit-net-revenue
    :target "Gross Profit (Compustat)"
    :compustat "REVT - COGS"
    :formula [:- "Revenue (Compustat)" "COGS (Compustat)"]
-   :notes "Gross profit approximating Compustat's construction: excise-netted
-revenue (REVT) less COGS before D&A."}
-  {:id :gross-profit
-   :target "Gross Profit (Compustat)"
-   :compustat "REVT - COGS"
-   :formula [:- "Revenue" "COGS (Compustat)"]
-   :notes "Fallback when no excise netting applies (no Revenue (Compustat)
-row): revenue as tagged less Compustat COGS (i.e. before D&A)."}
+   :notes "Gross profit approximating Compustat's construction: REVT (excise-
+netted where that applies) less COGS before D&A."}
   {:id :xopr
    :target "XOPR (Compustat)"
    :compustat "XOPR"
@@ -181,6 +270,30 @@ below the operating line. Sign follows Compustat: charges are negative. Only
 the operating portion visible in XBRL tags is captured; non-operating special
 items (divestiture gains etc.) are not. The combined-restructuring-tag
 double-count case is handled by the guarded rule above."}
+  {:id :cogs-total-costs
+   :target "COGS (Compustat)"
+   :compustat "COGS"
+   :formula [:+ "Total Costs and Expenses" [:neg "DP (Compustat)"]
+             [:opt "Special Items (Compustat)"]]
+   :guards [[:absent "Cost of Revenue"] [:absent "SG&A Expense"]
+            [:absent "Selling and Marketing Expense"]
+            [:absent "General and Administrative Expense"]]
+   :notes "Filers presenting expenses by nature (compensation, fuel, purchased
+transportation, ...) with neither a cost-of-revenue nor an SG&A line:
+Compustat puts all operating costs before D&A into COGS (XSGA stays empty,
+COGS = XOPR). Built from the reported total less DP and less the special-
+item charges inside it; placed after the special-items rules so the charge
+is known. UPS: 15 of 17 years within 1%."}
+  {:id :xopr-total-costs
+   :target "XOPR (Compustat)"
+   :compustat "XOPR"
+   :formula [:+ "Total Costs and Expenses" [:neg "DP (Compustat)"]
+             [:opt "Special Items (Compustat)"]]
+   :guards [[:absent "Cost of Revenue"] [:absent "SG&A Expense"]
+            [:absent "Selling and Marketing Expense"]
+            [:absent "General and Administrative Expense"]]
+   :notes "XOPR for the same presentation: equal to COGS, since there is no
+XSGA to add."}
   {:id :oiadp
    :target "OIADP (Compustat)"
    :compustat "OIADP"
@@ -200,6 +313,17 @@ companyfacts cannot detect. On the validation sample removing the GLP
 operand left OIADP unchanged (A/B 2026-08-01, consistent with the 2026-07-31
 zero-marginal-effect check). No recurrence gate (e.g. treating gains seen in
 three consecutive years as recurring) is implemented."}
+  {:id :oiadp-bottom-up
+   :target "OIADP (Compustat)"
+   :compustat "OIADP"
+   :formula [:- "Revenue (Compustat)" "XOPR (Compustat)" "DP (Compustat)"]
+   :guards [[:absent "Operating Income"]
+            [:ties [:+ "XOPR (Compustat)" "DP (Compustat)"] "Total Costs and Expenses" 0.02]]
+   :notes "Filers that report no operating income line (e.g. CVX): REVT - XOPR -
+DP, Compustat's own identity. Only when XOPR + DP reconciles to the filer's
+reported total costs within 2% - the arithmetic evidence that the COGS and
+XSGA reconstruction captured all operating costs. Without that tie-out
+(IBM, HON, GE) the residual is several percent off and is not emitted."}
   {:id :oibdp
    :target "OIBDP (Compustat)"
    :compustat "OIBDP"

@@ -34,6 +34,8 @@
      [:- a b ...]    - first minus the rest
      [:neg-sum a ..] - negated sum of the operands present with a non-zero
                        value (nil when none are)
+     [:max a b ...]  - largest value among the operands present (nil when
+                       none are)
    Operands are line-item labels; wrap as [:opt label] to treat a missing
    operand as 0 instead of blocking the rule, and as [:neg label] to use the
    negated value (for items tagged with the opposite sign convention, e.g.
@@ -49,6 +51,11 @@
                                     and lies within relative tolerance tol of
                                     b's value (an arithmetic tie-out against a
                                     reported subtotal)
+     [:at-least formula b ratio]  - formula evaluates and, when b exists, is
+                                    at least ratio times b's value (passes
+                                    when b is absent): a component sum that
+                                    is not a footnote fragment of a reported
+                                    total
      [:concept-not-in a #{c ...}] - a's winning XBRL concept is not in the set
                                     (rows without a concept, e.g. derived rows,
                                     pass)
@@ -147,13 +154,22 @@
    (edgar.financials/apply-identities) evaluates through this too, so ops
    and [:opt] semantics cannot drift between the two layers."
   [[op & operands] by-li]
-  (if (= :neg-sum op)
+  (case op
+    :neg-sum
     (let [present (filter #(let [v (:val (get by-li (operand-label %)))]
                              (and (some? v) (not (zero? (double v)))))
                           operands)]
       (when (seq present)
         (when-let [{:keys [vals used]} (resolve-operands present by-li)]
           {:val (- (reduce + vals)) :used used})))
+
+    :max
+    (let [present (filter #(some? (:val (get by-li (operand-label %)))) operands)]
+      (when (seq present)
+        (when-let [{:keys [vals used]} (resolve-operands present by-li)]
+          (let [[v label] (apply max-key #(double (first %)) (map vector vals used))]
+            {:val v :used [label]}))))
+
     (when-let [{:keys [vals used]} (resolve-operands operands by-li)]
       ;; at least one operand must be present: an all-[:opt] formula with
       ;; none of them in the period has nothing to evaluate (and no operand
@@ -197,6 +213,11 @@
               (and (some? v) (some? vb)
                    (<= (Math/abs (- (double v) (double vb)))
                        (* tol (Math/abs (double vb))))))
+      :at-least (let [ratio (double (nth guard 3))
+                      v (:val (eval-formula a by-li))
+                      vb (:val (get by-li b))]
+                  (and (some? v)
+                       (or (nil? vb) (>= (double v) (* ratio (double vb))))))
       :concept-not-in (let [c (:concept (get by-li a))]
                         (or (nil? c) (not (contains? b c))))
       :concept-in (let [row (get by-li a)]
