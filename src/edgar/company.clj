@@ -114,6 +114,8 @@
      :state (:stateOrCountry addr)
      :state-description (:stateOrCountryDescription addr)
      :zip (:zipCode addr)
+     :country (:country addr)
+     :country-code (:countryCode addr)
      :foreign? (= 1 (:isForeignLocation addr))}))
 
 (defn company-metadata
@@ -197,8 +199,7 @@
    Options:
      :limit - max results (default 10; the SEC endpoint returns at most 10)"
   [query & {:keys [limit] :or {limit 10}}]
-  (let [q (str/replace (java.net.URLEncoder/encode (str query) "UTF-8") "+" "%20")
-        resp (core/edgar-get (str core/efts-url "?keysTyped=" q))]
+  (let [resp (core/edgar-get (str core/efts-url "?keysTyped=" (core/url-encode query)))]
     (->> (get-in resp [:hits :hits])
          (keep shape-search-hit)
          (reduce (fn [acc m]

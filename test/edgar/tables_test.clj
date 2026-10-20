@@ -5,6 +5,7 @@
             [hickory.core :as hickory]
             [hickory.select :as sel]
             [tech.v3.dataset :as ds]
+            [clojure.java.io :as io]
             [clojure.string :as str]))
 
 ;;; ---------------------------------------------------------------------------
@@ -36,7 +37,16 @@
     (testing "dash-only returns nil"
       (is (nil? (f "—"))))
     (testing "regular space as thousand separator is parsed (u00A0 normalised upstream by cell-text)"
-      (is (= 1234 (f "1 234"))))))
+      (is (= 1234 (f "1 234"))))
+    (testing "merged fragments: negative percentage, negative dollar amount"
+      (is (= -4 (f "(4)%")))
+      (is (= -1234 (f "$(1,234)"))))
+    (testing "Unicode minus sign"
+      (is (= -5 (f "\u22125"))))
+    (testing "strings Double/parseDouble would accept are not numbers"
+      (is (nil? (f "1.5d")))
+      (is (nil? (f "NaN")))
+      (is (nil? (f "1e5"))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; infer-column
@@ -56,7 +66,12 @@
         (is (= ["foo" "bar" "baz"] result))))
     (testing "mixed numeric and non-numeric → String vector"
       (let [result (f ["100" "n/a" "200"])]
-        (is (= ["100" "n/a" "200"] result))))))
+        (is (= ["100" "n/a" "200"] result))))
+    (testing "dash placeholders do not make a numeric column a string column"
+      (is (= [10 nil -6 nil nil] (f ["10" "—" "(6)" "$—" ""])))
+      (is (= [1 nil 2] (f ["1" "–" "2"]))))
+    (testing "a column of nothing but dashes stays strings"
+      (is (= ["—" "—"] (f ["—" "—"]))))))
 
 (deftest infer-column-blank-cells-test
   (let [f #'edgar.tables/infer-column]
@@ -98,28 +113,28 @@
       (is (not (f [["a" "" "b"] ["1" "" "2"]]))))))
 
 ;;; ---------------------------------------------------------------------------
-;;; row-texts — preserves blank cells for column alignment
+;;; Row layout — the cells of a single tr on the grid; blanks preserved for
+;;; column alignment
 ;;; ---------------------------------------------------------------------------
 
-(deftest row-texts-preserves-blanks-test
-  (let [f #'edgar.tables/row-texts]
+(defn- row-cells [tr] (:cells (#'edgar.tables/layout-row tr {})))
+
+(deftest row-cells-preserves-blanks-test
+  (let [f row-cells]
     (testing "blank cells are preserved (not filtered out)"
       (let [tr {:type :element :tag :tr :attrs {}
                 :content [{:type :element :tag :td :attrs {} :content ["A"]}
                           {:type :element :tag :td :attrs {} :content [""]}
-                          {:type :element :tag :td :attrs {} :content ["B"]}]}]
-        (let [result (f tr)]
-          (is (= 3 (count result)) "all three cells returned including blank")
-          (is (= "A" (first result)))
-          (is (str/blank? (second result)) "middle blank cell is preserved")
-          (is (= "B" (nth result 2))))))
+                          {:type :element :tag :td :attrs {} :content ["B"]}]}
+            result (f tr)]
+        (is (= ["A" "" "B"] result) "all three cells returned including blank")))
     (testing "fully empty row returns vector of blank strings (one per cell)"
       (let [tr {:type :element :tag :tr :attrs {}
                 :content [{:type :element :tag :td :attrs {} :content [""]}
-                          {:type :element :tag :td :attrs {} :content [""]}]}]
-        (let [result (f tr)]
-          (is (= 2 (count result)))
-          (is (every? str/blank? result)))))
+                          {:type :element :tag :td :attrs {} :content [""]}]}
+            result (f tr)]
+        (is (= 2 (count result)))
+        (is (every? str/blank? result))))
     (testing "no cells returns empty vector"
       (let [tr {:type :element :tag :tr :attrs {} :content []}]
         (is (= [] (f tr)))))))
@@ -200,22 +215,16 @@
         (is (str/blank? (f td)))))))
 
 (deftest row-cells-test
-  (let [f #'edgar.tables/row-cells
+  (let [f row-cells
         tr {:type :element :tag :tr :attrs {}
             :content [{:type :element :tag :th :attrs {} :content ["Header"]}
                       {:type :element :tag :td :attrs {} :content ["Data"]}]}
         cells (f tr)]
-    (testing "returns a vector"
-      (is (vector? cells)))
-    (testing "th cell is marked as header"
-      (is (= ["Header" true] (first cells))))
-    (testing "td cell is not marked as header"
-      (is (= ["Data" false] (second cells))))
-    (testing "returns one entry per cell"
-      (is (= 2 (count cells))))))
+    (testing "th and td cells both yield their plain text, one entry per cell"
+      (is (= ["Header" "Data"] cells)))))
 
 (deftest row-cells-direct-children-only-test
-  (let [f #'edgar.tables/row-cells
+  (let [f row-cells
         ;; Nested table inside a td — inner cells should NOT appear in outer row
         tr {:type :element :tag :tr :attrs {}
             :content [{:type :element :tag :td :attrs {} :content ["outer"]}
@@ -229,7 +238,7 @@
       (is (= 2 (count cells))))))
 
 (deftest row-cells-dom-order-test
-  (let [f #'edgar.tables/row-cells]
+  (let [f row-cells]
     (testing "mixed th/td cells preserve DOM order, not th-first"
       ;; Row: td "A", th "B", td "C" — th-first bug would produce B, A, C
       (let [tr {:type :element :tag :tr :attrs {}
@@ -237,20 +246,16 @@
                           {:type :element :tag :th :attrs {} :content ["B"]}
                           {:type :element :tag :td :attrs {} :content ["C"]}]}
             cells (f tr)]
-        (is (= 3 (count cells)))
-        (is (= "A" (first (first cells))))
-        (is (= "B" (first (second cells))))
-        (is (= "C" (first (nth cells 2))))))))
+        (is (= ["A" "B" "C"] cells))))))
 
 (deftest row-cells-colspan-test
-  (let [f #'edgar.tables/row-cells]
-    (testing "colspan=3 expands to 3 entries with the same text"
+  (let [f row-cells]
+    (testing "colspan=3 occupies 3 grid positions; the text is in the first only"
       (let [tr {:type :element :tag :tr :attrs {}
                 :content [{:type :element :tag :th :attrs {:colspan "3"} :content ["Period"]}
                           {:type :element :tag :td :attrs {} :content ["Value"]}]}
             cells (f tr)]
-        (is (= 4 (count cells)))
-        (is (= [["Period" true] ["Period" true] ["Period" true] ["Value" false]] cells))))
+        (is (= ["Period" "" "" "Value"] cells))))
     (testing "colspan=1 (explicit) produces exactly 1 entry"
       (let [tr {:type :element :tag :tr :attrs {}
                 :content [{:type :element :tag :td :attrs {:colspan "1"} :content ["X"]}]}
@@ -266,6 +271,62 @@
                 :content [{:type :element :tag :td :attrs {:colspan "bad"} :content ["Z"]}]}
             cells (f tr)]
         (is (= 1 (count cells)))))))
+
+(defn- html-rows
+  "The direct tr nodes of the first table in an HTML snippet."
+  [html]
+  (#'edgar.tables/direct-rows
+   (first (sel/select (sel/tag :table) (hickory/as-hickory (hickory/parse html))))))
+
+(deftest layout-rows-rowspan-test
+  (let [rows (#'edgar.tables/layout-rows
+              (html-rows "<table>
+                <tr><td rowspan=\"2\">Label</td><td colspan=\"2\">2025</td></tr>
+                <tr><td>Amount</td><td>Rate</td></tr>
+                <tr><td>Notes</td><td>100</td><td>4%</td></tr>
+              </table>"))]
+    (testing "a rowspan cell covers its column in the next row, shifting that row's cells right"
+      (is (= [["Label" "2025" ""] ["" "Amount" "Rate"] ["Notes" "100" "4%"]]
+             (mapv :cells rows))))
+    (testing ":spans are the grid ranges of each row's own cells"
+      (is (= [[[0 1] [1 3]] [[1 2] [2 3]] [[0 1] [1 2] [2 3]]]
+             (mapv :spans rows))))))
+
+;;; ---------------------------------------------------------------------------
+;;; merge-fragments and dash placeholders
+;;; ---------------------------------------------------------------------------
+
+(deftest merge-fragments-test
+  (let [f #'edgar.tables/merge-fragments]
+    (testing "a currency symbol joins the number to its right, at the number's position"
+      (is (= ["Americas" "" "$178,353" ""] (f ["Americas" "$" "178,353" ""]))))
+    (testing "% and ) join the number to their left"
+      (is (= ["7%" "" ""] (f ["7" "" "%"])))
+      (is (= ["(4)%" ""] (f ["(4" ")%"])))
+      (is (= ["" "$(1,234)" ""] (f ["$" "(1,234" ")"]))))
+    (testing "currency symbol before a dash placeholder"
+      (is (= ["" "$—"] (f ["$" "—"]))))
+    (testing "fragments next to text are left alone"
+      (is (= ["$" "n/a"] (f ["$" "n/a"])))
+      (is (= ["Total" "%"] (f ["Total" "%"]))))))
+
+(deftest dash-placeholder-test
+  (let [f #'edgar.tables/dash-placeholder?]
+    (is (every? f ["—" "–" "-" "$—" "$ —" "—%"]))
+    (is (not-any? f ["" "n/a" "-5" "2025 – 2062"]))))
+
+;;; ---------------------------------------------------------------------------
+;;; html-content?
+;;; ---------------------------------------------------------------------------
+
+(deftest html-content-test
+  (is (tables/html-content? "<!DOCTYPE html><html><body></body></html>"))
+  (is (tables/html-content? "<HTML><BODY>x</BODY></HTML>"))
+  (is (tables/html-content? "<body><table></table></body>"))
+  (testing "SGML plain-text filings carry <TABLE> tags but are not HTML"
+    (is (not (tables/html-content? "<TABLE>\n<CAPTION>\nITEM 1. BUSINESS"))))
+  (is (not (tables/html-content? "ITEM 1. Business")))
+  (is (not (tables/html-content? nil))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; extract-table — private fn, using inline HTML
@@ -353,7 +414,7 @@
 ;;; ---------------------------------------------------------------------------
 
 (def ^:private fixture-tables-html
-  (slurp (clojure.java.io/resource "fixtures/tables.html")))
+  (slurp (io/resource "fixtures/tables.html")))
 
 (deftest extract-tables-fixture-test
   (let [result (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
@@ -385,14 +446,14 @@
 
 (deftest extract-tables-nth-option-test
   (let [result (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
-                 (tables/extract-tables {:form "10-K"} :nth 0))]
-    (testing ":nth 0 returns a single dataset (not a seq)"
+                 (tables/extract-tables {:form "10-K"} :n 0))]
+    (testing ":n 0 returns a single dataset (not a seq)"
       (is (instance? tech.v3.dataset.impl.dataset.Dataset result)))))
 
 (deftest extract-tables-nth-out-of-range-test
   (let [result (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
-                 (tables/extract-tables {:form "10-K"} :nth 9999))]
-    (testing ":nth out of range returns nil"
+                 (tables/extract-tables {:form "10-K"} :n 9999))]
+    (testing ":n out of range returns nil"
       (is (nil? result)))))
 
 (deftest extract-tables-min-rows-filter-test
@@ -420,9 +481,9 @@
     (let [result (with-redefs [edgar.filing/filing-html (fn [_] nil)]
                    (tables/extract-tables {:form "10-K"}))]
       (is (= [] result))))
-  (testing "nil html with :nth returns nil (not a crash)"
+  (testing "nil html with :n returns nil (not a crash)"
     (let [result (with-redefs [edgar.filing/filing-html (fn [_] nil)]
-                   (tables/extract-tables {:form "10-K"} :nth 0))]
+                   (tables/extract-tables {:form "10-K"} :n 0))]
       (is (nil? result))))
   (testing "blank html returns empty seq"
     (let [result (with-redefs [edgar.filing/filing-html (fn [_] "   ")]
@@ -432,12 +493,63 @@
     (let [result (with-redefs [edgar.filing/filing-html (fn [_] "ITEM 1. BUSINESS\nSome plain text.")]
                    (tables/extract-tables {:form "10-K"}))]
       (is (= [] result))))
-  (testing "plain text with :nth returns nil"
+  (testing "plain text with :n returns nil"
     (let [result (with-redefs [edgar.filing/filing-html (fn [_] "ITEM 1. BUSINESS\nSome plain text.")]
-                   (tables/extract-tables {:form "10-K"} :nth 0))]
+                   (tables/extract-tables {:form "10-K"} :n 0))]
       (is (nil? result))))
   (testing "valid HTML with tables still works after guard"
     (let [result (with-redefs [edgar.filing/filing-html (fn [_] fixture-tables-html)]
                    (tables/extract-tables {:form "10-K"}))]
       (is (seq result))
       (is (every? #(instance? tech.v3.dataset.impl.dataset.Dataset %) result)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Real Workiva/iXBRL tables — trimmed from Apple's fiscal 2025 10-K
+;;; ---------------------------------------------------------------------------
+
+(def ^:private aapl-tables-html
+  (slurp (io/resource "fixtures/aapl_10k_tables.html")))
+
+(defn- aapl-tables []
+  (with-redefs [edgar.filing/filing-html (fn [_] aapl-tables-html)]
+    (vec (tables/extract-tables {:form "10-K"}))))
+
+(defn- col-types [d]
+  (mapv #(-> (ds/column d %) meta :datatype) (ds/column-names d)))
+
+(deftest aapl-net-sales-by-segment-test
+  ;; Grid: empty first row; label colspan 3; "$" and the number in two
+  ;; cells under a colspan-3 header; "%" in its own cell after "7"/"(4)".
+  (let [d (first (aapl-tables))]
+    (testing "one column per header cell, no duplicated or all-blank columns"
+      (is (= ["col_0" "2025" "Change" "2024" "Change_1" "2023"] (ds/column-names d)))
+      (is (= [:string :int64 :int64 :int64 :int64 :int64] (col-types d))))
+    (testing "row labels appear once"
+      (is (= ["Americas" "Europe" "Greater China" "Japan" "Rest of Asia Pacific"
+              "Total net sales"]
+             (vec (ds/column d "col_0")))))
+    (testing "\"$\" fragments merge into the number in the same column"
+      (is (= [178353 111032 64377 28703 33696 416161] (vec (ds/column d "2025"))))
+      (is (= [162560 94294 72559 24257 29615 383285] (vec (ds/column d "2023")))))
+    (testing "\"%\" fragments merge; parentheses mean negative"
+      (is (= [7 10 -4 15 10 6] (vec (ds/column d "Change"))))
+      (is (= [3 7 -8 3 4 2] (vec (ds/column d "Change_1")))))))
+
+(deftest aapl-term-debt-test
+  ;; rowspan=2 header cells over a sub-header row ("Amount" / "Effective
+  ;; Interest Rate" under each year) and "—" placeholders.
+  (let [d (second (aapl-tables))]
+    (testing "rowspan keeps the sub-header aligned; it is folded into the names"
+      (is (= ["col_0" "Maturities (calendar year)"
+              "2025 Amount (in millions)" "2025 Effective Interest Rate"
+              "2024 Amount (in millions)" "2024 Effective Interest Rate"]
+             (ds/column-names d))))
+    (testing "amount columns are numeric despite \"—\" and \"(309)\""
+      (is (= :int64 (-> (ds/column d "2025 Amount (in millions)") meta :datatype)))
+      (is (= [nil 86781 nil 4500 91281 -309 -294 90678 -12350 78328]
+             (vec (ds/column d "2025 Amount (in millions)"))))
+      (is (= [nil 97341 nil nil 97341 -321 -358 96662 -10912 85750]
+             (vec (ds/column d "2024 Amount (in millions)")))))
+    (testing "text columns keep their text"
+      (is (= "Fixed-rate 0.000% – 4.850% notes" (nth (ds/column d "col_0") 1)))
+      (is (= "0.03% – 5.75%" (nth (ds/column d "2025 Effective Interest Rate") 1))))))

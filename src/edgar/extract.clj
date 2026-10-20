@@ -1,5 +1,6 @@
 (ns edgar.extract
   (:require [edgar.filing :as filing]
+            [edgar.tables :as tables]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [hickory.core :as hickory]
@@ -84,9 +85,52 @@
    "8.01" "Other Events"
    "9.01" "Financial Statements and Exhibits"})
 
-(defn items-for-form [form]
-  (case (str/replace (or form "") #"/A$" "")
+(def items-10ksb
+  "Form 10-KSB (Regulation S-B small business issuers, until 2009). Its
+   numbering differs from the 10-K: MD&A is item 6, financial statements
+   item 7, controls and procedures 8A."
+  {"1" "Description of Business"
+   "2" "Description of Property"
+   "3" "Legal Proceedings"
+   "4" "Submission of Matters to a Vote of Security Holders"
+   "5" "Market for Common Equity and Related Stockholder Matters"
+   "6" "Management's Discussion and Analysis or Plan of Operation"
+   "7" "Financial Statements"
+   "8" "Changes in and Disagreements with Accountants"
+   "8A" "Controls and Procedures"
+   "8B" "Other Information"
+   "9" "Directors, Executive Officers, Promoters and Control Persons"
+   "10" "Executive Compensation"
+   "11" "Security Ownership of Certain Beneficial Owners and Management"
+   "12" "Certain Relationships and Related Transactions"
+   "13" "Exhibits"
+   "14" "Principal Accountant Fees and Services"})
+
+(def ^:private form-families
+  "Form type (without /A) -> the form whose item list it uses. 10-K405 (a
+   10-K with the Item 405 box checked, until 2002) and the 10-KT / 10-QT
+   transition reports share the 10-K / 10-Q items; 10-QSB follows the 10-Q
+   part/item layout."
+  {"10-K" "10-K" "10-K405" "10-K" "10-KT" "10-K" "10-KT405" "10-K"
+   "10-KSB" "10-KSB" "10-KSB40" "10-KSB"
+   "10-Q" "10-Q" "10-QT" "10-Q" "10-QSB" "10-Q"
+   "8-K" "8-K"})
+
+(defn- form-family
+  "The base form (\"10-K\", \"10-KSB\", \"10-Q\", \"8-K\") whose items a form
+   type uses, or nil for forms without an item list. Amendments (/A)
+   follow their base form."
+  [form]
+  (form-families (str/replace (str/upper-case (or form "")) #"/A$" "")))
+
+(defn items-for-form
+  "Item id -> label map for a form type: 10-K (and 10-K405, 10-KT,
+   10-KT405), 10-KSB (and 10-KSB40), 10-Q (and 10-QT, 10-QSB), 8-K, each
+   with its /A amendment. {} for other forms."
+  [form]
+  (case (form-family form)
     "10-K" items-10k
+    "10-KSB" items-10ksb
     "10-Q" items-10q
     "8-K" items-8k
     {}))
@@ -99,8 +143,37 @@
   "Matches an item heading at the start of a text. Group 1 is the item id
    (\"1\", \"1C\", \"9A\", \"5.07\", \"II-1A\"), group 2 the title. A letter
    suffix is only taken when it is not followed by a lower-case letter, so
-   \"Item 1Business\" (adjacent spans) reads as item 1, not 1B."
+   \"Item 1Business\" (adjacent spans) reads as item 1, not 1B. An all-caps
+   title glued to the number (\"ITEM 1BUSINESS\") still yields a letter
+   here; resolve-letter-suffix sorts that out."
   #"(?i)^\s*item\s+((?:[IVX]+\s*[-\s]\s*)?\d{1,2}(?:[A-Z](?!(?-i:[a-z])))?(?:\.\d{2})?)\s*[.:\-—]?\s*(.{0,160})")
+
+(def ^:private lettered-items
+  "Item numbers that exist with a letter suffix (10-K, 10-KSB; the 10-Q's
+   Part II item 1A), without any part prefix."
+  #{"1A" "1B" "1C" "7A" "8A" "8B" "9A" "9B" "9C"})
+
+(defn- resolve-letter-suffix
+  "Decide whether a capital letter right after an item number belongs to
+   the id or to a title glued to it (all-caps, no space: \"ITEM 1BUSINESS\",
+   \"ITEM 2PROPERTIES\"). id and title are as captured; glued? is true when
+   the title starts immediately after the id. The letter moves back to the
+   title when the id is not a lettered item (1A 1B 1C 7A 8A 8B 9A 9B 9C), or
+   when letter + title begins with the first word of the bare item's title
+   (item 1 \"Business\", item 9 \"Changes ...\"; looked up in items-map,
+   falling back to the 10-K items). Returns [id title]."
+  [id title glued? items-map]
+  (let [[_ base letter] (re-matches #"(?i)(.*\d)([A-Z])" id)]
+    (if-not (and glued? letter)
+      [id title]
+      (let [number (str/upper-case (str/replace base #"^.*-" ""))
+            glued (str letter title)
+            base-title (or (get items-map number) (get items-10k number))
+            first-word (some->> base-title (re-find #"^[A-Za-z']+") str/upper-case)]
+        (if (or (not (lettered-items (str number (str/upper-case letter))))
+                (and first-word (str/starts-with? (str/upper-case glued) first-word)))
+          [base glued]
+          [id title])))))
 
 (def ^:private part-pattern
   "Matches a PART I / PART II heading at the start of a short text."
@@ -186,6 +259,15 @@
   [s]
   (-> s str/trim (str/replace #"\s*[-\s]\s*(?=\d)" "-") str/upper-case))
 
+(defn- heading-id+title
+  "[id title] of the item heading matched by m (a Matcher of item-pattern
+   or text-item-pattern right after a successful find), with
+   resolve-letter-suffix applied."
+  [^java.util.regex.Matcher m items-map]
+  (resolve-letter-suffix (.group m 1) (.group m 2)
+                         (= (.end m 1) (.start m 2))
+                         items-map))
+
 (defn- with-part
   "Prefix an item id with its PART (\"1A\" in Part II -> \"II-1A\"), as used by
    the 10-Q item ids. Ids that already carry a part, or that appear before any
@@ -208,9 +290,11 @@
 
    With :parts? true (10-Q), the most recent \"PART I\"/\"PART II\" heading
    is tracked and item ids are prefixed with it (\"I-2\", \"II-1A\"), so the
-   Part I and Part II items that share a number both survive."
+   Part I and Part II items that share a number both survive. :items-map
+   (the form's item labels) helps resolve-letter-suffix read glued all-caps
+   headings."
   ([flat-nodes] (find-item-boundaries flat-nodes {}))
-  ([flat-nodes {:keys [parts?]}]
+  ([flat-nodes {:keys [parts? items-map]}]
    (let [candidates
          (:out
           (reduce
@@ -220,17 +304,18 @@
                (let [text (str/trim (node-text node))
                      part-m (when (and parts? (< (count text) 100))
                               (re-find part-pattern text))
-                     m (re-find item-pattern text)]
+                     m (re-matcher item-pattern text)
+                     [id title] (when (.find m) (heading-id+title m items-map))]
                  (cond
                    part-m (assoc acc :part (str/upper-case (nth part-m 1)))
-                   m (update acc :out conj
-                             {:item-id (cond-> (normalize-item-id (nth m 1))
-                                         parts? (with-part part))
-                              :title (clean-title (nth m 2))
-                              :node-index idx
-                              :body-start (if (< (count text) 200)
-                                            (+ idx (subtree-node-count node))
-                                            (inc idx))})
+                   id (update acc :out conj
+                              {:item-id (cond-> (normalize-item-id id)
+                                          parts? (with-part part))
+                               :title (clean-title title)
+                               :node-index idx
+                               :body-start (if (< (count text) 200)
+                                             (+ idx (subtree-node-count node))
+                                             (inc idx))})
                    :else acc))))
            {:part nil :out []}
            (map-indexed vector flat-nodes)))]
@@ -282,11 +367,6 @@
 ;;; Plain-text item boundary detection (pre-2000 filings)
 ;;; ---------------------------------------------------------------------------
 
-(defn- html-content?
-  "Returns true if the string looks like an HTML document."
-  [s]
-  (boolean (re-find #"(?i)<(!DOCTYPE|html)" s)))
-
 (def ^:private text-item-pattern
   "Plain-text item heading: a whole line \"ITEM <id>[.:-] <title>\".
    The id is matched atomically and the title must not start with a
@@ -298,15 +378,23 @@
   "Plain-text PART heading at the start of a line."
   #"(?im)^[ \t]*PART[ \t]+(I{1,3}|IV)\b")
 
-(defn- regex-matches
-  "All matches of pattern in text as {:groups [g0 g1 ...] :start :end}."
-  [pattern ^String text]
-  (let [^java.util.regex.Matcher m (re-matcher pattern text)]
+(defn- heading-matches
+  "All item headings of a plain text as {:id :title :start :end}."
+  [^String text items-map]
+  (let [^java.util.regex.Matcher m (re-matcher text-item-pattern text)]
     (loop [acc []]
       (if (.find m)
-        (recur (conj acc {:groups (mapv #(.group m (int %)) (range (inc (.groupCount m))))
-                          :start (.start m)
-                          :end (.end m)}))
+        (let [[id title] (heading-id+title m items-map)]
+          (recur (conj acc {:id id :title title :start (.start m) :end (.end m)})))
+        acc))))
+
+(defn- part-starts
+  "[start part] of each PART heading of a plain text, in order."
+  [^String text]
+  (let [^java.util.regex.Matcher m (re-matcher text-part-pattern text)]
+    (loop [acc []]
+      (if (.find m)
+        (recur (conj acc [(.start m) (str/upper-case (.group m 1))]))
         acc))))
 
 (defn- extract-items-text
@@ -317,22 +405,23 @@
 
    Every item heading line delimits a section, whether requested or not, so
    a requested item's text never runs into the next item. With :parts? true
-   (10-Q), ids are prefixed with the most recent PART heading (\"I-2\").
+   (10-Q), ids are prefixed with the most recent PART heading (\"I-2\");
+   :items-map is passed to resolve-letter-suffix.
 
    The heading line itself (\"ITEM 7. MD&A\") is excluded from :text — only
    the body content between consecutive headings is returned, consistent with
    the HTML path where heading nodes are not included in :text."
   ([text target-ids] (extract-items-text text target-ids {}))
-  ([text target-ids {:keys [parts?]}]
-   (let [parts (when parts? (regex-matches text-part-pattern text))
+  ([text target-ids {:keys [parts? items-map]}]
+   (let [parts (when parts? (part-starts text))
          part-at (fn [pos]
                    (some->> parts
-                            (take-while #(< (:start %) pos))
-                            last :groups second str/upper-case))
-         matches (for [{:keys [groups start end]} (regex-matches text-item-pattern text)]
-                   {:item-id (cond-> (normalize-item-id (nth groups 1))
+                            (take-while #(< (first %) pos))
+                            last second))
+         matches (for [{:keys [id title start end]} (heading-matches text items-map)]
+                   {:item-id (cond-> (normalize-item-id id)
                                parts? (with-part (part-at start)))
-                    :title (str/trim (nth groups 2))
+                    :title (str/trim title)
                     :start start
                     :end end})]
      (into {}
@@ -355,7 +444,12 @@
    filing  : filing metadata map (from edgar.filings/get-filings)
    Options:
      :items          - set of item ids to extract e.g. #{\"7\" \"1A\"} (default: all)
-     :remove-tables? - strip <table> elements before text extraction (default: false)
+     :remove-tables? - strip every <table> element before text extraction
+                       (default: false)
+
+   Form types without an item list of their own use their base form's:
+   10-K405, 10-KT and 10-KT405 the 10-K items, 10-KSB40 the 10-KSB items,
+   10-QT and 10-QSB the 10-Q items; amendments (/A) their base form's.
 
    10-Q item ids carry their part: \"I-1\" ... \"I-4\", \"II-1\" ... \"II-6\"
    (\"I-2\" is MD&A, \"II-1A\" Risk Factors). User-supplied ids are
@@ -369,14 +463,15 @@
   [filing & {:keys [items remove-tables?] :or {remove-tables? false}}]
   (let [form (:form filing)
         items-map (items-for-form form)
-        opts {:parts? (= "10-Q" (str/replace (or form "") #"/A$" ""))}
+        opts {:parts? (= "10-Q" (form-family form))
+              :items-map items-map}
         target-ids (if items
                      (set (map normalize-item-id items))
                      (set (keys items-map)))
         html (filing/filing-html filing)]
     (cond
       ;; modern HTML path
-      (and html (not (str/blank? html)) (html-content? html))
+      (tables/html-content? html)
       (let [tree (-> html hickory/parse hickory/as-hickory)
             clean-tree (if remove-tables? (remove-tables tree) tree)]
         (extract-items-html clean-tree target-ids opts))
@@ -401,10 +496,15 @@
 ;;; ---------------------------------------------------------------------------
 
 (defn batch-extract!
-  "Extract item sections from a seq of filings and write {accession-no}.edn to output-dir.
+  "Extract item sections from a seq of filings and write
+   {accessionNumber}.edn to output-dir. Returns one map per filing processed
+   (skipped filings are left out):
+     {:accession-number \"...\" :status :ok :items (\"1\" \"7\" ...)} or
+     {:accession-number \"...\" :status :error :message \"...\"}
    Options:
      :items          - set of item ids to extract (default: all)
-     :remove-tables? - strip numeric tables (default: false)
+     :remove-tables? - strip every <table> element before text extraction
+                       (default: false)
      :skip-existing? - skip if output file already exists (default: true)"
   [filing-seq output-dir & {:keys [items remove-tables? skip-existing?]
                             :or {remove-tables? false skip-existing? true}}]
@@ -417,6 +517,6 @@
      (try
        (let [extracted (extract-items f :items items :remove-tables? remove-tables?)]
          (spit (str out-file) (pr-str extracted))
-         {:accession-no acc :status :ok :items (keys extracted)})
+         {:accession-number acc :status :ok :items (keys extracted)})
        (catch Exception e
-         {:accession-no acc :status :error :message (.getMessage e)})))))
+         {:accession-number acc :status :error :message (.getMessage e)})))))

@@ -45,7 +45,10 @@
    alongside the fiscal-year figures. Long output keeps every window and
    carries a :duration-months column (3/6/9/12, nil for irregular windows)
    so callers can select (= 12 :duration-months); :shape :wide keeps only the
-   annual (non-quarterly) windows.
+   annual (non-quarterly) windows. Under :view :compustat only the annual
+   (and irregular) windows are reclassified: the quarterly-footnote windows
+   lack most rule operands (cash-flow D&A, special items), so a reclassified
+   row there would be a relabeled as-reported value.
 
    Point-in-time / look-ahead-safe mode:
      Pass :as-of \"YYYY-MM-DD\" to any public function to restrict to filings
@@ -60,10 +63,15 @@
                 ending at the longer row's end. The SEC :fy/:fp fields are
                 deliberately NOT used — they describe the filing, not the
                 observation, and collide across comparative periods.
-     :val-ltm - last-twelve-months: sum of four consecutive derived quarters
-                matched on period-end dates (±14 days tolerance for 52/53-week
-                fiscal calendars). 10-K annual rows participate in the
-                derivation so that Q4 = FY - 9M YTD.
+     :val-ltm - last-twelve-months: sum of four consecutive derived quarters,
+                chained by adjacency (each quarter ends within a few days of
+                the day before the next one starts) and spanning a 12-month
+                window, so uneven fiscal calendars (52/53-week years, a
+                12/12/12/16-week split) chain as well as calendar quarters.
+                The company's 10-K fiscal-year (12-month) rows participate in
+                the derivation so that Q4 = FY - 9M YTD; the 10-K's own
+                quarterly-footnote rows do not (the 10-Q's own quarters and
+                YTD differences are the quarterly source).
      Non-additive units — share counts (\"shares\") and per-share amounts
      (\"USD/shares\") — are never differenced or summed: their :val-q is the
      directly reported 3-month value when one exists (else nil) and their
@@ -73,19 +81,21 @@
      periods never receive FSDS operands, and mixing the two rule regimes
      would push a full year's reclassification effect into the derived Q4.
 
-   Unmapped-concept logging: every statement call records us-gaap concepts in
-   the company's facts that no active chain matched. See unmapped-concepts,
+   Unmapped-concept logging: every statement call records the us-gaap
+   concepts in the company's facts (for the requested form) that no built-in
+   chain of any statement or industry — nor a custom :concepts chain — maps.
+   Each company counts once per concept. See unmapped-concepts,
    clear-unmapped-concepts!, save-unmapped-concepts!."
   (:require [edgar.xbrl :as xbrl]
             [edgar.company :as company]
             [edgar.reclass :as reclass]
             [edgar.fsds :as fsds]
+            [edgar.util :as util]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [tech.v3.dataset :as ds])
-  (:import [java.time LocalDate]
-           [java.time.temporal ChronoUnit]))
+  (:import [java.time LocalDate]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Concept chains — loaded from EDN resources
@@ -184,47 +194,61 @@
     (industry-for-sic (:sic (company/company-metadata ticker-or-cik)))
     (catch Exception _ :standard)))
 
+(def ^:private statement-concept-maps
+  "The one statement/industry -> EDN concept map table; concepts-for and the
+   income-statement routing both read it."
+  {[:income :standard] income-statement-concept-map
+   [:income :bank] bank-income-concept-map
+   [:income :insurance] insurance-income-concept-map
+   [:income :reit] reit-income-concept-map
+   [:balance :standard] balance-sheet-concept-map
+   [:cash-flow :standard] cash-flow-concept-map})
+
+(def ^:private statement-chains
+  (update-vals statement-concept-maps chains-from-map))
+
 (defn- income-chains-for-industry [industry]
-  (case industry
-    :bank bank-income-concepts
-    :insurance insurance-income-concepts
-    :reit reit-income-concepts
-    income-statement-concepts))
+  (get statement-chains [:income industry]
+       (statement-chains [:income :standard])))
 
 (defn concepts-for
   "Return the active concept chains for a statement, for inspection/extension.
    statement: :income | :balance | :cash-flow
    Options:
-     :industry - :standard (default) | :bank | :insurance | :reit (income only)
+     :industry - :standard (default) | :bank | :insurance | :reit (income only;
+                 an unknown industry falls back to :standard)
    Returns {:chains [[label c1 c2 ...] ...] :meta <EDN map metadata>}"
   [statement & {:keys [industry] :or {industry :standard}}]
-  (case statement
-    :income (case industry
-              :bank {:chains bank-income-concepts
-                     :meta (dissoc bank-income-concept-map :line-items)}
-              :insurance {:chains insurance-income-concepts
-                          :meta (dissoc insurance-income-concept-map :line-items)}
-              :reit {:chains reit-income-concepts
-                     :meta (dissoc reit-income-concept-map :line-items)}
-              {:chains income-statement-concepts
-               :meta (dissoc income-statement-concept-map :line-items)})
-    :balance {:chains balance-sheet-concepts
-              :meta (dissoc balance-sheet-concept-map :line-items)}
-    :cash-flow {:chains cash-flow-concepts
-                :meta (dissoc cash-flow-concept-map :line-items)}))
+  (let [k (if (= :income statement) [:income industry] [statement :standard])
+        k (if (contains? statement-concept-maps k) k [statement :standard])]
+    (when-not (contains? statement-concept-maps k)
+      (throw (ex-info (str "Unknown statement: " statement
+                           " (expected :income :balance :cash-flow)")
+                      {:statement statement})))
+    {:chains (statement-chains k)
+     :meta (dissoc (statement-concept-maps k) :line-items)}))
 
 ;;; ---------------------------------------------------------------------------
-;;; Unmapped concept logging (roadmap 4.1e)
+;;; Unmapped concept logging
 ;;; ---------------------------------------------------------------------------
 
+(def ^:private builtin-concepts
+  "Every concept named by any built-in chain (all statements, all industries)."
+  (into #{} (comp (mapcat val) (mapcat rest)) statement-chains))
+
+;; {concept {:count n :first-seen date :example-ciks #{...}}}; :count is the
+;; number of distinct companies, tracked through unmapped-seen
 (def ^:private unmapped-registry (atom {}))
+(def ^:private unmapped-seen (atom #{}))
 
 (defn- record-unmapped!
   "Record us-gaap concepts present in facts-ds (for the requested form) that
-   no active chain matches. Feeds the concept-coverage feedback loop."
+   no built-in chain (any statement, any industry) and no custom chain in
+   chains maps. Each company counts once per concept, however many statement
+   calls see it. Feeds the concept-coverage feedback loop."
   [cik facts-ds chains form]
   (when (pos? (ds/row-count facts-ds))
-    (let [known (set (mapcat rest chains))
+    (let [known (into builtin-concepts (mapcat rest) chains)
           concepts (ds/column facts-ds :concept)
           taxonomies (ds/column facts-ds :taxonomy)
           forms (ds/column facts-ds :form)
@@ -241,20 +265,26 @@
                             (range n)))
           today (str (LocalDate/now))]
       (when (seq unmapped)
-        (swap! unmapped-registry
-               (fn [reg]
-                 (reduce (fn [r c]
-                           (update r c
-                                   (fn [e]
-                                     (-> (or e {:count 0 :first-seen today :example-ciks #{}})
-                                         (update :count inc)
-                                         (update :example-ciks
-                                                 #(if (< (count %) 5) (conj % cik) %))))))
-                         reg unmapped)))))))
+        (let [seen @unmapped-seen
+              fresh (remove #(contains? seen [% cik]) unmapped)]
+          (when (seq fresh)
+            (swap! unmapped-seen into (map #(vector % cik)) fresh)
+            (swap! unmapped-registry
+                   (fn [reg]
+                     (reduce (fn [r c]
+                               (update r c
+                                       (fn [e]
+                                         (-> (or e {:count 0 :first-seen today :example-ciks #{}})
+                                             (update :count inc)
+                                             (update :example-ciks
+                                                     #(if (< (count %) 5) (conj % cik) %))))))
+                             reg fresh)))))))))
 
 (defn unmapped-concepts
   "Return the unmapped-concept registry accumulated this session:
    {concept {:count n :first-seen \"YYYY-MM-DD\" :example-ciks #{...}}}
+   :count is the number of distinct companies (CIKs) whose facts carried the
+   concept; :example-ciks holds up to five of them.
    Options:
      :top - return only the n most frequent, as a seq of [concept info] pairs"
   [& {:keys [top]}]
@@ -266,6 +296,7 @@
 (defn clear-unmapped-concepts!
   "Reset the unmapped-concept registry."
   []
+  (reset! unmapped-seen #{})
   (reset! unmapped-registry {}))
 
 (defn save-unmapped-concepts!
@@ -312,10 +343,7 @@
    3-month Q3 observation (start=July 1) and a 9-month YTD observation
    (start=January 1) both ending September 30 are kept as separate rows."
   [rows]
-  (->> rows
-       (group-by (juxt :concept :unit :start :end))
-       (map (fn [[_ group]]
-              (reduce #(if (pos? (compare (:filed %1) (:filed %2))) %1 %2) group)))))
+  (util/latest-filed (juxt :concept :unit :start :end) rows))
 
 (defn- dedup-point-in-time
   "Point-in-time (look-ahead-safe) restatement deduplication.
@@ -327,13 +355,10 @@
    as-of-date is an ISO date string (\"YYYY-MM-DD\") or nil (falls back to
    dedup-restatements, i.e. always-latest behaviour)."
   [rows as-of-date]
-  (if (nil? as-of-date)
-    (dedup-restatements rows)
-    (->> rows
-         (filter #(not (pos? (compare (:filed %) as-of-date))))
-         (group-by (juxt :concept :unit :start :end))
-         (map (fn [[_ group]]
-                (reduce #(if (pos? (compare (:filed %1) (:filed %2))) %1 %2) group))))))
+  (dedup-restatements
+   (if as-of-date
+     (filter #(util/filed-on-or-before? as-of-date %) rows)
+     rows)))
 
 (defn- dedup-by-priority
   "Within each [line-item unit start end] group, keep only the row whose
@@ -373,32 +398,14 @@
 ;;; actual :start/:end dates instead.
 ;;; ---------------------------------------------------------------------------
 
-(defn- parse-date ^LocalDate [s]
-  (when s
-    (let [s (str s)]
-      (when-not (empty? s)
-        (try (LocalDate/parse s) (catch Exception _ nil))))))
-
-(defn- days-between ^long [^LocalDate a ^LocalDate b]
-  (.between ChronoUnit/DAYS a b))
-
 (defn duration-months
   "Classify a duration row's window as 3, 6, 9 or 12 months, or nil when the
    row is instant or does not resemble a whole number of fiscal quarters.
    Ranges are tolerant of 52/53-week fiscal calendars. The single source of
-   truth for window classification — edgar.validation and the FSDS aux
-   matching use this same definition."
+   truth for window classification — edgar.validation, edgar.dataset's pivot
+   and the FSDS aux matching use this same definition."
   [row]
-  (let [s (parse-date (:start row))
-        e (parse-date (:end row))]
-    (when (and s e)
-      (let [days (days-between s e)]
-        (cond
-          (<= 75 days 115) 3
-          (<= 160 days 200) 6
-          (<= 250 days 290) 9
-          (<= 340 days 380) 12
-          :else nil)))))
+  (util/duration-months row))
 
 (defn- line-key [row]
   (or (:line-item row) (:concept row)))
@@ -416,13 +423,15 @@
 
 (defn- quarter-values
   "Derive single-quarter values from duration rows.
-   Returns {[line-item unit] {end-LocalDate quarter-value}}.
+   Returns {[line-item unit] {end-LocalDate {:val v :start LocalDate
+                                             :end LocalDate}}}.
 
    Sources, later entries winning:
      1. YTD differencing — a k-month row minus the (k-3)-month row sharing the
-        same fiscal-year :start yields the quarter ending at the longer row's
-        end. 12-month 10-K rows participate here, yielding Q4 = FY - 9M.
-        Skipped for non-additive units (see additive-unit?).
+        same fiscal-year :start yields the quarter running from the day after
+        the shorter row's end to the longer row's end. 12-month 10-K rows
+        participate here, yielding Q4 = FY - 9M. Skipped for non-additive
+        units (see additive-unit?).
      2. Directly reported ~3-month rows (used as-is; override diffs). For
         non-additive units (shares, EPS) these are the only source."
   [rows]
@@ -431,8 +440,8 @@
                (when-let [m (duration-months row)]
                  (assoc row
                         ::months m
-                        ::start-d (parse-date (:start row))
-                        ::end-d (parse-date (:end row))))))
+                        ::start-d (util/parse-date (:start row))
+                        ::end-d (util/parse-date (:end row))))))
        (group-by (fn [row] [(line-key row) (:unit row)]))
        (reduce-kv
         (fn [acc group-key grows]
@@ -444,24 +453,28 @@
                                   (when-let [prior (get by-start-months
                                                         [(::start-d r) (- (long (::months r)) 3)])]
                                     (when (and (:val r) (:val prior))
-                                      [(::end-d r) (- (:val r) (:val prior))]))))
+                                      [(::end-d r)
+                                       {:val (- (:val r) (:val prior))
+                                        :start (.plusDays ^LocalDate (::end-d prior) 1)
+                                        :end (::end-d r)}]))))
                               grows))
                 directs (keep (fn [r]
                                 (when (and (= 3 (::months r)) (:val r))
-                                  [(::end-d r) (:val r)]))
+                                  [(::end-d r)
+                                   {:val (:val r) :start (::start-d r) :end (::end-d r)}]))
                               grows)]
             (assoc acc group-key (into {} (concat diffs directs)))))
         {})))
 
 (defn- lookup-quarter
-  "Find the quarter value whose end date is within tol-days of target.
-   Ties resolve to the closest date."
+  "Find the quarter ({:val :start :end}) whose end date is within tol-days of
+   target. Ties resolve to the closest date."
   [qmap ^LocalDate target tol-days]
   (when (and qmap target)
     (some->> qmap
-             (keep (fn [[^LocalDate d v]]
-                     (let [dist (Math/abs (days-between d target))]
-                       (when (<= dist (long tol-days)) [dist v]))))
+             (keep (fn [[^LocalDate d q]]
+                     (let [dist (Math/abs (util/days-between d target))]
+                       (when (<= dist (long tol-days)) [dist q]))))
              seq
              (apply min-key first)
              second)))
@@ -471,26 +484,40 @@
     (cond
       (nil? m) nil
       (= 3 m) (:val row)
-      :else (lookup-quarter qmap (parse-date (:end row)) 5))))
+      :else (:val (lookup-quarter qmap (util/parse-date (:end row)) 5)))))
 
 (defn- row-val-ltm
   "Trailing-twelve-month sum of four derived quarters; nil for non-additive
-   units (summing four quarters' share counts or EPS is meaningless)."
+   units (summing four quarters' share counts or EPS is meaningless).
+   Quarters chain by adjacency: starting from the quarter ending at the
+   row's end, each predecessor is the quarter ending within 7 days of the
+   day before its successor starts. The chain must span a 12-month window
+   (see duration-months), which keeps uneven fiscal calendars such as
+   12/12/12/16-week years chaining while rejecting gaps."
   [row qmap]
   (when (and qmap (additive-unit? (:unit row)) (duration-months row))
-    (when-let [e (parse-date (:end row))]
-      (let [targets (map #(.minusMonths e (long %)) [0 3 6 9])
-            qvals (map #(lookup-quarter qmap % 14) targets)]
-        (when (every? some? qvals)
-          (reduce + qvals))))))
+    (when-let [q0 (lookup-quarter qmap (util/parse-date (:end row)) 5)]
+      (let [qs (reduce (fn [qs _]
+                         (if-let [prev (lookup-quarter qmap
+                                                       (.minusDays ^LocalDate (:start (peek qs)) 1)
+                                                       7)]
+                           (conj qs prev)
+                           (reduced nil)))
+                       [q0]
+                       (range 3))]
+        (when (and qs (= 12 (util/duration-months {:start (:start (peek qs))
+                                                   :end (:end q0)})))
+          (reduce + (map :val qs)))))))
 
 (defn- add-quarterly-and-ltm
   "Add :duration-months, :val-q, and :val-ltm columns to a duration dataset.
    Only applies to 10-Q data; returns the dataset unchanged for other forms.
+   Callers skip it for instant (balance sheet) statements.
 
-   annual-rows are the company's 10-K duration observations for the same line
-   items; they participate in quarter derivation (Q4 = FY - 9M YTD) so that
-   :val-ltm windows crossing a fiscal Q4 are computable."
+   annual-rows are the company's 10-K fiscal-year (12-month) observations for
+   the same line items; they participate in quarter derivation
+   (Q4 = FY - 9M YTD) so that :val-ltm windows crossing a fiscal Q4 are
+   computable."
   [ds form annual-rows]
   (if (or (not= form "10-Q") (zero? (ds/row-count ds)))
     ds
@@ -534,7 +561,11 @@
    NCI-clean subtrahend (L&E − Total Equity). \"Stockholders Equity\" always
    means PARENT equity: filers tagging only the including-NCI equity concept
    get it labeled \"Total Equity\" by the chains, and parent equity is
-   re-derived by stripping the equity-section NCI."
+   re-derived by stripping the equity-section NCI. Total Liabilities also
+   strips the mezzanine (temporary equity) items — redeemable NCI and
+   redeemable preferred stock sit inside Total Liabilities and Equity but
+   are neither liabilities nor equity — and Non-Current Liabilities inherits
+   that."
   [{:target "Total Assets" :formula [:= "Total Liabilities and Equity"]}
    {:target "Total Liabilities and Equity" :formula [:= "Total Assets"]}
    ;; SE+NCI fires first when NCI is tagged; otherwise Total Equity equals
@@ -543,8 +574,12 @@
    {:target "Total Equity" :formula [:= "Stockholders Equity"]}
    {:target "Stockholders Equity" :formula [:- "Total Equity" "Noncontrolling Interest"]}
    {:target "Stockholders Equity" :formula [:= "Total Equity"]}
-   {:target "Total Liabilities" :formula [:- "Total Liabilities and Equity" "Total Equity"]}
-   {:target "Total Liabilities" :formula [:- "Total Liabilities and Equity" "Stockholders Equity"]}
+   {:target "Total Liabilities" :formula [:- "Total Liabilities and Equity" "Total Equity"
+                                          [:opt "Redeemable Noncontrolling Interest"]
+                                          [:opt "Redeemable Preferred Stock"]]}
+   {:target "Total Liabilities" :formula [:- "Total Liabilities and Equity" "Stockholders Equity"
+                                          [:opt "Redeemable Noncontrolling Interest"]
+                                          [:opt "Redeemable Preferred Stock"]]}
    {:target "Stockholders Equity" :formula [:- "Total Liabilities and Equity" "Total Liabilities" "Noncontrolling Interest"]}
    {:target "Stockholders Equity" :formula [:- "Total Liabilities and Equity" "Total Liabilities"]}
    {:target "Non-Current Assets" :formula [:- "Total Assets" "Current Assets"]}
@@ -568,8 +603,10 @@
 (defn- apply-identities
   "Synthesize missing line items per [unit start end] period group from
    arithmetic identities. Derived rows copy period fields from their first
-   operand and carry :method :derived, :derived-from [operand labels] and a
-   nil :concept. Iterates so chained identities resolve (capped at 3 passes).
+   operand (edgar.reclass/derived-row: per-fact metadata such as :label,
+   :accn, :frame, :fy/:fp is dropped, :filed is the latest operand filing)
+   and carry :method :derived, :derived-from [operand labels] and a nil
+   :concept. Iterates so chained identities resolve (capped at 3 passes).
    Formulas are evaluated by edgar.reclass/eval-formula — the same engine as
    the reclassification rules, so identities may also use [:opt x] operands
    and the :neg-sum op should the need arise."
@@ -591,10 +628,9 @@
                                 [rows by-li emitted?]
                                 (if-let [{:keys [val used]}
                                          (reclass/eval-formula formula by-li)]
-                                  (let [row (-> (get by-li (first used))
+                                  (let [row (-> (reclass/derived-row by-li used)
                                                 (assoc :line-item target
                                                        :val val
-                                                       :concept nil
                                                        :method :derived
                                                        :derived-from (vec used)))]
                                     [(conj rows row) (assoc by-li target row) true])
@@ -626,9 +662,11 @@
                   (ds/rows {:nil-missing? true})
                   (filter-by-duration-type duration-type))
          rows (if as-of
-                (filter #(not (pos? (compare (str (:filed %)) as-of))) rows)
+                (filter #(util/filed-on-or-before? as-of %) rows)
                 rows)]
-     (ds/->dataset (vec rows)))))
+     ;; most recent period first, as in the other views (the facts arrive
+     ;; unsorted)
+     (ds/->dataset (vec (sort-by (comp str :end) #(compare %2 %1) rows))))))
 
 (defn- statement-rows
   "Filter, dedup, and label facts rows for one statement/form combination.
@@ -672,9 +710,9 @@
   "True when two ISO/LocalDate dates are within tol days (FSDS ddate is
    month-end normalized while XBRL carries exact 52/53-week dates)."
   [a b tol]
-  (let [pa (java.time.LocalDate/parse (str a))
-        pb (java.time.LocalDate/parse (str b))]
-    (<= (Math/abs (.between java.time.temporal.ChronoUnit/DAYS pa pb)) (long tol))))
+  (let [pa (util/parse-date a)
+        pb (util/parse-date b)]
+    (boolean (and pa pb (<= (Math/abs (util/days-between pa pb)) (long tol))))))
 
 (defn- fsds-aux-fn
   "Return (fn [form rows] aux-rows) injecting FSDS-derived operand rows for
@@ -747,6 +785,17 @@
                                    as-of cash-flow-identities)
              (filter #(wanted (:line-item %))))))))
 
+(def ^:private long-column-order
+  "Leading columns of long-format statement output; any other columns (the
+   remaining companyfacts fields) follow alphabetically."
+  [:line-item :start :end :val :val-q :val-ltm :duration-months :unit
+   :method :rule :derived-from :concept :form :filed])
+
+(defn- order-long-columns [d]
+  (let [present (set (ds/column-names d))
+        lead (filterv present long-column-order)]
+    (ds/select-columns d (into lead (sort-by str (remove (set lead) present))))))
+
 (defn- normalized-statement
   "Build a normalized long-format statement dataset (:view :normalized), or
    the standardized variant when identities is non-nil (:view :standardized),
@@ -764,36 +813,50 @@
         cross-statement operands supplied by aux-fn and FSDS operands by
         fsds-aux-fn
      8. For 10-Q duration statements: derive :duration-months/:val-q/:val-ltm,
-        blending the company's 10-K annual rows for Q4/LTM computation. Those
-        annual rows are reclassified WITHOUT fsds-aux-fn, so Q4 = FY - 9M
-        never mixes an FSDS-assisted fiscal year with a non-FSDS 9M YTD.
+        blending the company's 10-K fiscal-year (12-month) rows for Q4/LTM
+        computation. Those annual rows are reclassified WITHOUT fsds-aux-fn,
+        so Q4 = FY - 9M never mixes an FSDS-assisted fiscal year with a
+        non-FSDS 9M YTD; the 10-K's quarterly-footnote rows are left out so
+        they never displace the 10-Q's own quarters.
         For 10-K duration statements: add :duration-months (10-K facts carry
-        quarterly-footnote windows alongside the fiscal-year ones)
-     9. Sort :end descending, :line-item ascending within each period"
+        quarterly-footnote windows alongside the fiscal-year ones); the
+        reclassification of step 7 skips those quarterly windows
+     9. Sort :end descending, :line-item ascending within each period; columns
+        in long-column-order"
   ([facts-ds chains form duration-type as-of identities]
    (normalized-statement facts-ds chains form duration-type as-of identities nil))
   ([facts-ds chains form duration-type as-of identities reclass]
    (let [build-rows (fn [f fsds?]
                       (let [rows (build-statement-rows facts-ds chains f
-                                                       duration-type as-of identities)]
-                        (if (and reclass (seq rows))
-                          (reclass/apply-ruleset rows
-                                                 (concat
-                                                  (when-let [aux-fn (:aux-fn reclass)]
-                                                    (aux-fn f))
-                                                  (when fsds?
-                                                    (when-let [ff (:fsds-aux-fn reclass)]
-                                                      (ff f rows))))
-                                                 (:ruleset reclass))
+                                                       duration-type as-of identities)
+                            ;; 10-K quarterly-footnote windows lack most rule
+                            ;; operands (no quarterly cash flow or special
+                            ;; items): pass them through unreclassified
+                            {footnote true annual false}
+                            (if (= f "10-K")
+                              (group-by (comp boolean util/quarterly-window?) rows)
+                              {false rows})]
+                        (if (and reclass (seq annual))
+                          (concat
+                           (reclass/apply-ruleset annual
+                                                  (concat
+                                                   (when-let [aux-fn (:aux-fn reclass)]
+                                                     (aux-fn f))
+                                                   (when fsds?
+                                                     (when-let [ff (:fsds-aux-fn reclass)]
+                                                       (ff f annual))))
+                                                  (:ruleset reclass))
+                           footnote)
                           rows)))
          rows (build-rows form true)
          annual-rows (when (and (= form "10-Q") (= duration-type :duration))
-                       (build-rows "10-K" false))
+                       (filter #(= 12 (duration-months %)) (build-rows "10-K" false)))
          result-ds (ds/->dataset (vec rows))]
      (if (zero? (ds/row-count result-ds))
        result-ds
        (-> result-ds
-           (add-quarterly-and-ltm form annual-rows)
+           (cond-> (= duration-type :duration)
+             (add-quarterly-and-ltm form annual-rows))
            (cond-> (and (= form "10-K") (= duration-type :duration))
              (ds/add-or-update-column :duration-months
                                       (mapv duration-months
@@ -804,22 +867,17 @@
               (let [c (compare (first b) (first a))]
                 (if (zero? c)
                   (compare (second a) (second b))
-                  c)))))))))
+                  c))))
+           (order-long-columns))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Wide-format pivot
 ;;; ---------------------------------------------------------------------------
 
-(defn- window-days
-  "Length of a duration row's window in days; -1 for instant rows."
-  ^long [row]
-  (let [s (parse-date (:start row))
-        e (parse-date (:end row))]
-    (if (and s e) (days-between s e) -1)))
-
 (defn- to-wide
   "Pivot a long-format statement dataset to wide format.
-   One row per period (:end), one column per line item.
+   One row per period (:end), one column per line item (:line-item; the
+   :concept for :view :as-reported rows, which carry no label).
 
    For 10-K statements (form \"10-K\") duration rows classified as 3, 6 or 9
    months are dropped first: 10-K facts carry quarterly-footnote windows that
@@ -829,44 +887,56 @@
 
    When several windows exist for the same [end line-item] (10-Q flow
    statements: a ~3-month and a YTD row), the longest window — by its
-   :start/:end dates — supplies the plain value (the reported YTD figure) and
-   the derived :val-q/:val-ltm — which are period-level, not row-level — are
-   taken from whichever row has them. They appear as \"<line-item> (Q)\" and
-   \"<line-item> (LTM)\" columns."
-  ([ds] (to-wide ds nil))
-  ([ds form]
+   :start/:end dates — supplies the plain value (the reported YTD figure;
+   among equal windows, e.g. unduplicated :as-reported restatements, the
+   latest :filed) and the derived :val-q/:val-ltm — which are period-level,
+   not row-level — are taken from whichever row has them. They appear as
+   \"<line-item> (Q)\" and \"<line-item> (LTM)\" columns.
+
+   Columns: :end first, then the line items in line-order (a seq of labels
+   or concepts, e.g. chain order; items it does not name follow
+   alphabetically), each followed by its (Q)/(LTM) columns."
+  ([ds] (to-wide ds nil nil))
+  ([ds form] (to-wide ds form nil))
+  ([ds form line-order]
    (if (zero? (ds/row-count ds))
      ds
      (let [has-q? (boolean (some #{:val-q} (ds/column-names ds)))
            has-ltm? (boolean (some #{:val-ltm} (ds/column-names ds)))
            reps (->> (ds/rows ds {:nil-missing? true})
-                     (remove #(and (= form "10-K")
-                                   (contains? #{3 6 9} (duration-months %))))
-                     (group-by (juxt :end :line-item))
+                     (remove #(and (= form "10-K") (util/quarterly-window? %)))
+                     (group-by (juxt :end line-key))
                      vals
                      (map (fn [grows]
-                            (-> (apply max-key window-days grows)
+                            (-> (reduce #(if (util/preferred-observation? %2 %1) %2 %1) grows)
                                 (assoc :val-q (some :val-q grows)
-                                       :val-ltm (some :val-ltm grows))))))]
-       (ds/->dataset
+                                       :val-ltm (some :val-ltm grows))))))
+           rank (into {} (map-indexed (fn [i li] [li i])) (distinct line-order))
+           lines (sort-by (fn [li] [(get rank li Long/MAX_VALUE) (str li)])
+                          (distinct (map line-key reps)))
+           cols (into [:end]
+                      (mapcat (fn [li]
+                                (cond-> [li]
+                                  has-q? (conj (str li " (Q)"))
+                                  has-ltm? (conj (str li " (LTM)")))))
+                      lines)]
+       (util/ordered-dataset
         (->> reps
              (group-by :end)
              (sort-by key #(compare %2 %1))
              (map (fn [[period rows]]
                     (reduce (fn [m r]
-                              (let [li (:line-item r)]
+                              (let [li (line-key r)]
                                 (cond-> (assoc m li (:val r))
                                   has-q? (assoc (str li " (Q)") (:val-q r))
                                   has-ltm? (assoc (str li " (LTM)") (:val-ltm r)))))
                             {:end period}
-                            rows)))))))))
+                            rows))))
+        cols)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Public API
 ;;; ---------------------------------------------------------------------------
-
-(defn- shape-result [result shape form]
-  (if (= shape :wide) (to-wide result form) result))
 
 (defn- statement-identities [statement-key]
   (case statement-key
@@ -874,11 +944,20 @@
     :balance balance-sheet-identities
     :cash-flow cash-flow-identities))
 
+(def ^:private statement-specs
+  {:income {:duration-type :duration :default-chains income-statement-concepts}
+   :balance {:duration-type :instant :default-chains balance-sheet-concepts}
+   :cash-flow {:duration-type :duration :default-chains cash-flow-concepts}})
+
 (defn- build-statement
-  [ticker-or-cik statement-key duration-type default-chains
-   {:keys [form concepts shape as-of view industry]
-    :or {form "10-K" shape :long view :normalized}}]
-  (let [cik (company/company-cik ticker-or-cik)
+  "Build one statement for a company. facts is the company's companyfacts
+   dataset when the caller already holds it (get-financials fetches it once
+   for all three statements); nil fetches it here. A nil :view means
+   :normalized, like an omitted one."
+  [cik facts statement-key {:keys [form concepts shape as-of view industry]}]
+  (let [form (or form "10-K")
+        view (or view :normalized)
+        {:keys [duration-type default-chains]} (statement-specs statement-key)
         resolved-industry (when (and (= statement-key :income) (nil? concepts))
                             (or industry (detect-industry cik)))
         chains (or concepts
@@ -892,24 +971,30 @@
         reclass? (or (not= statement-key :income)
                      (nil? resolved-industry)
                      (= :standard resolved-industry))
-        facts (xbrl/get-facts-dataset cik)]
+        facts (or facts (xbrl/get-facts-dataset cik :sort nil))
+        identities (when (#{:standardized :compustat} view)
+                     (statement-identities statement-key))
+        ruleset (when (and (= view :compustat) reclass?)
+                  (reclass/ruleset-for statement-key))
+        result (case view
+                 :as-reported (as-reported-statement facts chains form duration-type as-of)
+                 (:normalized :standardized :compustat)
+                 (normalized-statement facts chains form duration-type as-of
+                                       identities
+                                       (when ruleset
+                                         {:ruleset ruleset
+                                          :aux-fn (reclass-aux-fn facts as-of ruleset)
+                                          :fsds-aux-fn (fsds-aux-fn cik ruleset)}))
+                 (throw (ex-info (str "Unknown :view " view " (expected :as-reported"
+                                      " :normalized :standardized :compustat)")
+                                 {:view view})))]
     (record-unmapped! cik facts chains form)
-    (shape-result
-     (case view
-       :as-reported (as-reported-statement facts chains form duration-type as-of)
-       :normalized (normalized-statement facts chains form duration-type as-of
-                                         nil nil)
-       :standardized (normalized-statement facts chains form duration-type as-of
-                                           (statement-identities statement-key)
-                                           nil)
-       :compustat (normalized-statement facts chains form duration-type as-of
-                                        (statement-identities statement-key)
-                                        (when-let [rs (and reclass?
-                                                           (reclass/ruleset-for statement-key))]
-                                          {:ruleset rs
-                                           :aux-fn (reclass-aux-fn facts as-of rs)
-                                           :fsds-aux-fn (fsds-aux-fn cik rs)})))
-     shape form)))
+    (if (= shape :wide)
+      (to-wide result form (concat (map first chains)
+                                   (mapcat rest chains)
+                                   (map :target identities)
+                                   (map :target (:rules ruleset))))
+      result)))
 
 (defn income-statement
   "Return normalized income statement as a long-format dataset.
@@ -929,7 +1014,9 @@
                  \"OIADP (Compustat)\", \"OIBDP (Compustat)\", \"XOPR
                  (Compustat)\", \"DP (Compustat)\", \"Special Items
                  (Compustat)\", \"Gross Profit (Compustat)\", \"Revenue
-                 (Compustat)\", and \"XRD (Compustat)\" (FSDS-assisted)
+                 (Compustat)\", and \"XRD (Compustat)\" (the reported R&D
+                 line; only the variant built from extension tags such as
+                 AMZN's technology-and-content expense needs the FSDS cache)
                  - alongside the originals (rows carry
                  :method :reclassified, :rule and :derived-from; see
                  edgar.reclass and resources/edgar/reclass/)
@@ -954,9 +1041,13 @@
    For 10-K queries, long-format output keeps the quarterly-footnote windows
    filed with the 10-K (e.g. fourth-quarter figures sharing the fiscal-year
    end date) and carries :duration-months (3/6/9/12) to tell them apart;
-   :shape :wide keeps only the annual windows."
+   :shape :wide keeps only the annual windows.
+
+   :view :as-reported rows are the raw companyfacts observations: they carry
+   none of the derived columns (:line-item, :duration-months, :val-q,
+   :val-ltm); classify their windows with duration-months."
   [ticker-or-cik & {:as opts}]
-  (build-statement ticker-or-cik :income :duration income-statement-concepts opts))
+  (build-statement (company/company-cik ticker-or-cik) nil :income opts))
 
 (defn balance-sheet
   "Return normalized balance sheet as a long-format dataset.
@@ -976,7 +1067,7 @@
                  When set, excludes filings where :filed > as-of-date,
                  giving point-in-time / look-ahead-safe results."
   [ticker-or-cik & {:as opts}]
-  (build-statement ticker-or-cik :balance :instant balance-sheet-concepts opts))
+  (build-statement (company/company-cik ticker-or-cik) nil :balance opts))
 
 (defn cash-flow
   "Return normalized cash flow statement as a long-format dataset.
@@ -1002,9 +1093,12 @@
 
    For 10-K queries, long-format output carries :duration-months so that
    quarterly-footnote windows filed with the 10-K can be told apart from the
-   fiscal-year ones; :shape :wide keeps only the annual windows."
+   fiscal-year ones; :shape :wide keeps only the annual windows.
+
+   :view :as-reported rows are the raw companyfacts observations without
+   those derived columns."
   [ticker-or-cik & {:as opts}]
-  (build-statement ticker-or-cik :cash-flow :duration cash-flow-concepts opts))
+  (build-statement (company/company-cik ticker-or-cik) nil :cash-flow opts))
 
 (defn get-financials
   "Return all three normalized statements for a company.
@@ -1024,13 +1118,13 @@
                  filings where :filed > as-of-date are excluded.
 
    For 10-Q queries, long-format income and cash flow include :val-q and
-   :val-ltm columns. Balance sheet is unaffected (instant observations)."
-  [ticker-or-cik & {:keys [form shape as-of view industry]
-                    :or {form "10-K" shape :long view :normalized}}]
-  (let [opts {:form form :shape shape :as-of as-of :view view :industry industry}]
-    {:income-statement (build-statement ticker-or-cik :income :duration
-                                        income-statement-concepts opts)
-     :balance-sheet (build-statement ticker-or-cik :balance :instant
-                                     balance-sheet-concepts opts)
-     :cash-flow (build-statement ticker-or-cik :cash-flow :duration
-                                 cash-flow-concepts opts)}))
+   :val-ltm columns. Balance sheet is unaffected (instant observations).
+   The company's facts are fetched once and shared by the three statements."
+  [ticker-or-cik & {:keys [form shape as-of view industry]}]
+  (let [cik (company/company-cik ticker-or-cik)
+        ;; one companyfacts fetch serves all three statements
+        facts (xbrl/get-facts-dataset cik :sort nil)
+        opts {:form form :shape shape :as-of as-of :view view :industry industry}]
+    {:income-statement (build-statement cik facts :income opts)
+     :balance-sheet (build-statement cik facts :balance opts)
+     :cash-flow (build-statement cik facts :cash-flow opts)}))

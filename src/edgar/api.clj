@@ -6,7 +6,7 @@
    - Every function accepts ticker or CIK interchangeably
    - Keyword args throughout; no positional form/type args — a single options
      map also works everywhere: (e/income \"AAPL\" {:form \"10-Q\"})
-   - nth-style lookups (e/filing :n ...) return nil out of range, never throw
+   - nth-style lookups (:n on e/filing and e/tables) return nil out of range, never throw
    - Sensible defaults for taxonomy (us-gaap), unit (USD), form (10-K)
    - :concept accepts a string or a collection of strings
    - Functions that return datasets always return tech.ml.dataset, never seq-of-maps"
@@ -14,6 +14,7 @@
             [edgar.company :as company]
             [edgar.filings :as filings]
             [edgar.filing :as filing]
+            [edgar.forms]
             [edgar.extract :as extract]
             [edgar.xbrl :as xbrl]
             [edgar.financials :as financials]
@@ -48,7 +49,7 @@
    Options: :dir, :ttl-json-ms, :ttl-raw-ms.
    Example: (e/enable-disk-cache!)"
   [& {:as opts}]
-  (apply core/enable-disk-cache! (mapcat identity opts)))
+  (core/enable-disk-cache! opts))
 
 (defn disable-disk-cache!
   "Disable the on-disk HTTP cache (cached files are kept on disk)."
@@ -59,7 +60,7 @@
   "Delete all entries from the on-disk HTTP cache. Returns the number of
    entries removed. Options: :dir (defaults to the enabled/default dir)."
   [& {:as opts}]
-  (apply core/clear-disk-cache! (mapcat identity opts)))
+  (core/clear-disk-cache! opts))
 
 (defn disk-cache-stats
   "Return {:dir :entries :bytes} for the on-disk cache, or nil when disabled."
@@ -82,7 +83,7 @@
    Options: :dir.
    Example: (e/enable-fsds!)"
   [& {:as opts}]
-  (apply fsds/enable-cache! (mapcat identity opts)))
+  (fsds/enable-cache! opts))
 
 (defn disable-fsds!
   "Disable the FSDS quarter cache (cached files are kept on disk)."
@@ -100,6 +101,14 @@
   [ticker-or-cik]
   (schema/validate! schema/CompanyArgs {:ticker-or-cik ticker-or-cik})
   (company/company-cik ticker-or-cik))
+
+(defn ticker
+  "Reverse lookup: CIK (integer or string) → ticker, or nil when the CIK has
+   no listed ticker. For several share classes the primary listing is
+   returned. (e/ticker 1652044) => \"GOOGL\""
+  [cik]
+  (schema/validate! schema/CompanyArgs {:ticker-or-cik cik})
+  (company/cik->ticker cik))
 
 (defn company
   "Return full SEC submissions metadata map for a company.
@@ -195,20 +204,23 @@
    Options:
      :form - form type string (default \"10-K\")"
   [ticker-or-cik & {:keys [form] :or {form "10-K"}}]
+  (schema/validate! schema/LatestEffectiveFilingArgs {:ticker-or-cik ticker-or-cik :form form})
   (filings/latest-effective-filing ticker-or-cik :form form))
 
 (defn filings-dataset
   "Return a filing index for a company as a tech.ml.dataset.
    Same options as e/filings."
-  [ticker-or-cik & opts]
-  (apply dataset/get-filings-dataset ticker-or-cik opts))
+  [ticker-or-cik & {:as opts}]
+  (schema/validate! schema/FilingsArgs (assoc opts :ticker-or-cik ticker-or-cik))
+  (apply dataset/get-filings-dataset ticker-or-cik (mapcat identity opts)))
 
 (defn search-filings
-  "Full-text search across EDGAR filings.
+  "Full-text search across EDGAR filings (2001 onward).
    Options:
-     :forms      - vector of form types e.g. [\"10-K\" \"10-Q\"]
-     :start-date - \"YYYY-MM-DD\"
-     :end-date   - \"YYYY-MM-DD\"
+     :forms      - vector of form types e.g. [\"10-K\" \"10-Q\"]; EFTS also
+                   returns their amendments (\"8-K\" matches 8-K/A)
+     :start-date - \"YYYY-MM-DD\" (alone: through today)
+     :end-date   - \"YYYY-MM-DD\" (alone: from 2001-01-01)
      :limit      - max results (default 10)
    Returns a lazy seq of one map per FILING (EFTS indexes documents; a filing
    whose exhibits also match appears once, best-scoring document first).
@@ -253,11 +265,15 @@
      :form            — form type string
      :filingDate      — \"YYYY-MM-DD\"
      :cik             — zero-padded 10-digit CIK of the first listed filer
+                        (index order: for a Form 4 often the reporting
+                        owner, not the issuer — filter on :filers instead)
      :companyName     — that filer's name
      :filers          — every filer as {:cik :name} (e.g. Form 4 issuer and owner)
    The maps work directly with e/html, e/text, e/items, e/obj; call
    e/filing-by-accession for :primaryDocument, :url and filer roles. For 8-K
-   item filters use e/search-filings (its hits carry :items).
+   item filters use e/search-filings (its hits carry :items). Throws when
+   the SEC refuses access (e.g. a missing or blocked User-Agent) rather
+   than returning an empty day.
 
    Examples:
      ;; All filings on a date
@@ -266,14 +282,27 @@
      ;; Only 8-Ks
      (e/daily-filings \"2026-03-10\" :form \"8-K\")
 
-     ;; 10-Ks filed by large-cap tech (filter by known CIKs)
-     (e/daily-filings \"2026-03-10\" :form \"10-K\"
-                      :filter-fn #(= (:cik %) \"0000320193\"))
+     ;; Form 4s involving Apple, as issuer or as reporting owner
+     (e/daily-filings \"2026-03-10\" :form \"4\"
+                      :filter-fn (fn [f] (some #(= \"0000320193\" (:cik %)) (:filers f))))
 
      ;; Works with java.time.LocalDate too
      (e/daily-filings (java.time.LocalDate/of 2026 3 10))"
   [date & {:keys [form filter-fn]}]
+  (schema/validate! schema/DailyFilingsArgs {:date date :form form :filter-fn filter-fn})
   (filings/get-daily-filings date :form form :filter-fn filter-fn))
+
+(defn quarterly-index
+  "Return every filing in an EDGAR quarterly full index (1993 onward) as a
+   lazy seq of {:cik :company-name :form-type :date-filed :filename} maps,
+   :cik zero-padded. Built from master.idx (30-60 MB, not held in the
+   in-memory cache; the opt-in disk cache applies).
+   Options:
+     :form - keep only this exact form type (\"10-K\" excludes \"10-K/A\")
+   Example: (e/quarterly-index 2025 4 :form \"10-K\")"
+  [year quarter & {:keys [form]}]
+  (schema/validate! schema/QuarterlyIndexArgs {:year year :quarter quarter :form form})
+  (filings/get-quarterly-index year quarter :form form))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Filing content
@@ -293,13 +322,18 @@
   (filing/filing-by-accession accession-number))
 
 (defn html
-  "Fetch the primary HTML document of a filing as a string."
+  "Fetch the primary document of a filing as a string: HTML for most forms,
+   XML for the structured forms (3/4/5, 13F, 13D/G — use e/obj to parse
+   them), plain text for pre-2001 filings."
   [filing-map]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (filing/filing-html filing-map))
 
 (defn text
-  "Fetch the primary document of a filing as plain text (HTML stripped)."
+  "Fetch the primary document of a filing as plain text (markup stripped;
+   script and style content dropped)."
   [filing-map]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (filing/filing-text filing-map))
 
 (defn items
@@ -307,10 +341,11 @@
    Returns a map of item-id → {:title \"...\" :text \"...\" :method ...}.
    Options:
      :only           - set of item ids to extract e.g. #{\"7\" \"1A\"} (default all)
-     :remove-tables? - strip numeric tables before extraction (default false)
+     :remove-tables? - drop every <table> before extraction (default false)
    10-Q ids carry their part: \"I-1\"..\"I-4\", \"II-1\"..\"II-6\" (\"I-2\" is MD&A);
    ids are normalized, so \"i 2\" also works."
   [filing-map & {:keys [only remove-tables?] :or {remove-tables? false}}]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (extract/extract-items filing-map
                          :items only
                          :remove-tables? remove-tables?))
@@ -320,20 +355,23 @@
    Returns {:title \"...\" :text \"...\" :method ...} or nil.
    (e/item f \"7\")  => {:title \"Management's Discussion...\" :text \"...\" :method :html-heading-boundaries}"
   [filing-map item-id]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (extract/extract-item filing-map item-id))
 
 (defn obj
-  "Parse a filing into a structured form-specific map via filing-obj multimethod.
-   Dispatches on :form. Requires the form parsers to be loaded:
-   (require '[edgar.forms])  ; Forms 3/4/5, 13F-HR, Schedule 13D/G"
+  "Parse a filing into a structured form-specific map via the filing-obj
+   multimethod, dispatching on :form: Forms 3/4/5 (and amendments), 13F-HR,
+   Schedule 13D/G. Other forms return {:form ... :raw-html ...}; extend with
+   (defmethod edgar.filing/filing-obj \"FORM\" [f] ...)."
   [filing-map]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (filing/filing-obj filing-map))
 
 (defn tables
   "Extract HTML tables from a filing as a seq of tech.ml.dataset objects.
 
    Options:
-     :nth      — return only the nth table (0-indexed); returns a single dataset or nil
+     :n        — return only the nth table (0-indexed); returns a single dataset or nil
      :min-rows — only include tables with at least this many data rows (default 2;
                  :min-rows 1 also keeps single-row tables)
      :min-cols — only include tables with at least this many columns (default 2)
@@ -341,7 +379,10 @@
    Layout and navigation tables (no data row with at least two non-blank cells)
    are filtered out.
    Column names come from the first substantive row; duplicates are suffixed _1, _2, etc.
-   Numeric columns are auto-detected: commas stripped, parentheses → negative.
+   Colspan/rowspan grids are collapsed to one column per header cell (all-blank
+   columns dropped); \"$\"/\"%\"/\")\" cells are merged into their number.
+   Numeric columns: commas, currency and % stripped, parentheses → negative,
+   \"—\"/\"–\"/\"-\" → nil.
 
    Examples:
      (def f (e/filing \"AAPL\" :form \"10-K\"))
@@ -353,23 +394,26 @@
      (e/tables f :min-rows 5)
 
      ;; Specific table by index
-     (e/tables f :nth 0)
-     (e/tables f :nth 2)"
-  [filing-map & {:keys [nth min-rows min-cols] :or {min-rows 2 min-cols 2}}]
-  (schema/validate! schema/TablesArgs {:filing-map filing-map :nth nth
+     (e/tables f :n 0)
+     (e/tables f :n 2)"
+  [filing-map & {:keys [n min-rows min-cols] :or {min-rows 2 min-cols 2}}]
+  (schema/validate! schema/TablesArgs {:filing-map filing-map :n n
                                        :min-rows min-rows :min-cols min-cols})
-  (tables-ns/extract-tables filing-map :nth nth :min-rows min-rows :min-cols min-cols))
+  (tables-ns/extract-tables filing-map :n n :min-rows min-rows :min-cols min-cols))
 
 (defn save!
   "Download a filing's primary document to dir/<form>/<cik>/<accession>/
-   (\"/\" in the form becomes \"_\", e.g. 10-K_A). Returns the saved file path."
+   (\"/\" in the form becomes \"_\", e.g. 10-K_A). Returns the saved file
+   path, or nil when the filing has no primary document."
   [filing-map dir]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (filing/filing-save! filing-map dir))
 
 (defn save-all!
-  "Download all documents in a filing to a directory.
-   Returns a seq of saved file paths."
+  "Download all documents in a filing (including the complete submission
+   text file) to the e/save! directory. Returns a seq of saved file paths."
   [filing-map dir]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (filing/filing-save-all! filing-map dir))
 
 (defn filing-index
@@ -377,6 +421,7 @@
    :formType :filingDate :filers [{:name :role :cik} ...]}. :files lists every
    document in the filing (primary document, exhibits, XBRL, graphics)."
   [filing-map]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (filing/filing-index filing-map))
 
 (defn doc-url
@@ -387,12 +432,13 @@
 
    Examples:
      ;; URL for a named exhibit
-     (let [ex (e/exhibit f \"EX-21\")]
+     (let [ex (e/exhibit f \"EX-21.1\")]
        (e/doc-url f (:name ex)))
 
      ;; URL for a known attachment
      (e/doc-url f \"R2.htm\")"
   [filing-map doc-name]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (filing/filing-doc-url filing-map doc-name))
 
 (defn filing-document
@@ -405,33 +451,36 @@
    Examples:
      ;; Fetch the subsidiaries exhibit content
      (def f  (e/filing \"AAPL\" :form \"10-K\"))
-     (def ex (e/exhibit f \"EX-21\"))
+     (def ex (e/exhibit f \"EX-21.1\"))
      (e/filing-document f (:name ex))
 
      ;; Fetch a known attachment by name
      (e/filing-document f \"R2.htm\")"
   [filing-map doc-name]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (filing/filing-document filing-map doc-name))
 
 (defn exhibits
   "Return all exhibit entries from a filing's index as a seq of maps.
-   Each map has :name :type :description :sequence.
-   Exhibits have :type values beginning with \"EX-\" (e.g. \"EX-21\", \"EX-31.1\").
+   Each map has :name :type :description :sequence :size.
+   Exhibits have :type values beginning with \"EX-\" (e.g. \"EX-21.1\", \"EX-31.1\").
 
    Example:
      (def f (e/filing \"AAPL\" :form \"10-K\"))
      (e/exhibits f)
-     ;=> ({:type \"EX-21\" :name \"aapl-20230930_g2.htm\" :description \"Subsidiaries\" ...} ...)
+     ;=> ({:type \"EX-4.1\" :name \"a10-kexhibit4109272025.htm\" :description \"EX-4.1\" ...}
+     ;    {:type \"EX-21.1\" :name \"a10-kexhibit21109272025.htm\" ...} ...)
 
    Fetch an exhibit's content:
-     (let [ex (e/exhibit f \"EX-21\")]
-       (e/doc-url f (:name ex)))"
+     (e/filing-document f (:name (e/exhibit f \"EX-21.1\")))"
   [filing-map]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (filing/filing-exhibits filing-map))
 
 (defn exhibit
-  "Return the first exhibit matching exhibit-type (e.g. \"EX-21\").
-   Returns nil if no matching exhibit is found.
+  "Return the first exhibit whose :type equals exhibit-type exactly, or nil.
+   Most filings number their exhibits, so ask for \"EX-21.1\", not \"EX-21\"
+   (list them with e/exhibits).
 
    Common exhibit types:
      \"EX-21\"   — subsidiaries list
@@ -444,25 +493,29 @@
    (e/filing-document ...) to fetch the raw content string directly:
 
      (def f  (e/filing \"AAPL\" :form \"10-K\"))
-     (def ex (e/exhibit f \"EX-21\"))
+     (def ex (e/exhibit f \"EX-21.1\"))
      ;; Get the SEC URL:
      (e/doc-url f (:name ex))
      ;; Or fetch the content directly:
      (e/filing-document f (:name ex))"
   [filing-map exhibit-type]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (filing/filing-exhibit filing-map exhibit-type))
 
 (defn xbrl-docs
   "Return all XBRL-related document entries from a filing's index as a seq of maps.
-   Covers EX-101.* linkbases: instance (.xml), schema (.xsd), calculation,
-   label, presentation, and definition linkbases.
+   Covers EX-101.* linkbases (schema, calculation, label, presentation,
+   definition, and the instance in pre-inline filings) plus the instance SEC
+   extracts from an inline-XBRL document (*_htm.xml, :type \"XML\").
 
    Example:
      (def f (e/filing \"AAPL\" :form \"10-K\"))
      (e/xbrl-docs f)
-     ;=> ({:type \"EX-101.SCH\" :name \"aapl-20230930.xsd\" ...}
-     ;    {:type \"EX-101.CAL\" :name \"aapl-20230930_cal.xml\" ...} ...)"
+     ;=> ({:type \"EX-101.SCH\" :name \"aapl-20250927.xsd\" ...}
+     ;    {:type \"EX-101.CAL\" :name \"aapl-20250927_cal.xml\" ...} ...
+     ;    {:type \"XML\" :name \"aapl-20250927_htm.xml\" ...})"
   [filing-map]
+  (schema/validate! schema/FilingMapArgs {:filing-map filing-map})
   (filing/filing-xbrl-docs filing-map))
 
 ;;; ---------------------------------------------------------------------------
@@ -487,7 +540,8 @@
 (defn frame
   "Fetch cross-sectional data for a concept across all companies for a period.
    Returns a tech.ml.dataset sorted by :val descending, with columns
-   :accn :cik :entityName :loc :end :val. :cik is a zero-padded 10-digit
+   :accn :cik :entityName :loc :end :val (plus :start for duration frames
+   such as \"CY2023\"). :cik is a zero-padded 10-digit
    string (matching e/cik), so results join directly against other
    edgarjure output.
    Required:
@@ -513,6 +567,7 @@
    Each row is one distinct concept — use this to discover what data is available.
    Example: (e/concepts \"AAPL\")"
   [ticker-or-cik]
+  (schema/validate! schema/CompanyArgs {:ticker-or-cik ticker-or-cik})
   (xbrl/get-concepts (company/company-cik ticker-or-cik)))
 
 (defn income
@@ -540,7 +595,9 @@
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, only filings where :filed <= as-of-date are used
                  (point-in-time / look-ahead-safe mode).
-   Long format carries :duration-months. 10-K queries keep the
+   Long format carries :duration-months (not under :view :as-reported, whose
+   rows are the raw companyfacts observations without the derived
+   :line-item/:duration-months/:val-q/:val-ltm columns). 10-K queries keep the
    quarterly-footnote windows filed with the 10-K (3/6/9 months);
    :shape :wide keeps only the annual windows. 10-Q queries add :val-q
    (single quarter) and :val-ltm (trailing twelve months); share counts and
@@ -552,7 +609,7 @@
                                           :as-of as-of :view view :industry industry
                                           :concepts concepts})
   (financials/income-statement ticker-or-cik :form form :shape shape :as-of as-of
-                               :view (or view :normalized) :industry industry
+                               :view view :industry industry
                                :concepts concepts))
 
 (defn balance
@@ -581,7 +638,7 @@
   (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape
                                           :as-of as-of :view view :concepts concepts})
   (financials/balance-sheet ticker-or-cik :form form :shape shape :as-of as-of
-                            :view (or view :normalized) :concepts concepts))
+                            :view view :concepts concepts))
 
 (defn cashflow
   "Return cash flow statement as a long-format tech.ml.dataset.
@@ -598,7 +655,8 @@
      :as-of - ISO date string \"YYYY-MM-DD\" (default nil).
                When set, only filings where :filed <= as-of-date are used
                (point-in-time / look-ahead-safe mode; also for :as-reported).
-   Long format carries :duration-months; 10-K :shape :wide keeps only the
+   Long format carries :duration-months (not under :view :as-reported);
+   10-K :shape :wide keeps only the
    annual windows. 10-Q queries add :val-q and :val-ltm (share counts and
    per-share amounts are never differenced or summed)."
   [ticker-or-cik & {:keys [form shape as-of view concepts]
@@ -606,7 +664,7 @@
   (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape
                                           :as-of as-of :view view :concepts concepts})
   (financials/cash-flow ticker-or-cik :form form :shape shape :as-of as-of
-                        :view (or view :normalized) :concepts concepts))
+                        :view view :concepts concepts))
 
 (defn financials
   "Return all three financial statements for a company.
@@ -625,13 +683,13 @@
   (schema/validate! schema/StatementArgs {:ticker-or-cik ticker-or-cik :form form :shape shape
                                           :as-of as-of :view view :industry industry})
   (let [stmts (financials/get-financials ticker-or-cik :form form :shape shape :as-of as-of
-                                         :view (or view :normalized) :industry industry)]
+                                         :view view :industry industry)]
     {:income (:income-statement stmts)
      :balance (:balance-sheet stmts)
      :cashflow (:cash-flow stmts)}))
 
 ;;; ---------------------------------------------------------------------------
-;;; Long-name aliases (Phase 6 syntax refinements)
+;;; Long-name aliases
 ;;;
 ;;; Every statement function also answers to its full name; e/search gets a
 ;;; companies-suffixed alias symmetric with e/search-filings. All functions
@@ -681,7 +739,10 @@
 (defn unmapped-concepts
   "Return the registry of us-gaap concepts seen in company facts that no
    active concept chain matched, accumulated across statement calls this
-   session: {concept {:count n :first-seen date :example-ciks #{...}}}
+   session: {concept {:count n :first-seen date :example-ciks #{...}}}.
+   :count is the number of distinct companies; concepts of every built-in
+   chain (all statements and industries) and of custom :concepts count as
+   mapped.
    Options:
      :top - only the n most frequent, as [concept info] pairs
    Grow chain coverage by reviewing this and extending the EDN concept files."
@@ -728,6 +789,9 @@
    per [ticker end concept unit]: the longest duration window wins (fiscal
    year over quarterly-footnote rows), latest :filed among equal windows.
    Concepts reported in several units get one column per unit,
-   \"<concept> (<unit>)\". Returns a tech.ml.dataset."
+   \"<concept> (<unit>)\". Facts from 10-K filings whose window is 3, 6 or 9
+   months (quarterly footnotes) are dropped first. Columns: :ticker (when
+   present) and :end, then the concepts alphabetically. Returns a
+   tech.ml.dataset."
   [ds]
   (dataset/pivot-wide ds))

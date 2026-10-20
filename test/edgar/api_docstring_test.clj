@@ -3,15 +3,15 @@
    match what their docstrings describe. Catches docstring/implementation
    mismatches early."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [edgar.api :as e]
-            [edgar.company :as edgar.company]
-            [edgar.extract :as extract]
+            [edgar.company]
             [edgar.filing :as filing]
-            [edgar.filings :as edgar.filings]
+            [edgar.filings]
             [edgar.schema :as schema]))
 
 ;;; ---------------------------------------------------------------------------
-;;; items — docstring says "item-id → {:title :text :method}"
+;;; items / item — "item-id → {:title :text :method}"
 ;;; ---------------------------------------------------------------------------
 
 (def ^:private mock-html
@@ -22,93 +22,63 @@
      <p>Revenue grew significantly.</p>
    </body></html>")
 
-(deftest items-return-shape-test
-  (testing "items returns map of item-id → map with :title :text :method keys"
-    (let [result (with-redefs [filing/filing-html (fn [_] mock-html)]
-                   (e/items {:form "10-K"} :only #{"1A" "7"}))]
-      (is (map? result) "result is a map")
-      (is (= #{"1A" "7"} (set (keys result))) "keys are item ids")
-      (doseq [[id entry] result]
-        (testing (str "item " id " has :title key")
-          (is (contains? entry :title)))
-        (testing (str "item " id " has :text key")
-          (is (contains? entry :text)))
-        (testing (str "item " id " has :method key")
-          (is (contains? entry :method)))
-        (testing (str "item " id " :text is a string, not a bare string at top level")
-          (is (string? (:text entry)))))))
-  (testing "items does NOT return bare strings at top level (old wrong shape)"
-    (let [result (with-redefs [filing/filing-html (fn [_] mock-html)]
-                   (e/items {:form "10-K"} :only #{"1A"}))]
-      (is (not (string? (get result "1A")))
-          "value must be a map, not a plain string"))))
+(def ^:private ten-k {:cik "0000320193" :accessionNumber "0000320193-25-000079" :form "10-K"})
 
-;;; ---------------------------------------------------------------------------
-;;; item — docstring says "Returns {:title :text :method} or nil"
-;;; ---------------------------------------------------------------------------
+(deftest items-return-shape-test
+  (testing "items returns map of item-id → map with string :text, :title, :method"
+    (let [result (with-redefs [filing/filing-html (fn [_] mock-html)]
+                   (e/items ten-k :only #{"1A" "7"}))]
+      (is (= #{"1A" "7"} (set (keys result))))
+      (doseq [[id entry] result]
+        (testing (str "item " id)
+          (is (= #{:title :text :method} (set (keys entry))))
+          (is (string? (:text entry))))))))
 
 (deftest item-return-shape-test
-  (testing "item returns a map with :title :text :method, not a bare string"
-    (let [result (with-redefs [filing/filing-html (fn [_] mock-html)]
-                   (e/item {:form "10-K"} "1A"))]
-      (is (map? result) "result is a map")
-      (is (contains? result :title))
-      (is (contains? result :text))
-      (is (contains? result :method))
-      (is (string? (:text result)) ":text is a string")
-      (is (keyword? (:method result)) ":method is a keyword")))
-  (testing "item returns nil for a non-existent item id"
-    (let [result (with-redefs [filing/filing-html (fn [_] mock-html)]
-                   (e/item {:form "10-K"} "99"))]
-      (is (nil? result))))
-  (testing "item :method is :html-heading-boundaries for HTML filing"
-    (let [result (with-redefs [filing/filing-html (fn [_] mock-html)]
-                   (e/item {:form "10-K"} "7"))]
-      (is (= :html-heading-boundaries (:method result))))))
+  (with-redefs [filing/filing-html (fn [_] mock-html)]
+    (testing "item returns {:title :text :method} with :html-heading-boundaries for HTML"
+      (let [result (e/item ten-k "7")]
+        (is (string? (:text result)))
+        (is (= :html-heading-boundaries (:method result)))))
+    (testing "item returns nil for a non-existent item id"
+      (is (nil? (e/item ten-k "99"))))))
 
 ;;; ---------------------------------------------------------------------------
-;;; exhibits — docstring says each map has :name :type :description :sequence
-;;;            (not :document — that was the wrong field name)
+;;; exhibits / exhibit / filing-document / doc-url
 ;;; ---------------------------------------------------------------------------
+
+(def ^:private mock-index
+  {:files [{:sequence "1" :name "aapl-20250927.htm" :type "10-K" :description "10-K" :size "900000"}
+           {:sequence "2" :name "a10-kexhibit21109272025.htm" :type "EX-21.1"
+            :description "EX-21.1" :size "5000"}
+           {:sequence "3" :name "a10-kexhibit31109272025.htm" :type "EX-31.1"
+            :description "EX-31.1" :size "3000"}]
+   :formType "10-K"})
+
+(def ^:private mock-filing {:cik "320193" :accessionNumber "0000320193-25-000079" :form "10-K"})
 
 (deftest exhibits-return-shape-test
-  (let [mock-index {:files [{:sequence "2" :name "ex21.htm"
-                             :type "EX-21" :description "Subsidiaries"
-                             :size "5000"}
-                            {:sequence "3" :name "ex311.htm"
-                             :type "EX-31.1" :description "CEO Certification"
-                             :size "3000"}
-                            {:sequence "1" :name "report.htm"
-                             :type "10-K" :description "Annual Report"
-                             :size "900000"}]
-                    :formType "10-K"}]
-    (testing "exhibits returns only EX- typed entries"
-      (let [result (with-redefs [filing/filing-index (fn [_] mock-index)]
-                     (e/exhibits {:cik "320193" :accessionNumber "0000320193-24-000001"
-                                  :form "10-K"}))]
-        (is (= 2 (count result)) "non-exhibit entries excluded")
-        (is (every? #(clojure.string/starts-with? (:type %) "EX-") result))))
-    (testing "each exhibit map has :name key (not :document)"
-      (let [result (with-redefs [filing/filing-index (fn [_] mock-index)]
-                     (e/exhibits {:cik "320193" :accessionNumber "0000320193-24-000001"
-                                  :form "10-K"}))]
-        (is (every? #(contains? % :name) result)
-            "each entry has :name")
-        (is (not (some #(contains? % :document) result))
-            "entries do NOT have :document — docstring was wrong, :name is correct")))
-    (testing "each exhibit map has :type :description :sequence keys"
-      (let [result (with-redefs [filing/filing-index (fn [_] mock-index)]
-                     (e/exhibits {:cik "320193" :accessionNumber "0000320193-24-000001"
-                                  :form "10-K"}))]
-        (is (every? #(contains? % :type) result))
-        (is (every? #(contains? % :description) result))
-        (is (every? #(contains? % :sequence) result))))
-    (testing ":name value is usable with e/doc-url (a string filename)"
-      (let [result (with-redefs [filing/filing-index (fn [_] mock-index)]
-                     (e/exhibits {:cik "320193" :accessionNumber "0000320193-24-000001"
-                                  :form "10-K"}))
-            ex21 (first (filter #(= "EX-21" (:type %)) result))]
-        (is (= "ex21.htm" (:name ex21)))))))
+  (testing "exhibits returns only EX- entries, each {:name :type :description :sequence :size}"
+    (let [result (with-redefs [filing/filing-index (fn [_] mock-index)]
+                   (e/exhibits mock-filing))]
+      (is (= ["EX-21.1" "EX-31.1"] (map :type result)))
+      (is (every? #(= #{:name :type :description :sequence :size} (set (keys %))) result)))))
+
+(deftest exhibit-and-document-workflow-test
+  (with-redefs [filing/filing-index (fn [_] mock-index)
+                filing/filing-document (fn [_ doc-name & _] (str "content-of-" doc-name))]
+    (testing "e/exhibit matches :type exactly"
+      (is (nil? (e/exhibit mock-filing "EX-21")))
+      (is (= "a10-kexhibit21109272025.htm" (:name (e/exhibit mock-filing "EX-21.1")))))
+    (testing "e/filing-document and e/doc-url take the exhibit's :name"
+      (let [ex (e/exhibit mock-filing "EX-21.1")]
+        (is (= "content-of-a10-kexhibit21109272025.htm" (e/filing-document mock-filing (:name ex))))
+        (is (= "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/a10-kexhibit21109272025.htm"
+               (e/doc-url mock-filing (:name ex))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; filings / filing / quarterly-index
+;;; ---------------------------------------------------------------------------
 
 (deftest e-filing-limit-passthrough-test
   (testing "e/filing passes :limit (inc n) to filings/get-filings — avoids eager pagination"
@@ -123,88 +93,57 @@
         (testing "n=0 (default) → :limit 1"
           (e/filing "AAPL" :form "10-K")
           (is (= 1 (:limit @captured-opts))))
-        (testing "n=1 → :limit 2"
-          (e/filing "AAPL" :form "10-K" :n 1)
-          (is (= 2 (:limit @captured-opts))))
         (testing "n=2 → :limit 3"
           (e/filing "AAPL" :form "10-K" :n 2)
           (is (= 3 (:limit @captured-opts))))
         (testing "correct filing is returned for n=1"
-          (let [result (e/filing "AAPL" :form "10-K" :n 1)]
-            (is (= "B" (:accessionNumber result)))))))))
+          (is (= "B" (:accessionNumber (e/filing "AAPL" :form "10-K" :n 1)))))))))
 
-(deftest filing-document-test
-  ;; Regression for Issue #16: e/exhibit docstring referenced e/filing-document
-  ;; which did not exist as a public function. Fix: expose e/filing-document
-  ;; as a public wrapper and update the e/exhibit docstring to use it.
-  (let [mock-index {:files [{:sequence "1" :name "report.htm"
-                             :type "10-K" :description "Annual Report"
-                             :size "900000"}
-                            {:sequence "2" :name "ex21.htm"
-                             :type "EX-21" :description "Subsidiaries"
-                             :size "5000"}]
-                    :formType "10-K"}
-        mock-filing {:cik "320193" :accessionNumber "0000320193-24-000001" :form "10-K"}]
-    (testing "e/filing-document is a public function in edgar.api"
-      (is (fn? edgar.api/filing-document)
-          "e/filing-document must exist and be callable"))
-    (testing "e/filing-document delegates to filing/filing-document"
-      (let [fetched (atom nil)]
-        (with-redefs [filing/filing-document (fn [f doc & _]
-                                               (reset! fetched {:filing f :doc doc})
-                                               "<html>EX-21 content</html>")]
-          (let [result (e/filing-document mock-filing "ex21.htm")]
-            (is (= "<html>EX-21 content</html>" result))
-            (is (= "ex21.htm" (:doc @fetched)))))))
-    (testing "e/exhibit + e/filing-document workflow works end-to-end"
-      (with-redefs [filing/filing-index (fn [_] mock-index)
-                    filing/filing-document (fn [_ doc-name & _]
-                                             (str "content-of-" doc-name))]
-        (let [ex (e/exhibit mock-filing "EX-21")
-              result (e/filing-document mock-filing (:name ex))]
-          (is (= "ex21.htm" (:name ex))
-              "e/exhibit returns map with :name")
-          (is (= "content-of-ex21.htm" result)
-              "e/filing-document fetches the exhibit using (:name ex)"))))
-    (testing "e/exhibit + e/doc-url workflow also works (both examples valid)"
-      (with-redefs [filing/filing-index (fn [_] mock-index)]
-        (let [ex (e/exhibit mock-filing "EX-21")
-              url (e/doc-url mock-filing (:name ex))]
-          (is (string? url))
-          (is (clojure.string/ends-with? url "ex21.htm")))))))
+(deftest filing-nth-out-of-range-nil-test
+  (testing "e/filing with :n past the available filings returns nil, never throws"
+    (with-redefs [edgar.filings/get-filings
+                  (fn [_ & _] [{:form "10-K" :accessionNumber "0000000000-24-000001"}])]
+      (is (nil? (e/filing "AAPL" :form "10-K" :n 5))))))
 
-(deftest company-functions-malli-validation-test
-  ;; Regression for Issue #15: e/cik, e/company, e/company-name, e/company-metadata
-  ;; were missing Malli validation at the API boundary. All other public edgar.api
-  ;; functions already validated. Fix: add (schema/validate! schema/CompanyArgs ...)
-  ;; at the top of each function; add CompanyArgs schema to edgar.schema.
-  (doseq [[fn-name f] [["e/cik" e/cik]
-                       ["e/company" e/company]
-                       ["e/company-name" e/company-name]
-                       ["e/company-metadata" e/company-metadata]]]
-    (testing (str fn-name " throws ::schema/invalid-args on blank ticker-or-cik")
-      (let [ex (try (f "") nil
-                    (catch clojure.lang.ExceptionInfo e e))]
-        (is (some? ex) (str fn-name " must throw for blank input"))
-        (is (= ::schema/invalid-args (:type (ex-data ex)))
-            (str fn-name " must throw with ::invalid-args type"))))
-    (testing (str fn-name " throws ::schema/invalid-args on nil ticker-or-cik")
-      (let [ex (try (f nil) nil
-                    (catch Exception e e))]
-        (is (some? ex) (str fn-name " must throw for nil input"))))
-    (testing (str fn-name " does not throw for valid ticker string")
-      ;; Stub out the inner company function to avoid a network call
-      (with-redefs [edgar.company/company-cik (fn [_] "0000320193")
-                    edgar.company/get-company (fn [_] {:name "Apple"})
-                    edgar.company/company-name (fn [_] "Apple Inc.")
-                    edgar.company/company-metadata (fn [_] {:name "Apple"})]
-        (is (nil? (try (f "AAPL") nil
-                       (catch clojure.lang.ExceptionInfo e
-                         (when (= ::schema/invalid-args (:type (ex-data e))) e))))
-            (str fn-name " must not throw schema error for valid input"))))))
+(deftest quarterly-index-passthrough-test
+  (with-redefs [edgar.filings/get-quarterly-index
+                (fn [year quarter & {:keys [form]}] [{:year year :quarter quarter :form form}])]
+    (is (= [{:year 2025 :quarter 4 :form "10-K"}] (e/quarterly-index 2025 4 :form "10-K")))))
 
 ;;; ---------------------------------------------------------------------------
-;;; Phase 6 syntax refinements
+;;; obj — the form parsers are loaded by edgar.api itself
+;;; ---------------------------------------------------------------------------
+
+(deftest obj-form-parsers-loaded-test
+  (testing "requiring edgar.api registers the Forms 3/4/5, 13F and Schedule 13D/G parsers"
+    (let [registered (set (keys (methods filing/filing-obj)))]
+      (is (every? registered ["3" "4" "5" "4/A" "13F-HR" "SCHEDULE 13D" "SCHEDULE 13G"])
+          (str "registered: " (sort (remove keyword? registered)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Company lookups validate their argument
+;;; ---------------------------------------------------------------------------
+
+(deftest company-functions-malli-validation-test
+  (with-redefs [edgar.company/company-cik (fn [_] "0000320193")
+                edgar.company/cik->ticker (fn [_] "AAPL")
+                edgar.company/get-company (fn [_] {:name "Apple Inc."})
+                edgar.company/company-name (fn [_] "Apple Inc.")
+                edgar.company/company-metadata (fn [_] {:name "Apple Inc."})]
+    (doseq [[fn-name f valid expected] [["e/cik" e/cik "AAPL" "0000320193"]
+                                        ["e/ticker" e/ticker 320193 "AAPL"]
+                                        ["e/company" e/company "AAPL" {:name "Apple Inc."}]
+                                        ["e/company-name" e/company-name "AAPL" "Apple Inc."]
+                                        ["e/company-metadata" e/company-metadata "AAPL" {:name "Apple Inc."}]]]
+      (testing (str fn-name " rejects blank and nil input with ::schema/invalid-args")
+        (doseq [bad ["" nil]]
+          (let [ex (try (f bad) nil (catch clojure.lang.ExceptionInfo ex ex))]
+            (is (= ::schema/invalid-args (:type (ex-data ex))) (pr-str bad)))))
+      (testing (str fn-name " passes valid input through")
+        (is (= expected (f valid)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Aliases and options-map calls
 ;;; ---------------------------------------------------------------------------
 
 (deftest long-name-aliases-test
@@ -221,8 +160,32 @@
       (is (= [{:form "10-K" :limit 3}]
              (e/filings "AAPL" {:form "10-K" :limit 3}))))))
 
-(deftest filing-nth-out-of-range-nil-test
-  (testing "e/filing with :n past the available filings returns nil, never throws"
-    (with-redefs [edgar.filings/get-filings
-                  (fn [_ & _] [{:form "10-K" :accessionNumber "0000000000-24-000001"}])]
-      (is (nil? (e/filing "AAPL" :form "10-K" :n 5))))))
+(deftest docstrings-present-test
+  (testing "every public edgar.api var has a docstring"
+    (is (empty? (->> (ns-publics 'edgar.api)
+                     (remove (fn [[_ v]] (not (str/blank? (:doc (meta v))))))
+                     (map key))))))
+
+(deftest filing-map-validation-test
+  (testing "filing-content functions reject maps without :cik/:accessionNumber"
+    (doseq [[fn-name f] [["e/html" e/html] ["e/text" e/text] ["e/items" e/items]
+                         ["e/obj" e/obj] ["e/filing-index" e/filing-index]
+                         ["e/exhibits" e/exhibits] ["e/xbrl-docs" e/xbrl-docs]]]
+      (let [ex (try (f {:form "10-K"}) nil (catch clojure.lang.ExceptionInfo ex ex))]
+        (is (= ::schema/invalid-args (:type (ex-data ex))) fn-name))))
+  (testing "index functions validate dates and quarters"
+    (doseq [thunk [#(e/daily-filings "2026/10/13")
+                   #(e/quarterly-index 2025 5)
+                   #(e/quarterly-index 1990 1)
+                   #(e/latest-effective-filing "AAPL" :form "")]]
+      (let [ex (try (thunk) nil (catch clojure.lang.ExceptionInfo ex ex))]
+        (is (= ::schema/invalid-args (:type (ex-data ex))))))))
+
+(deftest boundary-validation-test
+  (testing "invalid arguments fail at the API boundary, before any request"
+    (doseq [thunk [#(e/init! "")
+                   #(e/filings "AAPL" :form "10-K" :start-date "not-a-date")
+                   #(e/facts "AAPL" :concept 42)
+                   #(e/filing-by-accession "not-an-accession")]]
+      (let [ex (try (thunk) nil (catch clojure.lang.ExceptionInfo ex ex))]
+        (is (= ::schema/invalid-args (:type (ex-data ex))))))))

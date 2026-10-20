@@ -13,8 +13,8 @@ lease liabilities are also folded into current Compustat DLC/DLTT vintages
 (verified on AMZN/WMT FY2019+) - the OperatingLeaseLiability* operands
 self-gate by era since the tags only exist from 2019. Known residual gaps:
 SEQO/deferred-comp odds and ends in RE, multi-component short-term borrowings
-(fallback chains pick one concept), combined LongTermDebt filers where
-finance leases cannot be added in the same formula, finance-arm filers with
+(fallback chains pick one concept), combined LongTermDebt filers (the
+:dltt-from-combined rule adds no lease liabilities), finance-arm filers with
 dimensional debt tagging (CAT), and ESOP-preferred netting (PG)."
  :rules
  [;; --- Retained earnings: Compustat RE includes accumulated OCI -------------
@@ -110,8 +110,11 @@ need adding in the post-ASC-842 era."}
    :compustat "DLTT"
    :formula [:- "Long-Term Debt" "Current Portion of Long-Term Debt"]
    :notes "Fallback when only the combined LongTermDebt tag exists: remove the
-current portion. Finance leases cannot be added in the same flat formula;
-lease-heavy filers in this pattern remain understated."}
+current portion. Unlike the rules above, this one adds no finance or
+operating lease liabilities. The formula engine can express that ([:opt ..]
+and [:neg ..] operands), but the change has not been measured against the
+validation sample yet, so lease-heavy filers in this pattern remain
+understated."}
 
   ;; --- Receivables -----------------------------------------------------------
   {:id :rect-total

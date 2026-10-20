@@ -144,3 +144,29 @@
       (is (= (vec (tech.v3.dataset/column result-normal :end))
              (vec (tech.v3.dataset/column result-reversed :end)))
           ":desc result must be identical regardless of input order"))))
+
+(deftest facts->dataset-units-and-column-order-test
+  ;; regression (AAPL live): unit keys parse as keywords, and "USD/shares"
+  ;; became the namespaced keyword :USD/shares whose (name ...) is "shares" -
+  ;; every EPS row carried :unit "shares"
+  (let [facts {:entityName "Test Corp"
+               :facts
+               {:us-gaap
+                {:EarningsPerShareDiluted
+                 {:label "EPS" :description "Diluted EPS"
+                  :units {(keyword "USD/shares")
+                          [{:start "2023-01-01" :end "2023-12-31" :val 6.1 :accn "a"
+                            :fy 2023 :fp "FY" :form "10-K" :filed "2024-02-01"
+                            :frame "CY2023"}]}}
+                 :Assets
+                 {:label "Assets" :description "Total assets"
+                  :units {:USD [{:end "2023-12-31" :val 100 :accn "a" :fy 2023
+                                 :fp "FY" :form "10-K" :filed "2024-02-01"}]}}}}}
+        result (xbrl/facts->dataset facts)
+        units (into {} (map (juxt :concept :unit)) (ds/rows result {:nil-missing? true}))]
+    (testing "the full unit string survives"
+      (is (= {"EarningsPerShareDiluted" "USD/shares" "Assets" "USD"} units)))
+    (testing "columns come in the documented order"
+      (is (= [:taxonomy :concept :label :description :unit :start :end :val
+              :accn :fy :fp :form :filed :frame]
+             (vec (ds/column-names result)))))))

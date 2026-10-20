@@ -12,19 +12,13 @@
 
    Track :match-rate over time as concept files and identities improve."
   (:require [edgar.financials :as financials]
+            [edgar.util :as util]
             [tech.v3.dataset :as ds]))
 
 (defn- ->rows [benchmark]
   (if (ds/dataset? benchmark)
     (ds/rows benchmark {:nil-missing? true})
     benchmark))
-
-(defn- parse-date ^java.time.LocalDate [s]
-  (when s
-    (try (java.time.LocalDate/parse (str s)) (catch Exception _ nil))))
-
-(defn- days-apart ^long [^java.time.LocalDate a ^java.time.LocalDate b]
-  (Math/abs (.between java.time.temporal.ChronoUnit/DAYS a b)))
 
 (defn- close-enough? [expected actual tolerance]
   (cond
@@ -79,7 +73,7 @@
                                (when-some [v (get row value-key)]
                                  {:line-item (:line-item row)
                                   :end-str (str (:end row))
-                                  :end-date (parse-date (:end row))
+                                  :end-date (util/parse-date (:end row))
                                   :months (financials/duration-months row)
                                   :val v}))))
         by-line-item (group-by :line-item stmt-rows)
@@ -90,7 +84,7 @@
         ;; annual benchmark must match the 12-month row, not the quarter.
         lookup (fn [line-item end]
                  (let [end-str (str end)
-                       target (parse-date end)
+                       target (util/parse-date end)
                        tol (long date-tolerance-days)]
                    (some->> (get by-line-item line-item)
                             (keep (fn [cand]
@@ -98,7 +92,7 @@
                                                  (= (:end-str cand) end-str) 0
 
                                                  (and (pos? tol) target (:end-date cand))
-                                                 (let [d (days-apart (:end-date cand) target)]
+                                                 (let [d (Math/abs (util/days-between (:end-date cand) target))]
                                                    (when (<= d tol) d))
 
                                                  :else nil)]

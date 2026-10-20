@@ -28,33 +28,59 @@
   [cik]
   (core/edgar-get (core/facts-endpoint cik)))
 
+(defn- key-str
+  "The full text of a JSON object key parsed as a keyword. A unit key such
+   as \"USD/shares\" parses as a namespaced keyword, so (name k) alone would
+   drop the \"USD/\" part."
+  [k]
+  (if (keyword? k) (subs (str k) 1) (str k)))
+
 (defn- flatten-facts
   "Flatten the nested facts structure into a seq of maps.
-   Each map has :taxonomy :concept :label :description :unit :end :val :accn :fy :fp :form :filed :frame."
+   Each map has :taxonomy :concept :label :description :unit :start (duration
+   facts only) :end :val :accn :fy :fp :form :filed :frame."
   [facts]
   (for [[taxonomy concepts] facts
         [concept details] concepts
         [unit observations] (:units details)
         obs observations]
     (assoc obs
-           :taxonomy (name taxonomy)
-           :concept (name concept)
+           :taxonomy (key-str taxonomy)
+           :concept (key-str concept)
            :label (get details :label "")
            :description (get details :description "")
-           :unit (name unit))))
+           :unit (key-str unit))))
+
+(def ^:private facts-columns
+  [:taxonomy :concept :label :description :unit :start :end :val
+   :accn :fy :fp :form :filed :frame])
+
+(defn- concept-set
+  "Normalise a :concept option (a string or a collection of strings) to a
+   set; nil stays nil."
+  [concept]
+  (when concept
+    (if (string? concept) #{concept} (set concept))))
 
 (defn facts->dataset
   "Convert company facts map to a tech.ml.dataset.
-   Returns a dataset with columns:
-   taxonomy concept unit end val accn fy fp form filed frame"
+   Returns a dataset with columns, in this order:
+   taxonomy concept label description unit start end val accn fy fp form
+   filed frame (start only when the company has duration facts). :unit is
+   the full SEC unit string, e.g. \"USD\", \"shares\", \"USD/shares\"."
   [facts-map]
   (let [rows (->> (get-in facts-map [:facts])
                   flatten-facts
-                  (map #(-> %
-                            (update :end str)
-                            (update :filed str)
-                            (update :frame (fnil str "")))))]
-    (ds/->dataset rows {:dataset-name (:entityName facts-map)})))
+                  (mapv #(-> %
+                             (update :end str)
+                             (update :filed str)
+                             (update :frame (fnil str "")))))
+        d (ds/->dataset rows {:dataset-name (:entityName facts-map)})]
+    (if (seq rows)
+      (let [present (set (ds/column-names d))
+            lead (filterv present facts-columns)]
+        (ds/select-columns d (into lead (remove (set lead)) (ds/column-names d))))
+      d)))
 
 (defn get-facts-dataset
   "Fetch company facts for a CIK and return as a tech.ml.dataset.
@@ -64,11 +90,10 @@
      :sort    - :desc (default) or :asc — sort :end column descending/ascending
                 Pass nil to skip sorting."
   [cik & {:keys [concept form sort] :or {sort :desc}}]
-  (let [concept-set (when concept
-                      (if (string? concept) #{concept} (set concept)))
+  (let [concepts (concept-set concept)
         ds (-> cik get-company-facts facts->dataset)]
     (cond-> ds
-      concept-set (ds/filter-column :concept #(contains? concept-set %))
+      concepts (ds/filter-column :concept #(contains? concepts %))
       form (ds/filter-column :form #(= % form))
       (= sort :desc) (ds/sort-by #(get % :end) #(compare %2 %1))
       (= sort :asc) (ds/sort-by #(get % :end) compare))))

@@ -12,6 +12,7 @@
   (b/delete {:path "target"}))
 
 (defn jar [_]
+  (clean nil)
   (b/write-pom {:class-dir class-dir
                 :lib lib
                 :version version

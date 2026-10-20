@@ -196,6 +196,15 @@
 
 (def ^:private disk-cache-config (atom nil))
 
+(def ^:private default-disk-cache-dir
+  (str (System/getProperty "user.home") "/.edgarjure/http-cache"))
+
+(defn- disk-cache-files
+  "The cache entry files (<sha1>.edn / <sha1>.dat) in dir."
+  [^java.io.File dir]
+  (filter #(re-matches #"[0-9a-f]{40}\.(edn|dat)" (.getName ^java.io.File %))
+          (or (.listFiles dir) [])))
+
 (defn- sha1-hex [^String s]
   (let [d (.digest (java.security.MessageDigest/getInstance "SHA-1")
                    (.getBytes s "UTF-8"))]
@@ -216,8 +225,7 @@
   [& {:keys [dir ttl-json-ms ttl-raw-ms]
       :or {ttl-json-ms (* 24 60 60 1000)
            ttl-raw-ms (* 30 24 60 60 1000)}}]
-  (let [dir (java.io.File. (str (or dir (str (System/getProperty "user.home")
-                                             "/.edgarjure/http-cache"))))]
+  (let [dir (java.io.File. (str (or dir default-disk-cache-dir)))]
     (.mkdirs dir)
     (reset! disk-cache-config {:dir dir
                                :ttl-json-ms ttl-json-ms
@@ -285,12 +293,8 @@
   "Delete every entry in the on-disk cache directory (whether or not the
    disk cache is currently enabled). Returns the number of entries removed."
   [& {:keys [dir]}]
-  (let [dir (java.io.File. (str (or dir
-                                    (:dir @disk-cache-config)
-                                    (str (System/getProperty "user.home")
-                                         "/.edgarjure/http-cache"))))
-        files (filter #(re-matches #"[0-9a-f]{40}\.(edn|dat)" (.getName ^java.io.File %))
-                      (or (.listFiles dir) []))]
+  (let [files (disk-cache-files
+               (java.io.File. (str (or dir (:dir @disk-cache-config) default-disk-cache-dir))))]
     (doseq [^java.io.File f files] (.delete f))
     (quot (count files) 2)))
 
@@ -299,8 +303,7 @@
    when disabled."
   []
   (when-let [{:keys [dir]} @disk-cache-config]
-    (let [files (filter #(re-matches #"[0-9a-f]{40}\.(edn|dat)" (.getName ^java.io.File %))
-                        (or (.listFiles ^java.io.File dir) []))]
+    (let [files (disk-cache-files dir)]
       {:dir (str dir)
        :entries (count (filter #(clojure.string/ends-with? (.getName ^java.io.File %) ".dat") files))
        :bytes (reduce + 0 (map #(.length ^java.io.File %) files))})))
@@ -418,6 +421,34 @@
    zeros) to the 10-digit zero-padded string used in every returned map."
   [cik]
   (format "%010d" (Long/parseLong (clojure.string/trim (str cik)))))
+
+(defn unpad-cik
+  "A CIK without leading zeros, as used in Archives paths
+   (\"0000320193\" → \"320193\")."
+  [cik]
+  (str (Long/parseLong (clojure.string/trim (str cik)))))
+
+(defn dashed-accession
+  "Normalise an accession number to dashed format XXXXXXXXXX-YY-ZZZZZZ;
+   any other string is returned unchanged."
+  [s]
+  (if-let [[_ a b c] (re-matches #"(\d{10})-?(\d{2})-?(\d{6})" (str s))]
+    (str a "-" b "-" c)
+    s))
+
+(defn archive-url
+  "Archives URL of a filing's folder, or of doc-name inside it:
+   https://www.sec.gov/Archives/edgar/data/{cik}/{accession-no-dashes}/{doc-name}"
+  ([cik accession-number]
+   (str archives-url "/" (unpad-cik cik) "/"
+        (clojure.string/replace (str accession-number) "-" "") "/"))
+  ([cik accession-number doc-name]
+   (str (archive-url cik accession-number) doc-name)))
+
+(defn url-encode
+  "Percent-encode s for a URL query value (spaces as %20, not +)."
+  ^String [s]
+  (clojure.string/replace (java.net.URLEncoder/encode (str s) "UTF-8") "+" "%20"))
 
 (defn cik-url [cik]
   (str submissions-url "/CIK" (pad-cik cik) ".json"))

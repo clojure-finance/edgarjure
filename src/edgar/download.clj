@@ -25,7 +25,7 @@
 (defn download-filings!
   "Download filings for a ticker or CIK to a local directory.
    Options:
-     :form            - form type e.g. \"10-K\" (required)
+     :form            - form type e.g. \"10-K\" (nil: every form type)
      :limit           - max number of filings (default all)
      :start-date      - \"YYYY-MM-DD\"
      :end-date        - \"YYYY-MM-DD\"
@@ -39,11 +39,13 @@
   [ticker-or-cik dir & {:keys [form limit start-date end-date download-all? skip-existing?]
                         :or {download-all? false skip-existing? false}}]
   (try
-    (let [fs-list (filings/get-filings ticker-or-cik
-                                       :form form
-                                       :start-date start-date
-                                       :end-date end-date
-                                       :limit limit)]
+    ;; realised up front: a failing submissions-chunk fetch then yields one
+    ;; error envelope before any download, never midway through the results
+    (let [fs-list (doall (filings/get-filings ticker-or-cik
+                                              :form form
+                                              :start-date start-date
+                                              :end-date end-date
+                                              :limit limit))]
       (doall
        (for [f fs-list]
          (try
@@ -114,9 +116,7 @@
                out-file (fs/path out-dir (str type ".idx"))]]
      (try
        (fs/create-dirs out-dir)
-       (let [^bytes body (core/edgar-get-bytes url)]
-         (with-open [out (java.io.FileOutputStream. (str out-file))]
-           (.write out body)))
+       (fs/write-bytes out-file (core/edgar-get-bytes url))
        (ok (str out-file))
        (catch Exception e
          (err (str year "/QTR" q) :exception (.getMessage e)))))))

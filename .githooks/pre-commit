@@ -2,7 +2,7 @@
 """
 Pre-commit hook: reject Markdown doc files that contain encoding artifacts.
 
-The CHANGELOG and PROJECT_SUMMARY use Unicode em-dashes (—, U+2014) and
+The CHANGELOG and README use Unicode em-dashes (—, U+2014) and
 other non-ASCII characters as separators.  Shell tools like `sed` can corrupt
 these to a literal ASCII question mark (?) when inserting text via append
 commands with shell escaping.  This hook catches that corruption before it
@@ -17,7 +17,7 @@ import subprocess
 import sys
 import re
 
-CHECKED_FILES = ["CHANGELOG.md", "PROJECT_SUMMARY.md", "README.md"]
+CHECKED_FILES = ["CHANGELOG.md", "README.md"]
 
 def get_staged_content(filename):
     """Return the staged content of a file, or None if not staged."""
@@ -25,7 +25,7 @@ def get_staged_content(filename):
         ["git", "diff", "--cached", "--name-only"],
         capture_output=True, text=True
     )
-    if filename not in result.stdout:
+    if filename not in result.stdout.splitlines():
         return None
 
     result = subprocess.run(

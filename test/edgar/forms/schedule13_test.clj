@@ -1,7 +1,8 @@
 (ns edgar.forms.schedule13-test
   (:require [clojure.test :refer [deftest is testing]]
             [edgar.forms.schedule13 :as s13]
-            [edgar.filing :as filing]))
+            [edgar.filing :as filing]
+            [clojure.java.io :as io]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Fixture XML — modeled on real XML-era filings (13G: AAPL/Vanguard-style
@@ -121,7 +122,7 @@
        (testing "cover page fields (13G spellings)"
          (is (= "Common Stock" (:security-class r)))
          (is (= "03/31/2026" (:event-date r)))
-         (is (= "Rule 13d-1(b)" (:rule r))))
+         (is (= ["Rule 13d-1(b)"] (:rules r))))
        (testing "issuer normalized from issuerCik/issuerCusipNumber"
          (is (= {:cik "0000320193" :name "Apple Inc" :cusip "037833100"} (:issuer r))))
        (testing "reporting person normalized from the 13G element names"
@@ -132,7 +133,7 @@
            (is (= 7.48 (:percent-of-class p)))
            (is (= 1.45321305E8 (:sole-voting p)))
            (is (= 0.0 (:shared-voting p)))
-           (is (= "IA" (:type p)))
+           (is (= ["IA"] (:types p)))
            (is (nil? (:cik p)) "13G cover page carries no reporting-person CIK"))))))
 
 ;;; ---------------------------------------------------------------------------
@@ -147,7 +148,7 @@
          (is (= :13d (:schedule r))))
        (testing "cover page fields (13D spellings)"
          (is (= "03/20/2025" (:event-date r)))
-         (is (nil? (:rule r)) "rule designation is a 13G-only field"))
+         (is (= [] (:rules r)) "rule designation is a 13G-only field"))
        (testing "issuer normalized from issuerCIK/issuerCUSIP"
          (is (= {:cik "0001036044" :name "Identiv, Inc." :cusip "45170X205"} (:issuer r))))
        (testing "group filing: every reportingPersonInfo becomes a person"
@@ -161,28 +162,44 @@
            (is (= "Radoff Bradley Louis" (:name p2)))
            (is (= 2397710.0 (:aggregate-owned p2)))
            (is (= 10.3 (:percent-of-class p2)))
-           (is (= "IN" (:type p2))))))))
+           (is (= ["IN"] (:types p2))))))))
 
 ;;; ---------------------------------------------------------------------------
-;;; Dispatch, truncated form type, and legacy behaviour
+;;; Repeated tags — a real group filing (D. E. Shaw, Keros Therapeutics
+;;; 13G/A, accession 0001104659-26-016389)
+;;; ---------------------------------------------------------------------------
+
+(deftest repeated-tags-keep-every-value-test
+  (with-xml (slurp (io/resource "fixtures/schedule13g_multi_type.xml"))
+    #(let [r (s13/parse-schedule13 {:form "SCHEDULE 13G/A"})
+           [p1 p2] (:reporting-persons r)]
+       (testing "every typeOfReportingPerson is kept, in filing order"
+         (is (= "D. E. Shaw & Co., L.P." (:name p1)))
+         (is (= ["IA" "PN"] (:types p1)))
+         (is (= ["OO"] (:types p2))))
+       (testing "rules are a vector too"
+         (is (= ["Rule 13d-1(c)"] (:rules r))))
+       (testing "issuerCusip spelling is read"
+         (is (= {:cik "0001664710" :name "Keros Therapeutics, Inc." :cusip "492327101"}
+                (:issuer r))))
+       (testing "13G/A submission type"
+         (is (= "SCHEDULE 13G/A" (:form r)))
+         (is (= :13g (:schedule r)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Dispatch and legacy behaviour
 ;;; ---------------------------------------------------------------------------
 
 (deftest schedule-dispatch-test
-  (testing "filing-obj methods registered for XML-era types + truncated SCHEDULE"
+  (testing "filing-obj methods registered for XML-era types"
     (let [ms (set (keys (methods filing/filing-obj)))]
-      (doseq [ft ["SCHEDULE 13D" "SCHEDULE 13D/A" "SCHEDULE 13G" "SCHEDULE 13G/A" "SCHEDULE"]]
-        (is (contains? ms ft) ft))))
+      (doseq [ft ["SCHEDULE 13D" "SCHEDULE 13D/A" "SCHEDULE 13G" "SCHEDULE 13G/A"]]
+        (is (contains? ms ft) ft))
+      (is (not (contains? ms "SCHEDULE")) "no truncated-form dispatch value")))
   (testing "legacy SC 13D/G intentionally NOT registered (default raw-HTML applies)"
     (let [ms (set (keys (methods filing/filing-obj)))]
       (is (not (contains? ms "SC 13D")))
       (is (not (contains? ms "SC 13G"))))))
-
-(deftest truncated-schedule-form-detects-type-from-xml-test
-  (with-xml schedule13d-xml
-    #(let [r (s13/parse-schedule13 {:form "SCHEDULE"})]
-       (testing "a filing map with the truncated form still resolves 13D from the XML"
-         (is (= "SCHEDULE 13D" (:form r)))
-         (is (= :13d (:schedule r)))))))
 
 (deftest no-xml-returns-nil-test
   (with-redefs [filing/filing-index

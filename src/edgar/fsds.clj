@@ -88,7 +88,8 @@
 (defn load-table
   "Load one FSDS table from a downloaded zip as a tech.ml.dataset.
    table: :sub | :num | :pre | :tag
-   Columns are keywordized. num.txt for a busy quarter has millions of rows —
+   Columns are keywordized; the tables are UTF-8 (per the SEC's FSDS
+   documentation). num.txt for a busy quarter has millions of rows —
    loading it needs a correspondingly sized heap."
   [zip-path table]
   (when-not (table-names table)
@@ -100,14 +101,13 @@
       (when-not entry
         (throw (ex-info (str entry-name " not found in " zip-path)
                         {:type ::missing-entry :zip (str zip-path) :entry entry-name})))
-      (with-open [in (.getInputStream zf entry)]
+      (with-open [in (InputStreamReader. (.getInputStream zf entry) StandardCharsets/UTF_8)]
         (ds/->dataset in {:file-type :tsv
                           :key-fn keyword
                           :dataset-name (str (fs/file-name zip-path) "/" entry-name)})))))
 
 ;;; ---------------------------------------------------------------------------
-;;; Statement placement and extension tags (roadmap: FSDS-based
-;;; standardization)
+;;; Statement placement and extension tags
 ;;;
 ;;; pre.txt records which financial statement every tag was presented on
 ;;; (stmt: BS balance sheet, IS income statement, CF cash flow, EQ equity,
@@ -180,7 +180,7 @@
     tag (ds/filter-column :tag #(= % tag))))
 
 ;;; ---------------------------------------------------------------------------
-;;; Local quarter cache + per-filing streaming access (roadmap: FSDS wiring)
+;;; Local quarter cache + per-filing streaming access
 ;;;
 ;;; Loading whole FSDS tables is expensive (num.txt has millions of rows).
 ;;; The statement views need only ONE filing's rows, and every FSDS table is
@@ -236,13 +236,15 @@
       (try
         (download-quarter! year quarter dir)
         (catch Exception e
-          (if (re-find #"404" (str (ex-message e)))
+          ;; edgar.core throws ex-info "HTTP <status> from SEC API" with
+          ;; the status in its ex-data
+          (if (= 404 (:status (ex-data e)))
             (do (swap! missing-quarters conj [year quarter]) nil)
             (throw e)))))))
 
 (defn- zip-entry-line-seq*
-  "Call f with the lazy line seq of one zip entry (FSDS tables are
-   ISO-8859-1; tab-delimited, header first)."
+  "Call f with the lazy line seq of one zip entry (FSDS tables are UTF-8,
+   tab-delimited, header first)."
   [zip-path entry-name f]
   (with-open [zf (ZipFile. (str zip-path))]
     (let [entry (.getEntry zf entry-name)]
@@ -251,7 +253,7 @@
                         {:type ::missing-entry :zip (str zip-path) :entry entry-name})))
       (with-open [rdr (BufferedReader.
                        (InputStreamReader. (.getInputStream zf entry)
-                                           StandardCharsets/ISO_8859_1))]
+                                           StandardCharsets/UTF_8))]
         (f (line-seq rdr))))))
 
 (defn- rows-where

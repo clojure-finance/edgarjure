@@ -1,5 +1,6 @@
 (ns edgar.download-test
   (:require [clojure.test :refer [deftest is testing]]
+            [babashka.fs :as fs]
             [edgar.download :as download]
             [edgar.core :as core]
             [edgar.filing :as filing]
@@ -60,7 +61,7 @@
                                         :formType "10-K"})
                                edgar.filing/primary-doc
                                (fn [_] {:sequence "1" :name "report.htm"})
-                               babashka.fs/exists? (fn [_] true)]
+                               fs/exists? (fn [_] true)]
                    (download/download-filings! "AAPL" "/data"
                                                :form "10-K"
                                                :skip-existing? true))]
@@ -82,6 +83,20 @@
         (is (= :error (:status r)))
         (is (= "0000320193-24-000001" (:accession-number r)))
         (is (= "HTTP 404" (:message r)))))))
+
+(deftest download-filings-list-failure-test
+  (testing "a failure while listing (e.g. an older submissions chunk) downloads nothing"
+    (let [saved (atom 0)
+          result (with-redefs [filings/get-filings
+                               (fn [& _] (cons mock-filing
+                                               (lazy-seq (throw (ex-info "HTTP 503 from SEC API"
+                                                                         {:type ::core/http-error :status 503})))))
+                               filing/filing-save! (fn [_ _] (swap! saved inc) "/data/x.htm")]
+                   (download/download-filings! "AAPL" "/data" :form "10-K"))]
+      (is (zero? @saved))
+      (is (= [{:status :error :accession-number nil :type ::core/http-error
+               :message "HTTP 503 from SEC API"}]
+             result)))))
 
 (deftest download-filings-multi-filing-shape-test
   (testing "multiple filings all return plain maps"

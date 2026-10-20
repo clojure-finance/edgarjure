@@ -2,40 +2,102 @@
 
 All notable changes to edgarjure are documented here.
 
+## [Unreleased]
+
+## [0.5.1] — 2026-10-20
+
+Several changes below break existing callers; they are listed under **Breaking**. Annual `:view :compustat` values are unchanged (old vs new code compared on 14 tickers, including a point-in-time `:as-of` run), so the 0.5.0 Compustat rates still stand.
+
+### Breaking
+- `e/tables` (and `edgar.tables/extract-tables`) take `:n` instead of `:nth` to pick one table — the same option name as `e/filing`.
+- The `:future` alias is removed from `deps.edn` (parked `next.jdbc`/`honeysql`/`sqlite-jdbc`/`datajure` dependencies that no code used).
+- Schedule 13D/G maps: `:type` → `:types` and `:rule` → `:rules`, always vectors (`[]` when absent) — filings list several (`:types ["IA" "PN"]`).
+- The truncated `"SCHEDULE"` form-type dispatch is removed (it only served maps from before multi-word form types were captured in 0.4.1).
+- `e/tables` output: colspan/rowspan grids collapse to one column per header cell (values are no longer repeated across spanned columns), all-blank columns are dropped, `"$"`/`"%"`/`")"` fragment cells merge into their number, a sub-header row is folded into the column names (`"2025 Amount (in millions)"`), and `"—"`/`"–"`/`"-"` read as nil so such columns still type as numbers. Number parsing is stricter.
+- XBRL facts keep the full unit: per-share facts have `:unit "USD/shares"` (was `"shares"`).
+- Fixed column order: facts datasets (`:taxonomy :concept :label :description :unit :start :end :val :accn :fy :fp :form :filed :frame`), long statement output, wide statement output (`:end`, then line items in chain order, identity targets, rule targets, each followed by its `(Q)`/`(LTM)` columns), and `e/pivot` (`:ticker :end`, then concepts alphabetically).
+- `e/pivot` drops 10-K 3/6/9-month footnote windows (annual rows only).
+- `:standardized` `"Total Liabilities"` and `"Non-Current Liabilities"` derived as L&E − Total Equity also subtract redeemable NCI and redeemable preferred stock (mezzanine). DIS FY2023: 101.6B → 92.6B.
+- 10-K `:view :compustat` no longer reclassifies the 3/6/9-month footnote windows (they mixed rule regimes; rows tagged `:rule :oiadp` were plain operating income).
+- Derived (`:method :derived`) and reclassified rows no longer inherit the first operand's `:label :description :taxonomy :accn :fy :fp :frame`; `:concept` is nil and `:filed` is the latest operand's filing date.
+- `e/unmapped-concepts` `:count` is the number of distinct companies, and concepts of every built-in chain (all statements and industries) count as mapped — `e/income` no longer logs balance-sheet and cash-flow concepts as unmapped.
+- Balance sheet with `:form "10-Q"` no longer carries all-nil `:duration-months`/`:val-q`/`:val-ltm` columns or `"(Q)"`/`"(LTM)"` wide columns.
+- Filing maps from `e/filings` have `:url nil` for pre-2001 filings (blank primary document); it was the folder URL.
+- `e/filing-by-accession`: only 403/404 become `::not-found`; other failures (5xx, transport errors) propagate unchanged.
+- `e/daily-filings` throws when the SEC refuses access (blocked or missing User-Agent) instead of returning an empty day.
+- Every filing-content function (`e/html`, `e/text`, `e/items`, `e/item`, `e/obj`, `e/save!`, `e/save-all!`, `e/filing-index`, `e/doc-url`, `e/filing-document`, `e/exhibits`, `e/exhibit`, `e/xbrl-docs`, `e/tables`) validates its filing map (`:cik` and `:accessionNumber` required) and throws `::edgar.schema/invalid-args`; `e/daily-filings`, `e/latest-effective-filing`, `e/filings-dataset` and `e/concepts` validate too.
+- `edgar.extract/batch-extract!` result key `:accession-no` → `:accession-number` (as in `download-filings!`).
+- Removed `edgar.filings/get-quarterly-index-by-form` (use the `:form` option of `get-quarterly-index`, or `e/quarterly-index`) and `edgar.dataset/cross-sectional-dataset`, `filter-form`, `add-market-cap-rank` (use `e/frame` for cross sections).
+- `edgar.schema/PositiveInt` renamed `NonNegInt` (it always meant ≥ 0).
+- `examples/compustat_validation.clj`: `validate-annual` returns `:cash-flow` (was `:cashflow`); GS and MS left its `banks` set (SIC 6211 routes to the standard chains).
+
+### Added
+- `e/quarterly-index` (`year quarter & :form`) — every filing in an EDGAR quarterly master index; previously only reachable as `edgar.filings/get-quarterly-index`.
+- `e/ticker` — CIK → ticker (primary share class).
+- Item lists for 10-K405, 10-KT, 10-KT405 (10-K items), 10-QT, 10-QSB (10-Q items), and 10-KSB/10-KSB40 (MD&A = Item 6, controls = Item 8A); amendments follow their base form. A JNJ 10-K405 now yields 15 items (was `{}`).
+- `e/xbrl-docs` includes the instance the SEC extracts from an inline-XBRL document (`*_htm.xml`, `:type "XML"`).
+- Company addresses carry `:country` and `:country-code` (foreign filers had no country).
+- `edgar.core` helpers `unpad-cik`, `dashed-accession`, `archive-url`, `url-encode`.
+
+### Fixed
+- `e/search-filings` ignored a one-sided date range (EFTS needs both bounds); the missing bound is now 2001-01-01 or today. `:forms ["8-K"]` also matches 8-K/A (EFTS behaviour, now documented).
+- Pre-2001 filings whose index lists only the complete submission text file: `e/html`, `e/text`, `e/items`, `e/tables` and `e/save!` returned nil or `{}`; the primary document now falls back to the `.txt` (AAPL's 1994 10-K yields items 1–14).
+- `e/filings` with `:start-date` fetched every older submissions chunk (71 for JPM); the date-descending seq now stops at the start date.
+- `e/latest-effective-filing` walked the full filing history when no amendment existed; it now stops at the latest original.
+- `download-filings!`: a failing chunk fetch mid-list replaced the completed results with one error; the filing list is realised before any download.
+- Glued all-caps headings (`ITEM 1BUSINESS`, `ITEM 2PROPERTIES`) parsed as items 1B and 2P.
+- 13F `:holdings` columns came out in hash order; 13G filings spelling `issuerCusip` left `:cusip` nil.
+- A plain-text SGML filing containing `<TABLE>` was parsed as HTML.
+- 10-Q `:val-ltm` and derived Q4 for reclassified items were overwritten by 10-K 3-month footnote rows (PG `"OIADP (Compustat)"` LTM 6.2B → 15.6B).
+- `:view :as-reported :shape :wide` put every concept in one nil column.
+- `:val-ltm` was nil in every Q2/Q3 for 12/12/12/16-week fiscal calendars (COST); quarters now chain by adjacency.
+- `e/financials` fetched the company facts three times.
+- Reclassification: a formula whose operands are all optional and absent emitted a 0 row.
+- FSDS files are read as UTF-8 (the streaming reader used ISO-8859-1); a missing FSDS quarter is detected by HTTP status rather than the error message.
+- `(edgar.financials/get-financials t :view nil)` threw; a nil view means `:normalized`.
+
+### Changed
+- `edgar.api` loads the form parsers itself: `e/obj` parses Forms 3/4/5, 13F and Schedules 13D/G without `(require '[edgar.forms])`.
+- New internal namespace `edgar.util` (date parsing, window arithmetic, restatement dedup, column-ordered datasets).
+- `deps.edn` declares `org.clojure/clojure` 1.12.2 (the pom listed no Clojure dependency); the build's `jar` task cleans `target/` first.
+- Docstrings corrected: `e/html` (XML and plain-text documents), `e/exhibit` (exact `:type` match — ask for `"EX-21.1"`), `e/exhibits`, `e/xbrl-docs`, `e/frame` (`:start`), `e/daily-filings` (`:cik` is the first listed filer — filter on `:filers`), `:remove-tables?` (drops every table), `e/income`/`e/cashflow` (`:as-reported` has no derived columns), `"XRD (Compustat)"` (only the extension-tag variant needs FSDS).
+
 ## [0.5.0] — 2026-10-15
 
 Several changes below break existing callers; they are marked **Breaking**.
 
+Re-measured against a current-vintage Compustat extract (21-firm sample plus MO, FY2009–2025, FSDS enabled), old vs new rules on the identical extract: 18 firm-years change, all from miss to match — none the other way. 13 industrials: OIADP 27.6% → 28.1%, OIBDP 22.2% → 22.6% (PG FY2019 now within 1%), every other income and balance-sheet rate unchanged; AMZN XSGA 13/17 → 16/17; MO Gross Profit 0/17 → 9/17 and Revenue (Compustat) 6/17 → 10/17. Special Items move toward Compustat for INTC FY2024 (−45% → −2%) and PG FY2019 (−82% → −4%).
+
 ### Changed
 - **Breaking: every returned CIK is a zero-padded 10-digit string** — including `e/filing-by-accession`'s `:cik` and `:filers` (0.4.2 returned them unpadded) and the `:cik` of quarterly-index rows. Integer CIKs are accepted everywhere (`(e/cik 320193)`), share-class dots resolve (`"BRK.B"` = `"BRK-B"`), and CIK → ticker returns the primary share class (`GOOGL`, `BRK-B`) instead of an arbitrary one.
-- **Breaking: `e/search` matches current entity names** through the EDGAR company-name index (the typeahead behind the SEC's company search box) and returns `{:cik :name :tickers}`, best match first, at most 10 results. It previously ran a full-text search and returned `{:entity-name :cik :location :inc-states}` built from filing hits, so it matched any company whose filings mentioned the query.
-- **Breaking: `e/daily-filings` reads the EDGAR daily master index.** The result is complete and has one map per filing: `{:accessionNumber :form :filingDate :cik :companyName :filers}`, where `:filers` lists every filer as `{:cik :name}` (e.g. issuer and reporting owner of a Form 4). The previous full-text-search implementation returned one entry per indexed document and stopped at 10,000. `:form` is an exact match (`"8-K"` no longer includes `"8-K/A"`). Weekends, holidays, future dates, and the current day before the SEC publishes its index (around 10 pm ET) return an empty seq. `:periodOfReport` and `:items` are removed — filter 8-Ks by item with `e/search-filings`, whose hits carry `:items`.
-- **Breaking: `e/search-filings` returns one map per filing** (full-text search indexes documents, so a filing whose exhibits also matched used to appear several times): the raw search source map plus `:accessionNumber :cik :form :filingDate :companyName :document :url`, so hits work directly with `e/html`, `e/text`, `e/filing-by-accession`.
-- **Breaking: Forms 3/4/5 `:date-of-change` is renamed `:date-of-original-submission`** — it always held the XML `dateOfOriginalSubmission` (the original filing date of an amended report).
+- **Breaking: `e/search` matches current entity names** through the EDGAR company-name index (the typeahead behind the SEC's company search box) and returns `{:cik :name :tickers}`, best match first, at most 10 results. It previously ran a full-text search and returned `{:entity-name :cik :location :inc-states}` built from filing hits.
+- **Breaking: `e/daily-filings` reads the EDGAR daily master index.** The result is complete, one map per filing: `{:accessionNumber :form :filingDate :cik :companyName :filers}`, where `:filers` lists every filer as `{:cik :name}`. The previous full-text-search implementation returned one entry per indexed document and stopped at 10,000. `:form` is an exact match (`"8-K"` no longer includes `"8-K/A"`). Weekends, holidays, future dates, and the current day before the SEC publishes its index (around 10 pm ET) return an empty seq. `:periodOfReport` and `:items` are removed — filter 8-Ks by item with `e/search-filings`, whose hits carry `:items`.
+- **Breaking: `e/search-filings` returns one map per filing** (a filing whose exhibits also matched used to appear several times): the raw search source map plus `:accessionNumber :cik :form :filingDate :companyName :document :url`, so hits work directly with `e/html`, `e/text`, `e/filing-by-accession`.
+- **Breaking: Forms 3/4/5 `:date-of-change` is renamed `:date-of-original-submission`** — it always held the XML `dateOfOriginalSubmission`.
+- **Breaking: amendments are saved under `10-K_A/`** instead of a nested `10-K/A/` directory (`e/save!`, `e/save-all!`, `download-filings!`).
+- **Breaking: `e/pivot` output changed** — panel input keeps every company (rows keyed by `[ticker end]`, with a `:ticker` column), each cell prefers the longest window and then the latest `:filed`, and units are never mixed: a concept reported in several units gets one `"<concept> (<unit>)"` column per unit.
+- **Breaking: `"Other Operating Expense"` no longer contains `OtherOperatingIncomeExpenseNet`** (income-signed, unlike `OtherCostAndExpenseOperating`); it is its own line item, `"Other Operating Income (Expense), Net"`.
 - `(e/filing t :form "10-K/A")` and `(e/filings t :form "10-K/A")` return the amendments themselves without `:include-amends? true`.
-- `e/save!`/`e/save-all!` (and `download-filings!`) save amendments under `10-K_A/` instead of a nested `10-K/A/` directory.
-- `e/tables`: `:min-rows` alone governs the row minimum (`:min-rows 1` keeps single-row tables; previously tables with fewer than 2 data rows were always dropped as layout).
-- Disk cache: the full-index and daily-index files use the 24-hour JSON TTL instead of the 30-day document TTL (they change while their period is open). Quarterly index downloads (30–60 MB) bypass the in-memory cache, and `download-index!` writes the fetched bytes without caching them. `edgar.core/edgar-get` gains a `:cache` option (`:all` | `:disk` | `:none`).
+- `e/tables`: `:min-rows` alone governs the row minimum (`:min-rows 1` keeps single-row tables).
+- Disk cache: the full-index and daily-index files use the 24-hour JSON TTL instead of the 30-day document TTL. Quarterly index downloads (30–60 MB) bypass the in-memory cache, and `download-index!` writes the fetched bytes without caching them. `edgar.core/edgar-get` gains a `:cache` option (`:all` | `:disk` | `:none`).
 - With the FSDS cache enabled, 10-Q queries no longer trigger FSDS downloads: the annual rows they build for Q4/LTM derivation are reclassified without FSDS operands, so Q4 = FY − 9M never mixes an FSDS-assisted fiscal year with a non-FSDS 9-month YTD.
-- `e/pivot` keeps every company in panel input (rows keyed by `[ticker end]`), prefers the longest window and then the latest `:filed` per cell, and never mixes units — a concept reported in several units gets one `"<concept> (<unit>)"` column per unit.
 - Reclassification engine: `[:neg x]` operands (negated value; nests with `[:opt]`), and `:lte` / `:ties` guards (`[:ties formula b tol]` passes when a formula ties out to a reported value within a relative tolerance).
 - The missing-identity error now points to `e/init!`.
 - Form parsers share a new `edgar.forms.xml` helper namespace; XML parsing disables external entities and DTD loading (XXE hardening).
 - Test fixtures moved from `resources/fixtures` to `test-resources/fixtures`, so they no longer ship in the jar.
 
 ### Fixed
-- **10-K `:shape :wide` picked quarterly-footnote rows.** The facts filed with a 10-K include 3/6/9-month windows sharing the fiscal-year end date; the wide pivot could take those over the annual figure (AAPL FY2018 Net Income showed the Q4 value, 14.1B, instead of 59.5B) and quarter ends appeared as extra annual rows. Wide output now keeps only the annual windows; long 10-K output keeps every window and carries `:duration-months` so callers can tell them apart.
-- **Share counts and per-share amounts were differenced and summed** in `:val-q` / `:val-ltm` (AAPL LTM basic shares came out about 3× too high). For these units `:val-q` is now the reported 3-month value or nil, and `:val-ltm` is nil.
-- **`"XSGA (Compustat)"` included the other-operating line.** The e-commerce fallback (AMZN) added it, and `OtherOperatingIncomeExpenseNet` (positive = income) even shared the `"Other Operating Expense"` chain with the expense-signed `OtherCostAndExpenseOperating`. Validated against Compustat, XSGA leaves the line out whichever way it is tagged — adding it overshot and subtracting it undershot by the same amount — so it is now excluded (AMZN XSGA 13/17 → 16/17 firm-years within 1%, exact in FY2010–2024). The income-signed concept is its own line item, `"Other Operating Income (Expense), Net"`.
-- **`"Special Items (Compustat)"` double counted goodwill impairments** already contained in `AssetImpairmentCharges` (INTC FY2024, PG FY2019, several KO years; confirmed against INTC's 10-K text). A guarded rule drops the separate goodwill operand when it is no larger than the aggregate.
-- **`"Gross Profit (Compustat)"` now uses excise-netted revenue** (`"Revenue (Compustat)"`) when available. A new tie-out rule nets excise from revenue tagged `...ExcludingAssessedTax` that still contains it, detected when the reported `GrossProfit` ties out to Revenue − Cost of Revenue − Excise Taxes (MO FY2016–2019). Known gap: MO from FY2020 tags excise as `OtherCostOfOperatingRevenue`, which is not netted.
-- Item extraction: 10-K items 1C and 9C no longer overwrite items 1 and 9, and items 1C, 9C, and 16 are recognized. 10-Q extraction (previously `{}`) works, with part-prefixed ids (`"I-2"` = MD&A, `"II-1A"` = Risk Factors). 8-K extraction recognizes every current item (1.01–9.01, including 1.05, 4.02, 5.07). Plain-text (pre-2001) filings honor `:only` and recognize headings with punctuation (`MANAGEMENT'S DISCUSSION ...`). Known limitations: PART headings are not section boundaries (the last Part I item ends with the "PART II" heading text), and 8-K titles are empty when the title sits in a separate HTML element.
-- `e/tables` preserves column order for tables with more than 8 columns (a hash map scrambled them).
+- **10-K `:shape :wide` picked quarterly-footnote rows.** 10-K facts include 3/6/9-month windows sharing the fiscal-year end date, which the wide pivot could take over the annual figure (AAPL FY2018 Net Income showed 14.1B instead of 59.5B). Wide output keeps only the annual windows; long 10-K output keeps every window and carries `:duration-months`.
+- **Share counts and per-share amounts were differenced and summed** in `:val-q` / `:val-ltm` (AAPL LTM basic shares about 3× too high). For these units `:val-q` is the reported 3-month value or nil, and `:val-ltm` is nil.
+- **`"XSGA (Compustat)"` included the other-operating line** (via the e-commerce fallback, and through the shared `"Other Operating Expense"` chain). Measured against the licensed sample, XSGA fits best without the line whichever way it is tagged, so it is now excluded (AMZN XSGA 13/17 → 16/17 firm-years within 1%).
+- **`"Special Items (Compustat)"` double counted goodwill impairments** already contained in `AssetImpairmentCharges` (INTC FY2024, PG FY2019, several KO years). A guarded rule drops the separate goodwill operand when it is no larger than the aggregate.
+- **`"Gross Profit (Compustat)"` uses excise-netted revenue** (`"Revenue (Compustat)"`) when available; a tie-out rule nets excise from revenue tagged `...ExcludingAssessedTax` that still contains it (MO FY2016–2019). Known gap: MO from FY2020 tags excise as `OtherCostOfOperatingRevenue`, which is not netted.
+- Item extraction: 10-K items 1C and 9C no longer overwrite items 1 and 9, and items 1C, 9C, and 16 are recognized. 10-Q extraction (previously `{}`) works, with part-prefixed ids (`"I-2"` = MD&A, `"II-1A"` = Risk Factors). 8-K extraction recognizes every current item (1.01–9.01). Plain-text (pre-2001) filings honor `:only` and recognize headings with punctuation. Known limitations: PART headings are not section boundaries, and 8-K titles are empty when the title sits in a separate HTML element.
+- `e/tables` preserves column order for tables with more than 8 columns.
 - 13F-HR cover and summary fields now parse on real filings — `:period-of-report` (ISO date), `:report-type`, `:form13f-file-number`, `:table-entry-count`, `:table-value-total`, `:other-managers-count` were always nil; `:form` reflects `13F-HR/A`. New `:amendment-number` and `:amendment-type`. Dollar values are as filed: whole dollars from January 2023, thousands before.
 - Forms 3/4/5 relationship flags accept `true`/`false` (they were always false on recent filings). New `:reporting-owners` lists every owner of a joint filing (`:reporting-owner` remains the first).
 - `:view :as-reported` honors `:as-of`.
-- `e/filing-by-accession` accepts undashed accession numbers as documented (the argument schema only allowed the dashed form).
-- `edgar.financials` namespace docstring: restatement dedup is most-recent-filed per concept, with chain priority deciding between concepts of one chain.
+- `e/filing-by-accession` accepts undashed accession numbers as documented.
 
 ### Added
 - `e/filing-index` — a filing's index: `{:files [{:sequence :name :type :description :size} ...] :formType :filingDate :filers [...]}`.
@@ -43,550 +105,204 @@ Several changes below break existing callers; they are marked **Breaking**.
 
 ### Removed
 - **Breaking:** `edgar.forms.form4` (use `edgar.forms`, or `edgar.forms.ownership/parse-ownership-form`).
-- Internal functions `edgar.filings/get-filing`, `edgar.filings/latest-filing`, and `edgar.core/archives-path` (use `e/filing`).
+- **Breaking:** public vars `edgar.filings/get-filing`, `edgar.filings/latest-filing`, and `edgar.core/archives-path` (use `e/filing`).
 - The legacy `:columns` + vector-of-vectors branch of the frames parser (the SEC frames API never returns that shape).
-
-Re-measured against a current-vintage Compustat extract (21-firm sample plus MO, FY2009–2025, FSDS enabled), old vs new rules on the identical extract: 18 firm-years change, all from miss to match — none the other way. 13 industrials: OIADP 27.6% → 28.1%, OIBDP 22.2% → 22.6% (PG FY2019 now within 1%), every other income and balance-sheet rate unchanged; AMZN XSGA 13/17 → 16/17; MO Gross Profit 0/17 → 9/17 and Revenue (Compustat) 6/17 → 10/17. Special Items move toward Compustat for INTC FY2024 (−45% → −2%) and PG FY2019 (−82% → −4%).
 
 ## [0.4.2] — 2026-10-15
 
 ### Fixed
-- **`filing-by-accession` on agent-filed accessions.** The CIK was taken from the accession prefix, which is the *submitter* — for filings sent in by an agent (Donnelley `0001193125…`, Toppan, etc.) that's the agent, and the agent's archive path 404s on the filing's documents, so `e/html`, `e/text`, `e/exhibits` and friends all failed. The filing index page lists the real entities; `:cik` now comes from those, preferring the Filer, then Subject, Issuer, Reporting and Filed-by roles (a Form 4 resolves to the issuer, an activist DFAN14A to the target company), falling back to the submitter only when the index lists no entities. Live check: 18 of 25 Starbucks proxy/8-K/10-K accessions from 2004–2025 previously 404'd; all now resolve.
+- **`filing-by-accession` on agent-filed accessions.** The CIK was taken from the accession prefix, which is the *submitter* — for agent-filed filings (Donnelley `0001193125…`, Toppan, …) the agent, whose archive path 404s, so `e/html`, `e/text`, `e/exhibits` and friends failed. `:cik` now comes from the entities on the filing index (Filer, then Subject, Issuer, Reporting, Filed by), falling back to the submitter only when the index lists none.
 
 ### Added
-- `filing-by-accession` maps and `filing-index` results carry `:filers` — every entity on the filing index as `{:name :role :cik}` (e.g. both the target and the activist on a DFAN14A).
+- `filing-by-accession` maps and `filing-index` results carry `:filers` — every entity on the filing index as `{:name :role :cik}`.
 
 ## [0.4.1] — 2026-08-01
 
 ### Fixed
-- **Equity reclassification for filers tagging only the including-NCI equity concept.** The chains label `StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest` as `"Total Equity"`, but the SEQ rule's guard predated that relabeling and could never fire — so for those filers SEQ/CEQ silently included NCI and TEQ double-counted it. New standardized-view identities re-derive parent equity (`Stockholders Equity` = `Total Equity` − `Noncontrolling Interest`, with fallbacks), `Total Liabilities` now prefers the NCI-clean subtrahend (L&E − `Total Equity`), and the unreachable `:seq-from-total` rule was removed. Re-measured against a current-vintage licensed Compustat extract (same 21-firm FY2009–2025 sample, rates on the 13 industrials, before → after with everything else identical): SEQ/TEQ 93.7% → **97.3%**, CEQ 95.9% → **97.3%**, standardized `Stockholders Equity` 92.3% → **95.9%**, standardized `Total Liabilities` 79.2% → **95.5%**. Bank/insurer equity rates unchanged at 95%.
-- **DLC no longer double-counts leases already inside a combined current-portion tag**: a new `:dlc-cpltd-lease-included` rule (using a new `:concept-in` guard op, which — unlike `:concept-not-in` — fails on identity-derived rows) skips the separate current lease tags when `Current Debt` was derived from `LongTermDebtAndCapitalLeaseObligationsCurrent`. DLC 55.6% → **57.5%** on the same sample; all other balance items byte-identical (DLTT 78% before the `OtherLongTermDebt` change below, RE 96%, MIBN 96%, RECT 69%, CHE 68%).
-- Income `:view :compustat` is now **industry-gated**: the rules were fitted on the standard industrial chains, and on bank/insurance/REIT chains — where most operand labels don't exist — the view now equals `:standardized` instead of emitting a Compustat-branded view whose rules cannot fire. Income rates re-measured before → after across all the fixes in this entry (13 industrials, FY2009–2025, current-vintage licensed Compustat extract, FSDS on): **byte-identical on every item** (XRD 84%, DP 74%, AMZN COGS 17/17 preserved) — the FSDS window tightening and aux-shadowing fix cause no operand loss on standard-fiscal-year filers.
-- Cross-statement aux rows no longer shadow same-labeled statement rows as rule operands (a REIT income statement's first-class `"D&A"` line now beats the cash-flow aux `"D&A"`).
-- FSDS: a failed quarter download is remembered as missing only on 404 — transient failures (timeouts, 5xx) rethrow and stay retryable. FSDS operands inject only into USD annual windows of 340–380 days (was 300–430), so transition-period fiscal years no longer receive 4-quarter operand values, and non-USD period groups no longer receive USD values.
-- `e/search-filings` with only `:end-date` returned unfiltered results (EFTS ignores `enddt` without `dateRange=custom`).
-- `download-batch!` no longer aborts the whole batch when one ticker fails to resolve; the failed ticker gets its documented `{:status :error}` envelope.
-- Disk cache: the key now includes the `:raw?` flag (the same URL fetched raw and as JSON no longer shares an entry, which could hand raw HTML to the JSON parser); failed tmp-file renames are cleaned up.
-- Filing-index parsing no longer truncates multi-word form types at the first space (`"SCHEDULE 13D"`, `"SC 13G/A"`, `"S-1 MEF"` parse whole; a `" - description"` suffix is dropped).
+- **Equity reclassification for filers tagging only the including-NCI equity concept**: the SEQ rule's guard could never fire, so SEQ/CEQ included NCI and TEQ double-counted it. New standardized-view identities re-derive parent equity (`Stockholders Equity` = `Total Equity` − `Noncontrolling Interest`) and `Total Liabilities` prefers L&E − `Total Equity`: SEQ/TEQ 93.7% → **97.3%**, CEQ 95.9% → **97.3%**, standardized Total Liabilities 79.2% → **95.5%** (13 industrials, FY2009–2025).
+- **`"DLC (Compustat)"` no longer double-counts leases already inside a combined current-portion tag** (new `:concept-in` guard op, which fails on identity-derived rows): DLC 55.6% → **57.5%**.
+- Income `:view :compustat` is **industry-gated**: on bank, insurance and REIT chains, where the rules' operands don't exist, it equals `:standardized`. Income rates unchanged.
+- Cross-statement aux rows no longer shadow same-labeled statement rows as rule operands (a REIT's first-class `"D&A"` line beats the cash-flow aux `"D&A"`).
+- FSDS: only a 404 marks a quarter as missing — transient failures rethrow and stay retryable. FSDS operands inject only into USD annual windows of 340–380 days, so transition-period fiscal years no longer receive 4-quarter values.
+- `e/search-filings` with only `:end-date` returned unfiltered results.
+- `download-batch!` no longer aborts the whole batch when one ticker fails to resolve; that ticker gets a `{:status :error}` envelope.
+- Disk cache: the key includes the `:raw?` flag (raw and JSON fetches of one URL no longer share an entry); failed tmp-file renames are cleaned up.
+- Filing-index parsing no longer truncates multi-word form types (`"SCHEDULE 13D"`, `"SC 13G/A"`, `"S-1 MEF"`).
 - `(e/panel [] :as-of ...)` threw instead of returning an empty dataset.
-- `e/item` normalizes the item id the same way as `e/items` (`"i 1"` now finds Item I-1).
-- `core/clear-cache!` also clears the cached ticker maps (long-running processes pick up new listings); the JSON response cache is bounded at 256 entries.
-- **`"DLTT (Compustat)"` no longer adds `OtherLongTermDebt`** — A/B measurement against licensed Compustat data confirmed it is typically a component of `LongTermDebtNoncurrent` (double count): removing it lifted DLTT from 78% to **86%** on the 13 industrials, with DLC unchanged. The same A/B protocol re-confirmed the operating-lease operands empirically: removing them drops DLTT to 51% and DLC to 38%, so post-ASC-842 operating leases definitively belong in Compustat debt.
-- **`"Special Items (Compustat)"` no longer double-counts impairments** for filers whose restructuring concept already includes them (`RestructuringCostsAndAssetImpairmentCharges`, `RestructuringSettlementAndImpairmentProvisions`): a guarded rule drops the separate `"Impairment Charges"` operand in that case. No sample filer triggers it today (A/B identical) — pure protection. The GLP subtraction in OIADP was also A/B-tested (removing it: identical) and kept.
+- `e/item` normalizes the item id like `e/items` (`"i 1"` finds Item I-1).
+- `core/clear-cache!` also clears the cached ticker maps; the JSON response cache is bounded at 256 entries.
+- **`"DLTT (Compustat)"` no longer adds `OtherLongTermDebt`**, typically a component of `LongTermDebtNoncurrent`: DLTT 78% → **86%**. Removing the operating-lease operands drops DLTT to 51% and DLC to 38%, confirming that post-ASC-842 operating leases belong in the debt items.
+- **`"Special Items (Compustat)"` no longer double-counts impairments** already inside the filer's restructuring concept (`RestructuringCostsAndAssetImpairmentCharges`, `RestructuringSettlementAndImpairmentProvisions`).
 
 ### Changed
-- `:concepts` is accepted (and Malli-validated) on `e/income` / `e/balance` / `e/cashflow` — previously documented but silently dropped by the facade; `e/tables` arguments are now Malli-validated too.
-- **One formula engine.** The standardized-view identity engine now evaluates through `edgar.reclass/eval-formula` (its private near-duplicate evaluator is gone), so formula ops and `[:opt]` semantics cannot drift between the identity and reclassification layers; identities may now use `[:opt x]` operands. `duration-months` is public on `edgar.financials` and is the single window classifier (edgar.validation's copy and the FSDS aux matcher's inline reimplementation are gone). Verified byte-identical on the full 21-firm balance validation.
-- Rulesets assert their `:statement` key at load time (the balance ruleset can no longer be silently wired to income rows).
-- Removed: the unused `:gt` guard op, and the `"Fulfillment Expense"` concept chain entry (companyfacts never returns extension tags — the label only ever arrives via FSDS aux rows, matching `"Technology and Content Expense"`).
-- `examples/compustat_validation.clj` gains `validate-balance-reclass` + `annual-balance-compustat-items`, so the shipped harness reproduces the balance-sheet study; `make-benchmark` handles the per-item scales of `annual-extended-items`.
-- Doc corrections: Compustat line items documented with their `" (Compustat)"` suffix everywhere; Malli-validation scope and retry behavior described accurately; README shows the 0.4.0 measured rates.
+- `:concepts` is accepted (and Malli-validated) on `e/income` / `e/balance` / `e/cashflow` — previously documented but silently dropped; `e/tables` arguments are Malli-validated too.
+- **One formula engine**: standardized-view identities evaluate through `edgar.reclass/eval-formula` and may use `[:opt x]` operands; `edgar.financials/duration-months` is public and the single window classifier.
+- Rulesets assert their `:statement` key at load time.
+- Removed the unused `:gt` guard op and the `"Fulfillment Expense"` concept chain entry (companyfacts never carries extension tags; the label arrives via FSDS).
+- `examples/compustat_validation.clj` gains `validate-balance-reclass` and `annual-balance-compustat-items` for the balance-sheet study.
+- Doc corrections: Compustat line items documented with their `" (Compustat)"` suffix; Malli-validation scope and retry behavior described accurately.
 
 ## [0.4.0] — 2026-07-31
 
 ### Added
-- **FSDS-powered reclassification — `(e/enable-fsds!)`** wires the DERA Financial Statement Data Sets into the income statement's `:view :compustat` (the roadmap's "FSDS placement wiring"). When enabled, each 10-K period's reclassification gains two inputs the companyfacts API cannot provide: **statement placement** from `pre.txt` — a filer that presents D&A as its own income-statement line gets `"COGS (Compustat)"` copied as reported instead of D&A-stripped (new `:cogs-da-presented` rule guarded on an injected marker row; D&A-on-cash-flow-only remains the license to strip) — and **extension-tag operands** from `num.txt`, relabeled via ruleset-declared patterns (AMZN's `FulfillmentExpense` → `"Fulfillment Expense"`, `TechnologyAndContent`/`TechnologyAndInfrastructureExpense` → `"Technology and Content Expense"`). New rules consume them: `:xsga-opex-lines` (e-commerce presentation: G&A + marketing + fulfillment + technology — the residual-allocation pattern observed in Compustat data) and a new **`"XRD (Compustat)"`** target (reported R&D, falling back to the technology extension line — AMZN's equals Compustat XRD). Quarter zips download on first use into `~/.edgarjure/fsds` (~50–130 MB each, shared across all companies; `:dir` option; `e/disable-fsds!` to turn off). Everything degrades gracefully: without the cache the new rules simply don't fire. Engine additions: `[:present item]` / `[:absent item]` guards; `edgar.fsds` additions: `enable-cache!`/`cached-quarter!` (404-tolerant), `quarter-of-date`, adsh-prefix streaming readers (`filing-rows`, `submission-row` — never load the multi-million-row tables), and `annual-filing-context` (per-`[cik quarter]` cached).
-- Measured on 13 industrials vs live `comp.funda`, FY2009–2025 (within 1%, FSDS enabled): XRD **84%** (new), XSGA 58% (July baseline 43–45%), COGS 52%, DP 73%, XOPR 49%, Gross Profit 48%, OIADP 33%/OIBDP 28% (the wider 17-year window; the July numbers were fitted on FY2010–2015). The AMZN-class extension-tag gap is closed: **AMZN COGS 0 → 17/17, XSGA 0 → 13/17, XRD 16/17**. Still-documented laggards: R&D-embedded-in-COGS filers (HON), partial-DDA filers (CSCO), PEP/PG allocation splits.
-- **OIADP special-item add-backs extended with two more categories**: In-Process R&D charges (`"In-Process R&D"` chain, Compustat RDIP) join the `:neg-sum` special items; signed nonrecurring asset-sale gains/losses (`"Gain (Loss) on Sale of Assets"` chain, Compustat GLP) leave `"OIADP (Compustat)"` by subtraction — a gain is removed, a loss added back. GLP is deliberately kept out of the `"Special Items (Compustat)"` row (its `:neg-sum` operands are positively-tagged charges). Known limitation: no recurrence gate — every tagged asset-sale gain/loss is treated as nonrecurring; whether recurring gains (e.g. oil, coal, transport) belong elsewhere is an untested hypothesis. Measured marginal effect on the validation sample is zero.
-- **Compustat balance-sheet reclassification — `:view :compustat` now covers `e/balance`** (`resources/edgar/reclass/compustat-balance.edn`). Like the income rules, they were developed and verified empirically against licensed Compustat data (live `comp.funda`; 21 firms, FY2009–2025, 357 firm-years), building each aggregate from the filer's tagged components. New line items and their match-within-1% rates on the 13 industrials (before → after, "before" = the closest raw XBRL line item): `"RE (Compustat)"` = Retained Earnings + AOCI — Compustat RE *includes* accumulated OCI (12% → **96%**); `"DLTT (Compustat)"` = noncurrent debt + finance/capital-lease obligations, with fallbacks for combined-tag filers (33% → **76%**); `"DLC (Compustat)"` = current debt + current lease obligations (27% → **63%**); `"RECT (Compustat)"` = trade + non-trade + tax-refund + financing receivables (20% → **61%**); `"MIB (Compustat)"` = mezzanine redeemable NCI only vs `"MIBN (Compustat)"` = equity-section NCI — the us-gaap `MinorityInterest` tag must never map to MIB (2% → **81%**, MIBN **99%**); `"MIBT (Compustat)"` and `"PSTK (Compustat)"` (incl. mezzanine redeemable preferred; PSTK's carrying-value construction is the weakest item at ~36%); `"SEQ (Compustat)"` (parent equity + mezzanine preferred), `"CEQ (Compustat)"`, `"TEQ (Compustat)"` (= SEQ + MIBN; redeemable NCI stays outside all equity totals) at 93–95%; `"CHE (Compustat)"` = cash + short-term investments + marketable securities + trading assets (76%). Empirical policy discovery encoded in the rules: current Compustat vintages fold **post-ASC-842 operating lease liabilities into DLC/DLTT** (verified on AMZN/WMT FY2019+; the OperatingLeaseLiability operands self-gate by era since the tags only exist from 2019). Component-identity cross-check: the modeled constructions (RE = REUNA + ACOMINC, DLC = DD1 + NP, TEQ = SEQ + MIBN, CEQ = SEQ − PSTK, LSE = LT + MIB + TEQ, MIBT = MIB + MIBN, PSTK = PSTKR + PSTKN) hold at **100%** inside FUNDA itself on the sample. Equity rules hold for banks/insurers (RE 96%, SEQ/TEQ 95%); classified-balance-sheet items don't apply to financial-format filers and REITs.
-- New balance-sheet chains feeding the rules (available in all views): `"AOCI"`, `"Redeemable Noncontrolling Interest"`, `"Redeemable Preferred Stock"`, `"Current Portion of Long-Term Debt"`, `"Short-Term Borrowings"`, `"Finance Lease Liability (Current)"`/`"(Non-Current)"`, `"Capital Lease Obligation (Current)"`/`"(Non-Current)"`, `"Operating Lease Liability (Current)"`/`"(Non-Current)"`, `"Other Long-Term Debt"`, `"Marketable Securities (Current)"`, `"Trading Assets"`, `"Nontrade Receivables"`, `"Income Taxes Receivable"`, `"Notes and Loans Receivable (Current)"`; plus new concepts on existing chains (`LongTermDebtAndCapitalLeaseObligations`(`Current`) — HON, `ShortTermBankLoansAndNotesPayable`, `AccountsNotesAndLoansReceivableNetCurrent` — PEP).
-
-- **FSDS statement placement and extension-tag access** — new `edgar.fsds` query functions over the DERA quarterly dumps: `find-submissions` (locate a company's filing in a quarter), `presentation` (a statement's lines exactly as presented, extension tags included — recognizable by a filing-adsh `:version`), `statement-placement` (tag → set of statement codes: the guard signal for D&A-stripping — `#{"CF"}` means D&A is embedded in income statement expense lines), and `facts-for` (numeric facts per filing, extension tags included). Verified against the real 2026Q1 dataset: AMZN's income statement presents `FulfillmentExpense` and `TechnologyAndInfrastructureExpense` as extension tags, and the FY2025 value of the latter equals Compustat XRD exactly — the operands the `:compustat` view's remaining XSGA/XRD gap needs.
-- Long-name aliases: `e/income-statement`, `e/balance-sheet`, `e/cash-flow`, and `e/search-companies` (symmetric with `e/search-filings`). Passing a single options map instead of keyword args — `(e/income "AAPL" {:form "10-Q"})` — and nil (never an exception) from `e/filing` with `:n` out of range both already worked; now documented and regression-tested.
-- **Clerk tour notebook** — `examples/notebook.clj` walks the full surface (four statement views incl. `:compustat`, industry routing incl. REITs, quarterly/LTM derivation, point-in-time mode, panels, ownership forms, item extraction) as a live Clerk notebook; new `:clerk` deps alias. Every form verified against the live SEC API.
-- **Opt-in disk cache** — `(e/enable-disk-cache!)` persists HTTP responses across sessions under `~/.edgarjure/http-cache` (one metadata + one body file per URL; no new dependencies). Consulted between the in-memory caches and the network. Default TTLs reflect cross-session reuse: JSON endpoints 24 h, raw filing documents 30 days (published filings are immutable); both configurable (`:dir`, `:ttl-json-ms`, `:ttl-raw-ms`). Companions: `e/disable-disk-cache!`, `e/clear-disk-cache!`, `e/disk-cache-stats`. Off by default — behavior is unchanged unless enabled.
-- **Schedule 13D/13G parsers** — new `edgar.forms.schedule13` namespace parses the structured-XML era (SEC-mandated from December 2024: form types `SCHEDULE 13D`/`SCHEDULE 13G` and `/A` amendments). The two schemas spell fields differently (`issuerCIK` vs `issuerCik`, `aggregateAmountOwned` vs `reportingPersonBeneficiallyOwnedAggregateNumberOfShares`, ...); both normalize to one shape: issuer with CUSIP, event date, 13G rule designation, and one entry per reporting person (voting/dispositive powers, aggregate shares, percent of class, type) — activist group filings yield them all. Also registered under the truncated `"SCHEDULE"` form type some sources report; the XML `submissionType` disambiguates. Legacy `SC 13D`/`SC 13G` (HTML/text) intentionally fall through to `filing-obj`'s raw-HTML default. Verified live against an AAPL 13G and an activist group 13D.
-- **Form 3 and Form 5 parsers** — new `edgar.forms.ownership` namespace parses all Section 16 ownership forms (3, 4, 5 and their `/A` amendments) through one `ownershipDocument` XML parser, registered for `filing-obj`/`e/obj` dispatch. Result maps now include `:holdings` (initial holdings on Form 3, annual holdings on Form 5) alongside `:transactions`, plus `:nature-of-ownership` on indirect positions; footnote-only elements (e.g. an RSU's `conversionOrExercisePrice`) parse as nil. Form 4/A and the other amendments now dispatch too (previously only plain `"4"` was registered). `edgar.forms.form4/parse-form4` remains as a delegating entry point. Verified against live AAPL Form 3 and Form 5 filings.
-- **REIT income statement chains (roadmap 4.1d)** — `resources/edgar/concepts/reit-income.edn`, verified against SPG, PLD, O, EQR, WELL, and AMT facts. REIT-specific line items alongside the standard core: `"Rental Revenue"` (spanning the pre- and post-ASC 842 tag families), `"Real Estate Revenue"`, `"Tenant Reimbursements"`, `"Property Operating Expense"`, `"Real Estate Taxes"`, `"Ground Rent Expense"`, `"D&A"` (a first-class income statement line for REITs), `"Impairment of Real Estate"`, `"Gain on Sale of Real Estate"`. Available via `:industry :reit` and `(e/concepts-for :income :industry :reit)`.
-- Industry routing fix: **SIC 6798 (REITs) now routes to `:reit`** — the previous range (6500–6553, real estate operators) never matched actual equity REITs, which nearly all file under 6798, so they silently got the industrial chains.
+- **FSDS-powered reclassification — `(e/enable-fsds!)`** feeds the SEC Financial Statement Data Sets into the income statement's `:view :compustat`: statement placement from `pre.txt` (a filer presenting D&A as its own line keeps `"COGS (Compustat)"` as reported) and extension-tag operands from `num.txt` (AMZN's fulfillment and technology lines feed `"XSGA (Compustat)"` and a new `"XRD (Compustat)"`). Quarter zips download on first use into `~/.edgarjure/fsds` (50–130 MB each, shared across companies; `e/disable-fsds!` turns it off); without the cache the new rules don't fire. New `[:present]` / `[:absent]` guards.
+- Measured on 13 industrials, FY2009–2025, FSDS enabled: XRD **84%** (new), XSGA 58%, COGS 52%, DP 73%; AMZN COGS 0 → 17/17, XSGA 0 → 13/17, XRD 16/17. (The XSGA and COGS figures did not reproduce on the extract used from 0.5.0 on; absolute rates depend on the extract, so later entries compare rule versions on one extract.)
+- **OIADP add-backs extended**: In-Process R&D charges join the special items, and nonrecurring asset-sale gains/losses (`"Gain (Loss) on Sale of Assets"`) leave `"OIADP (Compustat)"` by subtraction. No recurrence gate yet — every tagged asset-sale gain or loss is treated as nonrecurring.
+- **Compustat balance-sheet reclassification — `:view :compustat` now covers `e/balance`** (`resources/edgar/reclass/compustat-balance.edn`), building each aggregate from the filer's tagged components: `"RE (Compustat)"` (retained earnings incl. AOCI; 12% → **96%** within 1%), `"DLTT (Compustat)"` (76%), `"DLC (Compustat)"` (63%), `"RECT (Compustat)"` (61%), `"MIB (Compustat)"` / `"MIBN (Compustat)"` / `"MIBT (Compustat)"`, `"PSTK (Compustat)"`, `"SEQ (Compustat)"` / `"CEQ (Compustat)"` / `"TEQ (Compustat)"` (93–95%) and `"CHE (Compustat)"` (76%). Post-ASC-842 operating lease liabilities count toward DLC/DLTT, as observed in current Compustat data.
+- New balance-sheet chains feeding the rules (available in all views): `"AOCI"`, `"Redeemable Noncontrolling Interest"`, `"Redeemable Preferred Stock"`, `"Current Portion of Long-Term Debt"`, `"Short-Term Borrowings"`, `"Finance Lease Liability (Current)"`/`"(Non-Current)"`, `"Capital Lease Obligation (Current)"`/`"(Non-Current)"`, `"Operating Lease Liability (Current)"`/`"(Non-Current)"`, `"Other Long-Term Debt"`, `"Marketable Securities (Current)"`, `"Trading Assets"`, `"Nontrade Receivables"`, `"Income Taxes Receivable"`, `"Notes and Loans Receivable (Current)"`, plus new concepts on existing chains.
+- `edgar.fsds` query functions: `find-submissions`, `presentation` (a statement's lines as presented, extension tags included), `statement-placement` (tag → statement codes), `facts-for`.
+- Long-name aliases: `e/income-statement`, `e/balance-sheet`, `e/cash-flow`, `e/search-companies`. Passing a single options map (`(e/income "AAPL" {:form "10-Q"})`) and nil from `e/filing` with `:n` out of range are now documented.
+- **Clerk tour notebook** — `examples/notebook.clj` walks the library as a live Clerk notebook; new `:clerk` deps alias.
+- **Opt-in disk cache** — `(e/enable-disk-cache!)` persists HTTP responses across sessions under `~/.edgarjure/http-cache` (JSON endpoints 24 h, filing documents 30 days; `:dir`, `:ttl-json-ms`, `:ttl-raw-ms`). Companions: `e/disable-disk-cache!`, `e/clear-disk-cache!`, `e/disk-cache-stats`.
+- **Schedule 13D/13G parsers** (`edgar.forms.schedule13`) for the structured-XML era (from December 2024: `SCHEDULE 13D`/`SCHEDULE 13G` and `/A`). Both schemas normalize to one shape: issuer with CUSIP, event date, 13G rule, and one entry per reporting person. Legacy `SC 13D`/`SC 13G` fall through to the raw-HTML default.
+- **Form 3 and Form 5 parsers** — `edgar.forms.ownership` parses Forms 3, 4, 5 and their `/A` amendments through one parser. Results include `:holdings` alongside `:transactions` and `:nature-of-ownership` on indirect positions; Form 4/A now dispatches too.
+- **REIT income statement chains** (`resources/edgar/concepts/reit-income.edn`, verified against SPG, PLD, O, EQR, WELL, AMT): `"Rental Revenue"`, `"Real Estate Revenue"`, `"Tenant Reimbursements"`, `"Property Operating Expense"`, `"Real Estate Taxes"`, `"Ground Rent Expense"`, `"D&A"`, `"Impairment of Real Estate"`, `"Gain on Sale of Real Estate"`. Available via `:industry :reit`.
+- Industry routing fix: **SIC 6798 (REITs) now routes to `:reit`** — the previous range (6500–6553) never matched equity REITs.
 
 ### Changed
-- `"Current Debt"` now maps only the combined `DebtCurrent` concept; filers tagging components get it as a derived row via new standardized-view identities (`"Current Portion of Long-Term Debt"` + `"Short-Term Borrowings"`, with single-component fallbacks). This replaces the old first-match fallback — which could silently pick just one component — with the component *sum* Compustat's DLC = DD1 + NP definition requires.
-- `"Short-Term Investments"` no longer includes `MarketableSecuritiesCurrent` (now its own `"Marketable Securities (Current)"` line item), so filers presenting both as separate lines (KO) get both.
-- Identity engine: identities for the same target now apply strictly first-match-wins within a pass (previously two identities for one target could both emit a row in the same pass — e.g. `"Total Equity"` could appear twice for filers with tagged NCI).
-- Reclassification ruleset: new `:dp-components` rule — `"DP (Compustat)"` now prefers Depreciation + Amortization of Intangibles (cross-statement, from the cash flow) over the combined cash-flow D&A tag, whose scope can exceed Compustat DP (AMZN's includes capitalized-content amortization: 48.7B tagged vs 30.9B DP in FY2023, which equals the component sum exactly). The COGS and OIBDP rules now consume `"DP (Compustat)"` instead of the raw D&A operand. Out-of-sample FY2016+: DP 66% → **76%**, COGS 43% → **54%**, OIBDP 21% → **33%**, XOPR 33% → 38%; in-sample DP 65% → 74% with COGS/XSGA/OIADP unchanged. Known tradeoff: filers tagging footnote-scope Depreciation values (KO, UPS) lose a few years. AMZN's remaining XSGA/XRD gap is documented as extension-tag territory (Fulfillment, Technology & Content) that the companyfacts API does not carry.
+- `"Current Debt"` maps only the combined `DebtCurrent` concept; filers tagging components get it as a derived row (`"Current Portion of Long-Term Debt"` + `"Short-Term Borrowings"`, with single-component fallbacks) instead of a first-match fallback that could pick one component — the component sum Compustat DLC reflects (DLC = DD1 + NP holds throughout the licensed sample).
+- `"Short-Term Investments"` no longer includes `MarketableSecuritiesCurrent` (now `"Marketable Securities (Current)"`), so filers presenting both get both.
+- Identity engine: identities for one target apply first-match-wins within a pass (`"Total Equity"` could appear twice).
+- New `:dp-components` rule: `"DP (Compustat)"` prefers Depreciation + Amortization of Intangibles over the combined cash-flow D&A tag, whose scope can exceed DP (AMZN FY2023: 48.7B tagged vs 30.9B); COGS and OIBDP consume it. Out-of-sample FY2016+: DP 66% → **76%**, COGS 43% → **54%**, OIBDP 21% → **33%**.
 
 ## [0.3.0] — 2026-07-28
 
 ### Added
-
-**Reclassification rule engine and `:view :compustat` (roadmap 4.1c) — `edgar.reclass`**
-- New fourth statement view: `(e/income "AAPL" :view :compustat)` adds line items reclassified to approximate Compustat item definitions, alongside the originals. Rules are data (EDN, `resources/edgar/reclass/compustat-income.edn`), applied per period group on top of the standardized view; reclassified rows carry `:method :reclassified`, `:rule`, and `:derived-from`. Inspect the active ruleset with `(e/reclass-rules :income)`. Income statement only; `:view :compustat` on the balance sheet / cash flow currently equals `:standardized`.
-- Rules, derived empirically against a 2016-vintage FUNDA extract (18 industrials, FY2010–2015, ~120 firm-years; match-within-1% before → after): `"COGS (Compustat)"` = Cost of Revenue − D&A, with D&A pulled cross-statement from the cash flow (1% → **57%** — Compustat removes the full DP from COGS, none from SG&A, in the dominant filer pattern); `"XSGA (Compustat)"` = SG&A + R&D, with an S&M + G&A component fallback for filers with no combined SG&A tag (20% → **45%**); `"OIADP (Compustat)"` = Operating Income + restructuring/impairment/goodwill-impairment/acquisition-cost/litigation add-backs (24% → **38%**); `"OIBDP (Compustat)"` = OIADP + D&A; `"XOPR (Compustat)"` = COGS + XSGA (43%); `"DP (Compustat)"` (65%); `"Special Items (Compustat)"` (negated charges, Compustat sign convention); `"Gross Profit (Compustat)"` = Revenue − Compustat COGS (vs REVT−COGS: 0% → **59%**); `"Revenue (Compustat)"` = Revenue − Excise Taxes (guarded on the revenue concept not already being net of assessed taxes). The COGS/XSGA/OIADP trio overall: ~15% → ~47%. Residual gaps are footnote-level allocations invisible to the companyfacts API (partial D&A splits e.g. PEP, R&D embedded in COGS e.g. HON, INDL-format restatements e.g. GE) — documented in the ruleset EDN.
-- Engine semantics: formula ops `:=`/`:+`/`:-`/`:neg-sum` with `[:opt x]` optional operands; guards `[:lt a b]`, `[:gt a b]`, `[:concept-not-in item #{...}]`; rules apply sequentially in order (a rule's output is immediately visible to later rules), first rule per target wins, iterated to fixpoint (capped at 4 passes). For 10-Q data, reclassified rows get `:val-q`/`:val-ltm` like any other duration line item.
-- New income statement chains feeding the rules (also available in all other views): `"Selling and Marketing Expense"`, `"General and Administrative Expense"`, `"Marketing Expense"`, `"Fulfillment Expense"`, `"Other Operating Expense"`, `"Excise Taxes"`, `"Restructuring Charges"`, `"Impairment Charges"`, `"Goodwill Impairment"`, `"Acquisition-Related Costs"`, `"Litigation Settlement"`.
-- `examples/compustat_validation.clj`: new `annual-compustat-items` mapping and `validate-reclass` helper reproducing the reclassification study.
-- Out-of-sample confirmation against a live licensed Compustat annual extract (FY2016+, ~190 firm-years not used for rule fitting): COGS 43% (as-reported 1%), XSGA 43% (16%), OIADP 34% (19%), DP 66% — same firm-level structure as in-sample, with misses concentrated in the documented problem filers.
+- **Reclassification rule engine and `:view :compustat` (`edgar.reclass`)**: `(e/income "AAPL" :view :compustat)` adds line items approximating Compustat item definitions alongside the originals. Rules are EDN data (`resources/edgar/reclass/compustat-income.edn`) applied on top of the standardized view; reclassified rows carry `:method :reclassified`, `:rule`, and `:derived-from`. Inspect them with `(e/reclass-rules :income)`. Income statement only.
+- Line items: `"COGS (Compustat)"` (cost of revenue less D&A from the cash flow), `"XSGA (Compustat)"` (SG&A + R&D, with an S&M + G&A fallback), `"OIADP (Compustat)"` (operating income plus restructuring, impairment and similar add-backs), `"OIBDP (Compustat)"`, `"XOPR (Compustat)"`, `"DP (Compustat)"`, `"Special Items (Compustat)"`, `"Gross Profit (Compustat)"`, `"Revenue (Compustat)"` (net of excise taxes). Fitted on a 2016-vintage extract (18 industrials, FY2010–2015): the COGS/XSGA/OIADP trio moves from ~15% to ~47% within 1%; out of sample (FY2016+, ~190 firm-years) COGS 43%, XSGA 43%, OIADP 34%, DP 66%.
+- Engine semantics: formula ops `:=`/`:+`/`:-`/`:neg-sum` with `[:opt x]` operands; guards `[:lt a b]`, `[:gt a b]`, `[:concept-not-in item #{...}]`; rules apply in order, first rule per target wins, iterated to a fixpoint. 10-Q reclassified rows get `:val-q`/`:val-ltm`.
+- New income statement chains feeding the rules (available in all views): `"Selling and Marketing Expense"`, `"General and Administrative Expense"`, `"Marketing Expense"`, `"Fulfillment Expense"`, `"Other Operating Expense"`, `"Excise Taxes"`, `"Restructuring Charges"`, `"Impairment Charges"`, `"Goodwill Impairment"`, `"Acquisition-Related Costs"`, `"Litigation Settlement"`.
+- `examples/compustat_validation.clj`: `annual-compustat-items` and `validate-reclass`.
 
 ### Changed
-- **License switched from EPL-2.0 to Apache-2.0** (LICENSE file, README, and the pom metadata in build.clj). Applies from the next published version onward; artifacts through 0.2.1 were published under EPL-2.0.
-- Added CONTRIBUTING.md (no pull requests at this time; bug reports via GitHub issues welcome).
-- Test suite: 184 tests, 962 assertions.
+- **License switched from EPL-2.0 to Apache-2.0**, from this version on; artifacts through 0.2.1 were published under EPL-2.0.
+- Added CONTRIBUTING.md (no pull requests; bug reports via GitHub issues welcome).
 
 ## [0.2.1] — 2026-07-15
 
 ### Added
-
-**Compustat validation study (roadmap 4.1f) — `examples/compustat_validation.clj`**
-- Graded the standardized statements against licensed Compustat data for 19 large filers (13 industrials/tech, 3 banks, 3 insurers), ~45 line items over three passes. Annual core items FY2010–2015 vs FUNDA: **89.4%** within 1% (Total Assets 97.7%, Net Income 96.2%, Equity 94.7%, OCF 93.2%). Quarterly vs FUNDQ (2022+): single-quarter income values (`:val-q` vs SALEQ/NIQ) **98.6%**, quarterly Total Assets **100%** — independent confirmation of the 0.2.0 date-window quarterly engine. Reclassification-sensitive items (COGS/SG&A/R&D/Operating Income) match ~15–18% as expected — the documented Compustat reclassification gap, target for a future rule engine.
-
-**`edgar.validation/compare-to-benchmark` options the study necessitated**
-- `:date-tolerance-days` — Compustat normalises fiscal period ends to calendar month-end while XBRL carries exact 52/53-week dates (2015-09-30 vs Apple's 2015-09-26). Exact matches always win; otherwise closest date within tolerance.
-- `:value-key` — compare `:val-q` (or any column) instead of `:val`, enabling quarterly benchmarks.
-- Duration-aware candidate ranking: 10-K facts include quarterly-footnote observations sharing the fiscal-year end date; the longest duration window now wins per date, both for exact and tolerance matching. (Before this, an annual benchmark could silently match a Q4 3-month row.)
-
-**Derived line item: bank gross revenue**
-- `"Total Gross Revenue"` = Interest Income + Noninterest Income (`:view :standardized`). This is how Compustat constructs REVT for banks; no single XBRL tag carries it. Matched 95.2% in the study.
-
-**Extended-variable validation (second pass) and resulting coverage fixes**
-- Extended the study to 16 more Compustat variables. Chain/identity fixes it produced: `"Shares Basic"`/`"Shares Diluted"` added to the bank and insurance income chains (coverage 59% → 89%); `"Interest Expense"` line item added to the standard income chain (`InterestExpense`, `InterestExpenseDebt`, `InterestExpenseNonoperating`, `InterestAndDebtExpense`); D&A chain gains `DepreciationAmortizationAndAccretionNet` plus new `"Depreciation"` / `"Amortization of Intangibles"` line items and a derived `"D&A"` identity for filers that tag the components separately (MSFT, IBM; 28% → 51%); `"Cash and Equivalents"` gains `CashAndDueFromBanks` and the ASU 2016-18 restricted-cash tag as fallbacks (77% → 88%). Investing/Financing Cash Flow validate at 96.2%, Goodwill 95.2%. Remaining laggards are Compustat definitional constructions (Retained Earnings treasury-stock adjustment, RECT total-vs-trade receivables, DLTT finance leases, XINT aggregation, EPS split-vintage) — documented in the example, not chased.
-
-**Balance sheet and cash flow coverage (third validation pass)**
-- New balance sheet line items: `"Accounts Payable"`, `"Current Debt"`, `"Income Taxes Payable"`, `"Preferred Stock"`, `"Noncontrolling Interest"`, `"Total Equity"`. New cash flow line items: `"Stock Issued"`, `"Deferred Taxes (CF)"`; `"LT Debt Issued"`/`"LT Debt Repaid"` gain the `...OfDebt` and `...AndCapitalSecurities` tag variants (KO, WMT, IBM, JPM); `"Short-Term Investments"` gains `MarketableSecuritiesCurrent` and friends (AAPL, IBM, JNJ, KO, PFE).
-- New identities: `"Total Equity"` = Stockholders Equity + Noncontrolling Interest (falls back to parent equity when NCI is untagged; the incl-NCI XBRL tag now correctly labels as Total Equity rather than masquerading as parent equity) and derived-only `"Working Capital"` = Current Assets − Current Liabilities.
-- Validated vs Compustat: Total Liabilities & Equity 98.5%, Total Equity 94.7%, Working Capital 90%, Net Change in Cash 89.4%, Income Taxes Payable 88.6%, Acquisitions 84.8%, Share Buybacks 78.1%, LT Debt Issued 75.2%. Documented-definitional: Compustat MIB (redeemable NCI), DLC (multi-component current debt), IVST, PSTK constructions.
+- **Compustat validation study — `examples/compustat_validation.clj`**: the standardized statements graded against licensed Compustat data for 19 large filers (13 industrials/tech, 3 banks, 3 insurers). Annual core items FY2010–2015: **89.4%** within 1%; quarterly `:val-q` vs single-quarter Compustat items **98.6%**, quarterly Total Assets **100%**. Reclassification-sensitive items (COGS, SG&A, R&D, Operating Income) match ~15–18%.
+- `edgar.validation/compare-to-benchmark` options: `:date-tolerance-days` (Compustat month-end vs exact 52/53-week dates; exact matches win), `:value-key` (compare `:val-q` or any column), and duration-aware ranking (the longest window wins per date, so an annual benchmark never matches a Q4 row).
+- Derived bank line item `"Total Gross Revenue"` = Interest Income + Noninterest Income (`:view :standardized`).
+- Income chains: `"Shares Basic"`/`"Shares Diluted"` for banks and insurers; `"Interest Expense"`; `"Depreciation"` / `"Amortization of Intangibles"` with a derived `"D&A"`; more `"Cash and Equivalents"` fallbacks (`CashAndDueFromBanks`, the ASU 2016-18 restricted-cash tag).
+- Balance sheet line items `"Accounts Payable"`, `"Current Debt"`, `"Income Taxes Payable"`, `"Preferred Stock"`, `"Noncontrolling Interest"`, `"Total Equity"`; cash flow line items `"Stock Issued"`, `"Deferred Taxes (CF)"`; more tag variants for `"LT Debt Issued"`/`"LT Debt Repaid"` and `"Short-Term Investments"`.
+- Identities: `"Total Equity"` = Stockholders Equity + Noncontrolling Interest (the incl-NCI tag now labels as Total Equity), and derived-only `"Working Capital"`.
 
 ### Changed
-- Cash-flow chains: added `...ContinuingOperations` variants for operating/investing/financing cash flow (CAT, IBM, INTC, MSFT, TRV and others used them in the mid-2010s; OCF coverage in the study went from 38 missing rows to 0).
-- Income statement: added `IncomeTaxExpenseBenefitContinuingOperations` fallback to the tax chain.
-- Bank income chains: `"Total Revenue"` is now the gross `Revenues` tag; the net-of-interest-expense headline (`RevenuesNetOfInterestExpense`) is a separate `"Total Net Revenue"` line item.
-- Test suite: 169 tests, 888 assertions.
+- Cash-flow chains: `...ContinuingOperations` variants for operating/investing/financing cash flow; income tax gains the `...ContinuingOperations` fallback.
+- Bank income chains: `"Total Revenue"` is the gross `Revenues` tag; `RevenuesNetOfInterestExpense` is a separate `"Total Net Revenue"` line item.
 
 ## [0.2.0] — 2026-07-15
 
-Four features that passed the offline test suite were broken against the live SEC API (the fixtures encoded API formats that don't exist). All four are fixed, the fixtures now mirror the real formats, and the financial-statement layer gains Compustat-style standardization features.
+Four features that passed the offline test suite were broken against the live SEC API (the fixtures encoded API formats that don't exist). All four are fixed, the fixtures now mirror the real formats, and the financial-statement layer gains standardization features.
 
 ### Fixed
-
-**`edgar.xbrl` — `e/frame` returned garbage against the real frames endpoint**
-- The parser assumed a `:columns` key and `:data` as vectors-of-values. The real response has no `:columns` and `:data` is a sequence of maps; `zipmap` over a map produced rows where every cell was a misaligned MapEntry. Verified live: `(e/frame "Assets" "CY2023Q4I")` was unusable.
-- Fixed: map-shaped `:data` is used directly (legacy vector shape still accepted). `:cik` is zero-padded to the 10-digit string used library-wide (the SEC returns a bare number), so frames join directly against other edgarjure output. Results are now actually sorted by `:val` descending, as the docstring always claimed.
-
-**`edgar.filings` — `get-quarterly-index` returned zero rows**
-- The parser split `company.idx` on `|`, but company.idx is a fixed-width file — no line ever parsed. Verified live: 0 rows for any quarter.
-- Fixed: fetches `master.idx` (the pipe-delimited variant) with its real column order `CIK|Company Name|Form Type|Date Filed|Filename`. 2024 Q1 now parses 370,304 filings.
-
-**`edgar.financials` — 10-Q `:val-q` was wrong and `:val-ltm` was always nil**
-- The derivation keyed on the SEC `:fy`/`:fp` fields, which describe the *filing*, not the observation period. A Q2 10-Q carries current 3-month, current YTD, and prior-year comparative rows all tagged with the same fy/fp, so the YTD lookup collided (last-write-wins) and subtractions mixed windows — verified live producing −$13.1B "quarterly revenue" for AAPL. Separately, 10-Q data never contains a fiscal Q4, so every trailing-four-quarter window was incomplete and `:val-ltm` was nil for 100% of rows.
-- Rewritten on actual date windows: observations are classified by span (3/6/9/12 months, tolerant of 52/53-week calendars, exposed as a new `:duration-months` column); quarters derive from same-fiscal-year-start YTD differencing; 10-K annual rows participate so Q4 = FY − 9M YTD; LTM sums four consecutive derived quarters matched on period-end dates (±14 days). AAPL 10-Q income now yields non-nil LTM for 1305/1350 rows, and TTM revenue chains tie out exactly.
-- `to-wide` now deterministically prefers the longest-duration (YTD) row when a 3-month and a YTD row share the same `[end line-item]`, instead of picking arbitrarily.
-
-**`edgar.dataset` — `add-market-cap-rank` threw on every call**
-- It passed an options map where a comparator was expected and called `ds/add-column` with a wrong arity (ArityException). Fixed and covered by tests.
-
-**`edgar.forms.form4` — no-XML fallback fed HTML to the XML parser**
-- `form4-xml` fell back to the first document in the index when no `.xml` attachment existed, handing HTML to `xml/parse` (crash). Now returns nil.
-
-**Test fixtures — drift from the real SEC formats**
-- The frames and quarterly-index fixtures encoded invented formats, which is how all of the above passed 157 tests. Fixtures now mirror captured real responses.
+- **`e/frame` returned garbage** against the real frames endpoint (map-shaped `:data`). Fixed; `:cik` is zero-padded and results are sorted by `:val` descending, as documented.
+- **`get-quarterly-index` returned zero rows** (it split the fixed-width `company.idx` on `|`). It now reads `master.idx`; 2024 Q1 parses 370,304 filings.
+- **10-Q `:val-q` was wrong and `:val-ltm` was always nil** (derivation keyed on the filing's `:fy`/`:fp`, and 10-Q data has no fiscal Q4). Rewritten on actual date windows: a new `:duration-months` column (3/6/9/12, tolerant of 52/53-week calendars), quarters from YTD differencing, 10-K rows giving Q4 = FY − 9M, and LTM from four consecutive quarters.
+- `to-wide` prefers the longest-duration (YTD) row when a 3-month and a YTD row share `[end line-item]`.
+- `add-market-cap-rank` threw on every call.
+- Form 4: a filing without an XML attachment returns nil instead of crashing the XML parser.
 
 ### Added
-
-**Three statement views (`:view` option on `e/income`, `e/balance`, `e/cashflow`, `e/financials`)**
-- `:as-reported` — observations exactly as filed; no dedup, no label mapping.
-- `:normalized` (default) — existing behaviour: fallback chains + restatement dedup. Rows now carry `:method :direct`.
-- `:standardized` — additionally imputes missing line items from arithmetic identities (Gross Profit = Revenue − Cost of Revenue, Total Liabilities = L&E − Equity, Free Cash Flow = OCF − Capex, …). Derived rows carry `:method :derived` and `:derived-from` for auditability.
-
-**Industry-aware concept routing (`:industry` option)**
-- Banks (SIC 6000–6199, 6712) and insurers (SIC 6300–6399, 6411) auto-route to industry-specific income statement chains (verified against JPM and MET facts). `(e/income "JPM")` now returns 280 rows of bank line items instead of a sparse generic result. Pass `:industry :standard` to force generic chains.
-
-**Externalized concept chains**
-- All fallback chains moved to EDN files under `resources/edgar/concepts/` with version/taxonomy/industry metadata, loaded at runtime and exposed as public vars. `(e/concepts-for :income :industry :bank)` returns the active chains plus metadata.
-
-**Unmapped-concept logging**
-- Statement calls record us-gaap concepts present in a company's facts that no chain matched. `(e/unmapped-concepts :top 20)`, `(e/clear-unmapped-concepts!)`, `(e/save-unmapped-concepts!)` (defaults to `~/.edgarjure/unmapped-concepts.edn`). This is the feedback loop for growing chain coverage.
-
-**`edgar.validation`**
-- `compare-to-benchmark` grades statement output against a benchmark dataset (Compustat extract, hand-collected figures) and reports match-rate, mismatches with relative diffs, and missing items.
-
-**`edgar.fsds`**
-- Access to the SEC Financial Statement Data Sets (DERA quarterly dumps): `quarter-url`, `download-quarter!`, `load-table` (`:sub`/`:num`/`:pre`/`:tag` as datasets). These sets include company extension tags and statement placement — the ingredients cross-company standardization needs that the companyfacts API lacks.
-
-**Bounded raw-response cache (`edgar.core`)**
-- Filing HTML, filing indexes and .idx files are now cached (64 entries, 1 hr TTL), so `(e/text f)` → `(e/items f)` → `(e/tables f)` hits the network once instead of re-downloading a multi-MB document per call.
-
-**EFTS pagination**
-- `e/search-filings` and `e/search` now page through the EFTS index with `from=` offsets, so `:limit` beyond one page works (EFTS caps offsets at 10,000).
+- **Three statement views** (`:view` on `e/income`, `e/balance`, `e/cashflow`, `e/financials`): `:as-reported` (as filed, no dedup or mapping), `:normalized` (default; rows carry `:method :direct`), and `:standardized` (missing line items imputed from identities such as Gross Profit = Revenue − Cost of Revenue and Free Cash Flow = OCF − Capex; derived rows carry `:method :derived` and `:derived-from`).
+- **Industry-aware routing** (`:industry`): banks (SIC 6000–6199, 6712) and insurers (6300–6399, 6411) get industry-specific income chains; `:industry :standard` forces the generic ones.
+- **Concept chains as EDN** under `resources/edgar/concepts/`, exposed as public vars; `(e/concepts-for :income :industry :bank)`.
+- **Unmapped-concept logging**: `e/unmapped-concepts`, `e/clear-unmapped-concepts!`, `e/save-unmapped-concepts!`.
+- **`edgar.validation/compare-to-benchmark`**: match rate, mismatches with relative diffs, and missing items against a benchmark dataset.
+- **`edgar.fsds`**: SEC Financial Statement Data Sets — `quarter-url`, `download-quarter!`, `load-table` (`:sub`/`:num`/`:pre`/`:tag`).
+- **Bounded raw-response cache**: filing HTML, indexes and `.idx` files (64 entries, 1 h), so `e/text` → `e/items` → `e/tables` hits the network once.
+- **EFTS pagination**: `e/search-filings` and `e/search` page with `from=` offsets, so `:limit` beyond one page works.
 
 ### Changed
-- `filings/get-filings` fetches extra submission chunks lazily (one HTTP call per chunk, only when consumed that far) and orders chunks by `:filingTo` descending, keeping the concatenation date-descending past the first ~1,000 filings.
-- Item extraction: `:title` no longer truncates mid-word, and the heading text is no longer duplicated at the start of `:text`.
-- `filing-by-accession` docstring documents that the accession prefix is the submitter's CIK (possibly a filing agent), not necessarily the subject company.
-- Capex chain extended with `PaymentsToAcquireProductiveAssets` (Amazon's tag), fixing Free Cash Flow derivation for recent AMZN periods.
-- Test suite: 165 tests, 858 assertions.
+- `get-filings` fetches extra submission chunks lazily and keeps the result date-descending past the first ~1,000 filings.
+- Item extraction: `:title` no longer truncates mid-word, and the heading is no longer repeated at the start of `:text`.
+- Capex chain gains `PaymentsToAcquireProductiveAssets` (AMZN).
 
 ## [0.1.9] — 2026-03-17
 
 ### Fixed
-
-**`edgar.company` — `tickers-by-ticker` map rebuilt on every call (Issue #2)**
-- Added `tickers-by-ticker-cache` atom populated once in `load-tickers!` alongside `tickers-cache`. Previously the full 13,000-entry ticker→CIK map was re-derived on every `ticker->cik` invocation.
-- `clear-cache!` resets both atoms. `tickers-by-ticker` is now a simple deref.
-
-**`edgar.dataset` — removed unused `tech.v3.dataset.rolling` require (Issue #14)**
-- `[tech.v3.dataset.rolling :as ds-roll]` was required but never referenced in any source form. Removed.
-
-**`edgar.tables` — blank header cells broke column alignment (Issue #6)**
-- `row-texts` stripped blank cells via `filterv (not blank?)`, causing headers like `["A" "" "B"]` to collapse to 2 columns and silently misalign all data rows.
-- Fixed: `row-texts` now preserves all cells. `layout-table?` and the header-finder use non-blank cell count for the ≥2 threshold.
-
-**`edgar.financials` — `:val-q` and `:val-ltm` dropped in wide format (Issue #8)**
-- `to-wide` only emitted `(:line-item r) -> (:val r)`, silently discarding the `:val-q` and `:val-ltm` columns present in 10-Q flow statement output.
-- Fixed: `to-wide` detects `:val-q`/`:val-ltm` on the dataset and emits `"<line-item> (Q)"` / `"<line-item> (LTM)"` columns alongside the plain YTD value.
-
-**`edgar.api` / `edgar.filings` — `e/filing` fetched all pages to return nth element (Issue #1)**
-- `e/filing` and `filings/get-filing` called `get-filings` without `:limit`, forcing full pagination even when only the nth element was needed.
-- Fixed: both now pass `:limit (inc n)` so pagination stops after the needed element.
-
-**`edgar.filing` — `parse-filing-index-html` `:name` extracted from wrong cell (Issue #5)**
-- The `:name` selector used `(sel/select (sel/descendant :td :a) row)` — searching all `<a>` tags across all cells. If the description cell had a link and the filename cell did not, the wrong text was returned.
-- Fixed: extract `:name` only from `(nth cells 2 nil)` (the document column); fall back to cell text if no `<a>` is present.
-
-**`edgar.filings` — `get-quarterly-index` fragile header skip and wrong column mapping (Issue #3)**
-- `(drop 10)` assumed exactly 10 header lines; the actual header length varies. Also `:cik` was mapped to `(nth parts 0)` when the actual column order is `company-name|form-type|date-filed|filename|cik`.
-- Fixed: replaced `(drop 10)` with `(drop-while (complement data-line?))` keyed on `YYYY-MM-DD` in field 2. All five column mappings corrected; `str/trim` added to all fields.
-
-**`edgar.extract` — `extract-items-text` included heading line in `:text` (Issue #12)**
-- The plain-text path sliced body as `(subs text :start next-start)` — `:start` being the beginning of the `ITEM X. TITLE` match — so the heading was included. The HTML path excludes heading nodes.
-- Fixed: store `:end` (position after the heading) per match; body is now `(subs text :end next-start)`.
-
-**`edgar.xbrl` — `get-concept-frame` crashed on missing `:columns`; broke with row-vector data (Issue #13)**
-- Two bugs: (1) absent `:columns` key caused `(mapv keyword nil)` crash; (2) `ds/->dataset` does not accept row-vectors with `:column-names` — the implementation was always broken for non-empty `:data`.
-- Fixed: nil/empty `:columns` falls back to canonical `[:accn :cik :entityName :loc :end :val]` (or positional `:colN` for non-standard counts). Row-vectors converted to seq-of-maps via `(map #(zipmap cols %) data)`.
-
-**`edgar.api` — `e/exhibit` docstring referenced non-public `e/filing-document` (Issue #16)**
-- The docstring example `(e/filing-document f (:name ex))` referred to a function that was not exposed in `edgar.api`.
-- Fixed: `e/filing-document` is now a public wrapper in `edgar.api`. The `e/exhibit` docstring updated to show both `e/doc-url` and `e/filing-document` as valid patterns.
-
-**`edgar.api` / `edgar.schema` — four company functions lacked Malli validation (Issue #15)**
-- `e/cik`, `e/company`, `e/company-name`, `e/company-metadata` accepted any input without validation, inconsistent with all other `edgar.api` public functions.
-- Fixed: added `CompanyArgs` schema to `edgar.schema`; each function now calls `(schema/validate! schema/CompanyArgs ...)` at entry.
-
-**`edgar.core` — `cache-evict!` ran O(n) scan on every `cache-put!` (Issue #10)**
-- Every write to the cache triggered a full expired-entry scan, becoming expensive for large caches in long-running processes.
-- Fixed: throttled to every 100th put via `put-count` atom and `eviction-interval` (100). `clear-cache!` resets the counter so the first post-clear put always evicts.
-
-**`edgar.financials` — `dedup-restatements` and `dedup-point-in-time` used unnecessary `mapcat`+vector-wrap (Issue #11)**
-- Both functions used `(mapcat (fn [[_ g]] [(reduce ...)]) ...)` — wrapping the `reduce` result in a single-element vector `[...]` solely to unwrap it via `mapcat`. Equivalent to `map`.
-- Fixed: replaced `mapcat` + vector-wrap with `map` in both functions. `dedup-by-priority` retains `mapcat` as it genuinely emits variable-length results.
-
-**`edgar.filing` — `filing-save-all!` silently overwrote duplicate filenames (Issue #9)**
-- The SEC filing index can (rarely) list duplicate `:name` entries. Without deduplication, `filing-save-all!` would download and write the same file twice, potentially clobbering a good copy.
-- Fixed: deduplicate `(:files idx)` by `:name` before the `for` loop using `(vals (into {} (map (juxt :name identity) ...)))`. Last entry wins on collision.
-- Tests: `filing-save-all-dedup-test` (2 cases: download count equals unique filenames, return value has no duplicate paths).
+- `ticker->cik` no longer rebuilds the ticker map on every call (#2).
+- `e/tables`: blank header cells no longer collapse columns and misalign data rows (#6).
+- `:shape :wide` dropped `:val-q`/`:val-ltm`; 10-Q wide output now has `"<line-item> (Q)"` / `"<line-item> (LTM)"` columns (#8).
+- `e/filing` no longer fetches every page to return the nth filing (#1).
+- Filing index `:name` came from the wrong cell when the description had a link (#5).
+- `get-quarterly-index`: fragile header skip and wrong column mapping (#3).
+- Plain-text item extraction included the heading line in `:text` (#12).
+- `get-concept-frame` crashed on a missing `:columns` key (#13).
+- `e/cik`, `e/company`, `e/company-name`, `e/company-metadata` now validate their arguments (#15).
+- Cache eviction no longer scans the whole cache on every write (#10).
+- `filing-save-all!` deduplicates repeated file names in the filing index (#9).
 
 ### Added
-
-**`edgar.api` — `e/filing-document` exposed as public function**
-- Fetches a specific named document from a filing as a raw string. Complements `e/doc-url` and `e/exhibit`.
-
-**`edgar.schema` — `CompanyArgs` schema**
-- `[:map [:ticker-or-cik TickerOrCIK]]` — used by `e/cik`, `e/company`, `e/company-name`, `e/company-metadata`.
-
-**Offline test suite expanded from 139 to 157 tests (633 → 777 assertions)**
-- `company_test.clj` — `tickers-by-ticker-cache-test` (2 cases)
-- `tables_test.clj` — `row-texts-preserves-blanks-test`, `extract-table-blank-header-cell-alignment-test`, updated `layout-table-test`
-- `financials_test.clj` — `to-wide-quarterly-columns-test`, `to-wide-no-quarterly-columns-test`, `dedup-restatements-returns-flat-seq-test`, `dedup-point-in-time-returns-flat-seq-test`
-- `api_docstring_test.clj` — `e-filing-limit-passthrough-test`, `filing-document-test`, `company-functions-malli-validation-test`
-- `filings_test.clj` — `get-filing-limit-passthrough-test`, `get-quarterly-index-test`
-- `filing_test.clj` — `parse-filing-index-html-name-scoping-test`, `filing-save-all-dedup-test`
-- `extract_test.clj` — `extract-items-text-heading-exclusion-test`, updated `extract-items-plain-text-fallback-test`
-- `xbrl_test.clj` — `get-concept-frame-test` (7 cases), updated ns require
-- `schema_test.clj` — `CompanyArgs-test`
-- `core_test.clj` — `cache-eviction-throttled-test`
+- `e/filing-document` — fetch a named document from a filing as a string (#16).
 
 ## [0.1.8] — 2026-03-17
 
 ### Added
-
-**`edgar.financials` — quarterly and LTM derivation for 10-Q flow statements**
-- For income statement and cash flow queries with `:form "10-Q"`, `normalized-statement` now computes two additional columns: `:val-q` (single-quarter value from YTD subtraction) and `:val-ltm` (trailing twelve months as sum of four consecutive `:val-q` values).
-- Q1 `:val-q` equals the reported value (already single quarter). Q2/Q3/Q4 subtract the prior quarter's cumulative YTD. LTM sums the current plus three prior quarters, crossing fiscal year boundaries via `:fy`/`:fp`. Either column is nil when required prior-period data is missing.
-- These columns are absent for 10-K queries and for balance sheet (instant) data.
-- New private functions: `prior-quarter`, `quarter-seq`, `build-ytd-lookup`, `compute-val-q`, `compute-val-ltm`, `add-quarterly-and-ltm`.
-
-**Offline test suite expanded from 131 to 139 tests (596 → 633 assertions)**
-- `financials_test.clj` — 8 new tests: `prior-quarter-test`, `quarter-seq-test`, `build-ytd-lookup-test`, `compute-val-q-test`, `compute-val-ltm-test`, `add-quarterly-and-ltm-test`, `normalized-statement-quarterly-test`, `normalized-statement-ltm-test`.
+- Quarterly and LTM derivation for 10-Q income and cash-flow queries: `:val-q` (single quarter from YTD subtraction) and `:val-ltm` (sum of four consecutive quarters); nil when a prior period is missing.
 
 ## [0.1.7] — 2026-03-17
 
 ### Fixed
-
-**`edgar.financials/normalized-statement` — overlapping chain candidates produced duplicate rows per period**
-- When a company filed multiple XBRL concepts from the same fallback chain for the same period (e.g. Google filing both `CashAndCashEquivalentsAtCarryingValue` and `CashCashEquivalentsAndShortTermInvestments` for "Cash and Equivalents"), both survived `dedup-restatements` and appeared as duplicate `:line-item` rows in the output.
-- Fixed: added `dedup-by-priority` step after restatement dedup. Groups by `[line-item unit start end]` and keeps only the concept with the lowest chain index (= highest priority). Chain ordering encodes preference: index 0 is most specific/preferred. Temporally non-overlapping substitutes (e.g. old XBRL tag pre-2018, new tag post-2018) are unaffected since they occupy different periods.
+- Overlapping chain candidates produced duplicate rows per period (e.g. two cash concepts for `"Cash and Equivalents"`); the highest-priority concept now wins per `[line-item unit start end]`.
 
 ### Changed
-
-**`edgar.financials/balance-sheet-concepts` — "Long-Term Debt" chain reordered**
-- `LongTermDebtNoncurrent` is now index 0 (preferred) ahead of `LongTermDebt`. Standard balance sheets report the noncurrent portion under long-term liabilities; `LongTermDebt` includes current maturities that belong in Current Liabilities. Confirmed with Google ($10.9B noncurrent vs $12.0B total) and Apple ($85.8B vs $96.7B).
-
-**`edgar.financials/income-statement-concepts` — "Operating Expenses" / "CostsAndExpenses" split into separate line items**
-- `CostsAndExpenses` (total costs *including* COGS) was bundled as a fallback for `OperatingExpenses` (opex *excluding* COGS). These are semantically different quantities — Google reports $238B in `CostsAndExpenses` while Apple reports $57B in `OperatingExpenses`. They are now two separate line items: "Operating Expenses" (`OperatingExpenses`) and "Total Costs and Expenses" (`CostsAndExpenses`).
-
-**`edgar.financials/cash-flow-concepts` — "Net Change in Cash" chain reordered**
-- `CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsPeriodIncreaseDecreaseIncludingExchangeRateEffect` (ASU 2016-18 tag, includes restricted cash + FX) is now index 0 (preferred) ahead of `CashAndCashEquivalentsPeriodIncreaseDecrease` (legacy, cash only). All filers use the new tag exclusively post-2018. During the 2017–2019 transition period, both tags co-existed — BRK-A showed a ~$154M difference (restricted cash + FX adjustment). The new tag is the GAAP-required figure.
+- `"Long-Term Debt"` prefers `LongTermDebtNoncurrent` over `LongTermDebt`.
+- `"Operating Expenses"` (`OperatingExpenses`) and `"Total Costs and Expenses"` (`CostsAndExpenses`) are separate line items.
+- `"Net Change in Cash"` prefers the ASU 2016-18 tag (including restricted cash and FX effects).
 
 ## [0.1.6] — 2026-03-16
 
 ### Fixed
-
-**`edgar.financials/dedup-restatements` and `dedup-point-in-time` — coarse grouping key silently dropped 10-Q duration windows**
-- Both functions grouped by `(juxt :concept :end)` only. For 10-Q data a company can have a 3-month Q3 observation (`:start` = July 1) and a 9-month YTD observation (`:start` = January 1) both ending September 30. The old key collapsed these into one row, keeping whichever was filed more recently.
-- Fixed: group by `(juxt :concept :unit :start :end)`. Distinct duration windows are now preserved; genuine restatements of the same observation are still collapsed.
-
-**`edgar.dataset/multi-company-facts` — same coarse dedup key in `:as-of` panel path**
-- The as-of dedup reduce keyed on `[ticker concept end]`, missing `:unit` and `:start`. Same class of bug as above.
-- Fixed: key is now `[ticker concept unit start end]`.
-
-**`edgar.financials/resolve-fallback` — global winner silently dropped historical periods**
-- `resolve-fallback` returned only the first matching candidate `[label winner]`. If a company used `SalesRevenueNet` before 2018 and `Revenues` after, `Revenues` won globally and all pre-2018 rows were filtered out downstream.
-- Fixed: `resolve-fallback` now returns `[label [winner1 winner2 ...]]` — all candidates present in the data. `normalized-statement` flatmaps these into `concept->label` so every present candidate maps to the correct label, and the dedup step picks the right survivor per `[concept unit start end]` group.
-
-**`edgar.extract/items-for-form` — returned `{}` for amended form types**
-- `"10-K/A"`, `"10-Q/A"`, `"8-K/A"` fell through the `case` to the default `{}`, causing `extract-items` to return an empty map for any amended filing. `nil` also produced `{}`.
-- Fixed: strip trailing `/A` suffix via `(str/replace (or form "") #"/A$" "")` before the `case` dispatch.
-
-**`edgar.company/company-cik` — returned nil for unknown tickers instead of throwing**
-- `company-cik` silently returned nil when `ticker->cik` could not resolve a symbol. Downstream callers such as `xbrl/get-facts-dataset` passed nil to `(Long/parseLong cik)`, throwing a `NullPointerException` with no useful context.
-- Fixed: throws `ex-info` with `:type ::edgar.company/unknown-ticker` and `:ticker` when `ticker->cik` returns nil. `ticker->cik` itself continues to return nil.
-
-**`edgar.company/search-companies` — returned raw EFTS `_source` payloads that did not match docstring**
-- Docstring claimed `{:entity-name :cik :category}` keys. Actual code returned raw SEC field names, and the requested fields (`entity_name`, `file_num`, `biz_location`) do not exist in the EFTS `edgar_file` index.
-- Fixed: requests correct fields (`display_names`, `ciks`, `biz_locations`, `inc_states`). Strips CIK/ticker suffixes from `display_names`. Deduplicates by CIK. Returns shaped `{:entity-name :cik :location :inc-states}` maps.
-
-**`edgar.download/download-filings!` — nil save path produced misleading `:ok` envelope**
-- When `filing/filing-save!` returned nil (filing has no primary document), the result was `{:status :ok :path nil}`.
-- Fixed: nil path emits `{:status :skipped :accession-number "..." :reason :no-primary-doc}`.
-
-**`edgar.core` TTL cache — expired entries accumulated indefinitely**
-- The cache atom was never pruned. In long-running processes or broad crawls, stale entries accumulated as a slow memory leak.
-- Fixed: added private `cache-evict!` which removes all entries where `:expires-at` is in the past, called at the start of every `cache-put!`. No background thread required.
-
-### Added
-
-**Offline test suite expanded from 124 to 129 tests (545 → 584 assertions)**
-- `financials_test.clj` — duration-window preservation assertions in `dedup-restatements-test` and `dedup-point-in-time-test`; updated `resolve-fallback-test` and `resolve-all-chains-test` for new all-candidates return shape; new `normalized-statement-multi-candidate-test`.
-- `dataset_test.clj` — duration-window preservation assertion in `multi-company-facts-as-of-dedup-test`.
-- `extract_test.clj` — amended-form and nil-form cases in `items-for-form-test`.
-- `company_test.clj` — `company-cik-unknown-ticker-test`; `search-companies-shape-test` (5 cases: output shape, name stripping, CIK dedup, limit, bad-hit skipping).
-- `download_test.clj` — `download-filings-nil-primary-doc-test`.
-- `core_test.clj` — `cache-eviction-test` (expired entries removed, non-expired entries survive).
-
----
+- Restatement dedup (and the `:as-of` panel path) collapsed distinct 10-Q duration windows ending on the same date; the key is now `[concept unit start end]`.
+- A company that switched tags (e.g. `SalesRevenueNet` → `Revenues`) lost its historical periods; every present chain candidate now maps to its label.
+- Item extraction returned `{}` for amended forms (`10-K/A`, `10-Q/A`, `8-K/A`).
+- `company-cik` throws `::edgar.company/unknown-ticker` for unknown tickers instead of returning nil.
+- `search-companies` returned raw search payloads; it returns `{:entity-name :cik :location :inc-states}`.
+- `download-filings!` returns `{:status :skipped :reason :no-primary-doc}` when a filing has no primary document.
+- The TTL cache now evicts expired entries.
 
 ## [0.1.5] — 2026-03-16
 
 ### Fixed
-
-**`edgar.core/http-get-with-retry` — retry branch was unreachable (issue 1)**
-- `hato/get` throws by default on non-2xx responses, so the `(< status 400)` cond branch was never reached for 4xx/5xx errors. Retry logic never fired.
-- Fixed: added `:throw-exceptions? false` to every `hato/get` call inside `http-get-with-retry`. Wrapped in `try/catch` to also handle transport-level errors (timeouts, connection resets) as retryable. Throws `ex-info ::http-error` on exhaustion or non-retryable 4xx.
-
-**`edgar.extract/extract-items` — plain-text fallback unreachable (issue 2)**
-- The HTML branch condition `(and html (not (str/blank? html)))` was always true for plain-text filings because `filing/filing-html` returns raw content regardless of content type. The `extract-items-text` function was defined but never called.
-- Fixed: added private `html-content?` predicate checking for `<(!DOCTYPE|html)` (case-insensitive). HTML path requires `(html-content? html)`. Plain-text content is passed directly to `extract-items-text`.
-
-**`edgar.extract/extract-items-html` — item text bled across unrequested items (issue 3)**
-- End-position pairs were built from `(partition-all 2 1 relevant)` where `relevant` was the filtered (requested-only) boundary list. Requesting `#{"1A" "7"}` in a doc with items 1, 1A, 2, 3, 7, 7A, 8 would pair 1A→7, making item 1A's text span all the way to item 7's heading — consuming items 2 and 3 in between.
-- Fixed: iterate over all boundaries via `keep-indexed`; emit only entries for `target-ids`, but always use the next boundary in full document order for end-position calculation.
-
-**`edgar.forms.form13f/parse-form13f` — manager/summary nil for modern two-document submissions (issue 4)**
-- Modern 13F-HR filings package the cover page and holdings infotable as two separate XML attachments. `parse-form13f` fetched whichever single XML came first and ran both header and holdings parsing on it. The infotable XML has no `<filingManager>` or `<reportSummary>`, so `:manager` and `:period-of-report` were always nil.
-- Fixed: introduced `find-primary-cover-xml` (excludes `INFORMATION TABLE`-typed entries). `parse-form13f` fetches cover and infotable separately; parses manager/summary from `cover-root`, holdings from `(or info-root cover-root)`. Single-document filings fall back correctly.
-
-**`edgar.filing/filing-save!` and `filing-save-all!` — binary attachments corrupted by `spit` (issue 5)**
-- Both save functions used `spit` (text mode) for every file, including PDFs, images, XLS, ZIP, causing encoding corruption.
-- Fixed: introduced `binary-filename?` predicate (extensions `.pdf .xls .xlsx .zip .gif .jpg .jpeg .png .doc .docx`, case-insensitive) and `save-doc!` helper. Binary files fetched via `edgar-get-bytes` + `java.io.FileOutputStream`; text files continue with `edgar-get :raw?` + `spit`.
-
-**`edgar.download/download-filings!` — inconsistent return shape for `:download-all?` (issue 6)**
-- When `:download-all? true`, the branch returned `(mapv ok (filing/filing-save-all! f dir))` — a vector of `{:status :ok :path ...}` maps (one per attachment) instead of a single map per filing.
-- Fixed: `:download-all?` now returns `{:status :ok :paths [...]}` — one envelope per filing in all modes.
-
-**`edgar.company/shape-address` and `edgar.filings/shape-daily-hit` — nil values became the string `"nil"` (issue 7)**
-- `(not-empty (str nil))` → `"nil"`. Affected `:street2` in `shape-address` and `:periodOfReport` in `shape-daily-hit`.
-- Fixed both with `(some-> value not-empty)`.
-
-**`edgar.tables/infer-column` — single blank cell caused entire numeric column to fall back to strings (issue 8)**
-- `infer-column` required every cell to parse as a number. One blank cell in an otherwise numeric column made the whole column strings.
-- Fixed: infer type from non-blank cells only; blank cells become `nil` in numeric columns.
-
-**`edgar.tables/row-cells` — `<th>` cells collected before `<td>`, losing DOM order (issue 9)**
-- `row-cells` collected all `<th>` nodes first, then all `<td>` nodes. A row with interleaved `[td th td]` produced `[th td td]`, misaligning headers with data.
-- Fixed: single ordered pass over direct child nodes, emitting each cell in DOM order.
-
-**`edgar.tables/row-cells` — colspan docstring claim with no implementation (issue 10)**
-- Namespace docstring claimed colspan support; no code existed. A header cell with `colspan="3"` appeared as one entry, misaligning subsequent columns.
-- Fixed: `row-cells` reads `:colspan` attribute and expands each cell into N repeated `[text hdr?]` entries. Invalid or missing colspan defaults to 1.
-
-**`edgar.tables/extract-tables` — crash on nil or plain-text HTML (issue 11)**
-- `filing/filing-html` result was passed directly to `hickory/parse`, which throws on nil. Plain-text filings and filings with no primary doc both reach this path.
-- Fixed: `html-content?` guard at top of `extract-tables` (matches `<(!DOCTYPE|html|table)`). When HTML is nil, blank, or non-HTML: `:nth` → nil; seq → `[]`.
-
-**`edgar.xbrl/get-facts-dataset` — `:desc` sort relied on SEC delivery order; `:asc` was a no-op (issue 12)**
-- `:desc` used `ds/reverse-rows`, only correct if SEC delivers observations ascending — not guaranteed. `:asc` had no matching `cond->` clause and was a silent no-op. `ds/sort-by-column` with a comparator lambda on string columns causes `StackOverflowError` in TMD 7.030.
-- Fixed: both branches now use `ds/sort-by` with an explicit key fn and comparator on the `:end` string column.
-
-**`edgar.api` — docstring mismatches for `items`, `item`, and `exhibits` (issue 13)**
-- `items`: `"item-id → text string"` corrected to `"item-id → {:title \"...\" :text \"...\" :method ...}"`.
-- `item`: `"Returns text string or nil"` corrected to `"Returns {:title ... :text ... :method ...} or nil"`.
-- `exhibits`: removed non-existent `:document` field; actual key is `:name`. Example corrected from non-public `(e/filing-document ...)` to `(e/doc-url ...)`.
-
-### Added
-
-**Offline test suite expanded from 99 to 124 tests (545 assertions)**
-
-Two new test files added to `test_runner.clj`:
-- `test/edgar/download_test.clj` — envelope shape for primary-doc, `:download-all?`, skipped, error, and multi-filing modes; all results are plain maps.
-- `test/edgar/api_docstring_test.clj` — return shapes for `e/items`, `e/item`, `e/exhibits` (pins map shape, `:name` vs `:document`).
-
-Additional tests in existing files:
-- `core_test.clj` — retry on 429, transport error retry, exhausted retries throw, non-retryable 4xx throw.
-- `extract_test.clj` — `html-content-predicate-test`, `extract-items-plain-text-fallback-test`, `extract-items-html-boundary-slicing-test`.
-- `forms/form13f_test.clj` — `parse-form13f-two-document-test`, `parse-form13f-single-document-fallback-test`.
-- `filing_test.clj` — `binary-filename-test`, `save-doc-uses-bytes-for-binary-test`.
-- `company_test.clj` — `shape-address-nil-street2-test`.
-- `filings_test.clj` — `shape-daily-hit-nil-period-test`.
-- `tables_test.clj` — `infer-column-blank-cells-test`, `row-cells-dom-order-test`, `row-cells-colspan-test`, `extract-tables-nil-html-test`.
-- `xbrl_test.clj` — `get-facts-dataset-sort-test` (desc, asc, nil, default, determinism).
-
----
+- HTTP retry on 429/5xx and transport errors never fired; exhausted retries throw `::http-error`.
+- Plain-text filings never reached the plain-text item extractor.
+- Item text bled across unrequested items when using `:items`.
+- 13F-HR: manager and summary were nil for two-document submissions.
+- `e/save!` / `e/save-all!` corrupted binary attachments (PDF, images, spreadsheets).
+- `download-filings!` with `:download-all?` returns one `{:status :ok :paths [...]}` envelope per filing.
+- nil address and period fields came back as the string `"nil"`.
+- `e/tables`: one blank cell made a numeric column a string column; `<th>`/`<td>` order was lost; `colspan` was ignored; nil or plain-text HTML crashed.
+- `xbrl/get-facts-dataset` `:sort :asc` was a no-op and `:desc` relied on SEC delivery order.
+- Docstrings of `e/items`, `e/item`, `e/exhibits` described the wrong return shapes.
 
 ## [0.1.4] — 2026-03-16
 
 ### Fixed
-
-**`edgar.company/ticker->cik` — `MissingFormatArgumentException` at runtime**
-- `format "%010d"` was applied directly to `:cik_str`, which is a string in the SEC tickers JSON. `%d` requires a `Long`/`Integer`, not a string, so every ticker→CIK lookup threw a `MissingFormatArgumentException`. Fixed by parsing with `(Long/parseLong (str (:cik_str entry)))` before formatting; the `str` wrapper also handles the case where jsonista delivers `cik_str` as an integer rather than a string.
-
-**`edgar.company/cik->ticker` — precision loss for large CIKs**
-- CIK comparison used `Double/parseDouble`, which loses integer precision for values with more than 15 significant digits. Fixed to `Long/parseLong`, consistent with every other CIK-handling path in the codebase.
-
-**`edgar.filing/filing-text` — duplicated and garbled plain-text output**
-- `filing-text` used `sel/select` to find every non-script/non-style node in the hickory tree, then called `(map :content ...)` + `flatten` + `(filter string? ...)` on the result. Because `sel/select` returns *all* matching nodes — including every ancestor of every text node — each string was collected once per ancestor, producing heavily duplicated output. Additionally, string children of excluded `<script>` and `<style>` nodes still passed through because `sel/not` only excluded the tag node itself, not its subtree content.
-- Fixed by replacing the `sel/select` approach with a recursive `extract-text` function that mirrors the existing `cell-text` helper: walk `:content`, return `""` for any `:script` or `:style` subtree (dropping all descendant content), normalise `\u00A0`, and join. Single-pass, no duplication, correct exclusion.
-
-**`edgar.forms.form4/form4-xml` — iXBRL instance document selected instead of ownership XML**
-- `form4-xml` picked the first `.xml` file in the filing index. Modern Form 4 filings with inline XBRL contain both the real `ownership.xml` and an iXBRL instance document named `*_htm.xml`. If the iXBRL doc sorted first, the parser received the wrong file and returned empty/nil results for every field.
-- Fixed by excluding filenames ending in `_htm.xml` from the candidate list, matching the filter already used in `edgar.forms.form13f/find-infotable-xml`.
-
-**`edgar.financials/normalized-statement` — `:line-item` sorted descending (Z→A) within each period**
-- The sort used `(ds/sort-by key-fn #(compare %2 %1))` where `key-fn` returned `[end line-item]`. The reversed comparator applied to the entire vector, flipping *both* components — so `:line-item` was sorted Z→A instead of A→Z within each period.
-- Fixed with an explicit two-key comparator: `(compare (first b) (first a))` for `:end` descending, falling through to `(compare (second a) (second b))` for `:line-item` ascending.
-
-**`edgar.dataset/pivot-wide` — nil-valued columns caused missing keys in flyweight maps**
-- `pivot-wide` called `(ds/rows deduped)` without `{:nil-missing? true}`. TMD flyweight maps omit nil-valued keys, so columns like `:frame` (nil for most XBRL rows) were absent rather than explicitly nil, causing `:concept` and `:val` lookups to silently fail for affected rows and producing an incomplete wide dataset.
-- Fixed by using `(ds/rows deduped {:nil-missing? true})`.
-
-**`edgar.dataset/multi-company-facts` (`:as-of` path) — nil-valued columns caused missing keys in flyweight maps**
-- The `:as-of` dedup `reduce` called `(ds/rows filtered)` without `{:nil-missing? true}`. Facts datasets have nil `:frame` columns; without the option, flyweight maps silently omit nil keys, making `(:filed row)` unreliable in the reduce comparator.
-- Fixed by using `(ds/rows filtered {:nil-missing? true})`.
-
-**`edgar.filings/enrich-filing` — unaliased `clojure.string/replace`**
-- `enrich-filing` used the fully-qualified `clojure.string/replace` despite the namespace aliasing `[clojure.string :as str]`. Works at runtime but inconsistent with the rest of the file. Fixed to `str/replace`.
-
-**`edgar.filings/fetch-extra-filings` — silent truncation for filers with >1000 filings**
-- `fetch-extra-filings` was calling `(parse-filings-recent (:recent chunk))` on paginated submission chunks. These chunks are flat columnar objects (same format as `[:filings :recent]`) — NOT wrapped in a `{:recent {...}}` envelope. The call to `:recent` returned `nil`, causing `parse-filings-recent` to throw on any company with >1000 filings (e.g. AAPL), silently returning only the first 1000. Fixed by calling `(parse-filings-recent chunk)` directly.
-
-**`edgar.filings/latest-effective-filing` — amendments never found**
-- Was passing `:form form` to `get-filings`, which filters by exact form equality and excludes `"10-K/A"` when searching for `"10-K"`. The amendment branch was always empty. Fixed by calling `get-filings` without a `:form` filter and manually partitioning results into base-form vs. amendment lists.
-
-**`edgar.forms.form13f/find-infotable-xml` — wrong document parsed for modern 13F submissions**
-- Modern 13F-HR submissions package the holdings infotable as a separate attachment with `:type "INFORMATION TABLE"`. `find-infotable-xml` used filename heuristics and selected `primary_doc.xml` (cover page only), producing an empty `:holdings` dataset. Fixed by preferring the `"INFORMATION TABLE"` typed index entry over the filename-based fallback.
-
-**`edgar.forms.form13f` — XML namespace prefix matching failure**
-- `find-tag`, `find-tags`, and `child-tag-text` used exact keyword equality for tag matching. Modern 13F infotable XML uses `ns1:` namespace prefixes (`:ns1:infoTable`, `:ns1:nameOfIssuer`, etc.), so all tag lookups returned nil and holdings were empty. Fixed by matching on the tag name suffix after splitting on `":"`.
-
-**`edgar.financials/to-wide` — nil-valued columns caused missing keys in flyweight maps**
-- `to-wide` called `(ds/rows deduped)` without `{:nil-missing? true}`. TMD flyweight maps omit nil-valued keys, so columns like `:start` (nil for all balance-sheet rows) were absent rather than explicitly nil, corrupting `:end`/`:line-item` lookups and producing an empty wide balance sheet. Fixed by using `(ds/rows deduped {:nil-missing? true})`.
-
-**`edgar.financials/concepts-in-data` — crash on empty dataset**
-- `(ds/column facts-ds :concept)` throws when the dataset is empty (no columns). Fixed by returning `#{}` early when `(ds/row-count facts-ds)` is zero.
-
-**`edgar.financials` — instant/duration filtering dropped majority of rows (two bugs)**
-- `instant?` and `duration?` tested whether `:frame` ended in `"I"`. The `:frame` field is only populated on ~25-50% of XBRL observations, silently dropping most rows from every statement. Fixed: `instant?` now checks `(nil? (:start row))`; `duration?` checks `(some? (:start row))`.
-- `normalized-statement` called `(ds/rows filtered-ds)` without `{:nil-missing? true}`. TMD flyweight maps omit nil-valued keys, so balance-sheet rows had no `:start` key at all, making `instant?` return `true` for every row. Fixed by using `(ds/rows filtered-ds {:nil-missing? true})`.
-
-### Added
-
-**`edgar.company-test` — `ticker->cik` and `cik->ticker` correctness tests**
-- `ticker->cik-format-test`: verifies correct zero-padded output for both string and integer `cik_str` values, and nil return for unknown tickers. Uses `with-redefs` on `tickers-by-ticker` — no network access.
-- `cik->ticker-test`: verifies Long-based CIK comparison (not Double), nil for unknown CIK. Uses `with-redefs` on `load-tickers!`.
-
-**`edgar.filing-test` — `filing-text` subtree exclusion regression test**
-- Extended `filing-text-excludes-script-style-test` with a second case using deeply nested `<script>` (`var x = 'injected'`) and `<style>` (`display: none`) blocks. Confirms that inner string content of excluded tags is fully absent from output, not just the tag nodes themselves.
-
-**`edgar.forms.form4-test` — `form4-xml` iXBRL exclusion test**
-- `form4-xml-excludes-ixbrl-test`: two cases using `with-redefs` on `filing/filing-index` and `filing/filing-document`. First case: index contains both `*_htm.xml` (iXBRL) and `ownership.xml`; verifies `ownership.xml` is selected. Second case: index contains only a `.htm` file; verifies fallback to first doc works.
-
-**`edgar.financials-test` — `normalized-statement` sort-order test**
-- `normalized-statement-sort-order-test`: four-row fixture with two periods and two concepts. Verifies `:end` column is descending (most recent first) and `:line-item` is ascending (A→Z) within each period.
-
-**`edgar.dataset-test` — `multi-company-facts` `:as-of` and `pivot-wide` tests**
-- `multi-company-facts-as-of-dedup-test`: two sub-cases with `with-redefs`. First verifies that `:as-of` excludes a later restatement and keeps only the earlier observation. Second verifies that nil `:as-of` returns all rows unfiltered.
-- `pivot-wide-test`: verifies correct wide-format output from a facts dataset with nil `:frame` and `:start` columns — specifically that `{:nil-missing? true}` prevents missing-key errors.
-
-**`edgar.financials` — expanded unit test coverage**
-- New tests: `concepts-in-data` (including empty-dataset guard), `filter-by-duration-type` (all three branches), `add-line-item-col`, `raw-statement`, `normalized-statement` (empty-winning-concepts early-return path), `to-wide-nil-columns-test` (nil `:start`/`:frame` columns regression).
-
-**`edgar.filings` — expanded unit test coverage**
-- `fetch-extra-filings-flat-chunk-test`: verifies `parse-filings-recent` handles a flat chunk with no `:recent` wrapper.
-- `latest-effective-filing-logic-test`: four `with-redefs` cases covering amendment newer/older/absent/only.
-
-**`edgar.forms.form13f` — namespace-prefix regression test**
-- `find-tags-namespace-prefix-test`: `ns1:`-prefixed XML fixture verifying `find-tags`, `find-tag`, and `parse-holding` round-trip on namespaced XML. Also covers the `child-tag-text` namespace fix via `:shares` field extraction.
-
-**Integration test suite — complete `edgar.api` coverage**
-- Expanded from 15 to 32 tests (137 assertions), covering every public function in `edgar.api` including `search`, `latest-effective-filing`, `filings-dataset`, `search-filings`, `daily-filings`, `html`, `item`, `obj` (Form 4 + 13F-HR), `tables`, `doc-url`, `exhibits`, `exhibit`, `xbrl-docs`, `save!`, `save-all!`, `frame`, `financials` (all with `:shape :wide` and `:as-of`), `pivot`, and Malli validation errors.
-- Canonical 13F filer changed from `BRK-A` to `GS` (Goldman Sachs), which uses the modern `"INFORMATION TABLE"` document format with `ns1:` namespace prefixes.
+- Every ticker → CIK lookup threw `MissingFormatArgumentException`; CIK → ticker lost precision on large CIKs.
+- `e/text` duplicated text and leaked `<script>`/`<style>` content.
+- Form 4: the inline-XBRL instance could be parsed instead of the ownership XML.
+- Statement `:line-item` sorted Z→A within each period.
+- `e/pivot`, `e/panel :as-of` and `:shape :wide` dropped rows with nil-valued columns (wide balance sheets came out empty).
+- Filers with more than 1,000 filings (e.g. AAPL) were truncated to the first 1,000.
+- `latest-effective-filing` never found amendments.
+- 13F-HR: holdings were empty for modern submissions (separate `INFORMATION TABLE` attachment, `ns1:`-prefixed XML).
+- Statements dropped most rows: instant/duration filtering keyed on the sparsely populated `:frame`.
+- Statement functions crashed on an empty facts dataset.
 
 ## [0.1.3] — 2026-03-15
 
 ### Fixed
-
-**`edgar.filing/cell-text` and `parse-filing-index-html` — phantom `.html` entries in Form 4 / Form 144 filing indexes cause 404**
-- The SEC filing index HTML for Form 4 and Form 144 filings contains two entries with sequence `"1"`: a phantom `.html` entry (e.g. `ownership.html`) with a non-breaking space (`\u00A0`) as the size, and the real `.xml` file (e.g. `ownership.xml`) with a proper byte count. `cell-text` was returning `\u00A0` verbatim, so `str/trim` left it non-blank and `str/blank?` returned `false`. As a result `primary-doc` picked the phantom `.html` entry, which does not exist on SEC's servers, producing a 404 on every subsequent `filing-html`, `filing-text`, or `e/items` call.
-- Fixed by normalising `\u00A0` → `" "` in `cell-text`, and adding a `(remove #(str/blank? (:size %)))` filter in `parse-filing-index-html` so phantom zero-size entries never enter the `:files` list.
-
-**`edgar.extract/node-text` — non-breaking spaces not normalised, causing silent item-extraction failures**
-- `node-text` was returning `\u00A0` verbatim. The `item-pattern` regex uses `\s`, which does not match `\u00A0` in Java. Headings like `"Item\u00A07"` (non-breaking space between "Item" and the number — present in some SEC filings) silently produced no boundary match, so those items were absent from `e/items` output with no error. Fixed by normalising `\u00A0` → `" "` at the `node-text` level, consistent with the same fix in `edgar.filing/cell-text` and `edgar.tables/node-text`.
-
-**`edgar.tables/node-text` — non-breaking spaces not normalised**
-- `node-text` was returning `\u00A0` verbatim. `clean-text`'s `\s+` regex and `parse-number`'s `[$,%\s]` strip both use Java's `\s`, which does not match `\u00A0`. Financial table cells with non-breaking space separators (e.g. `"1\u00A0234"`) were not parsed as numbers — `parse-number` returned `nil`, treating the cell as a string column instead of numeric. Fixed by normalising `\u00A0` → `" "` at the `node-text` level.
-
-**`edgar.filing/filing-text` — included CSS and JavaScript content**
-- `filing-text` used `sel/any` which selects all nodes including `:script` and `:style`, causing CSS rules and JS code to appear in the plain-text output of `(e/text filing)`. Fixed by excluding `:script` and `:style` nodes via `(sel/not (sel/tag :script/style))` before collecting text strings.
-
-**`edgar.filing/filing-save!` — NPE when primary document is absent**
-- If a filing's index has no sequence-`"1"` document, `primary-doc` returns `nil`. The old code called `(:name nil)` → `nil`, building a URL ending in `"/null"` and throwing on HTTP. Fixed with a `when primary` guard; the function now returns `nil` when no primary document exists, consistent with `filing-html`.
-
-**`edgar.filing/parse-filing-index-html` — `:filingDate` always nil in `filing-by-accession`**
-- `parse-filing-index-html` was only extracting `:files` and `:formType` from the index HTML, leaving `:filingDate nil` in every map returned by `filing-by-accession`. The filing date is present in the index page inside `.infoHead` / `.info` div pairs. Fixed by zipping those pairs and extracting the value for the `"Filing Date"` label. `filing-by-accession` already passed `(:filingDate idx)` through; it now receives a real `"YYYY-MM-DD"` string instead of `nil`.
-
-**`edgar.filing/filing-by-accession` — duplicated `primary-doc` logic**
-- The function contained an inline `(->> (:files idx) (filter #(= "1" ...)) first)` that duplicated `primary-doc` without benefiting from its filter chain. Replaced with a direct call to `(primary-doc idx)`.
+- Form 4 / Form 144 filings 404'd on a phantom `.html` index entry.
+- Non-breaking spaces broke item-heading detection and number parsing in tables.
+- `e/text` included CSS and JavaScript.
+- `e/save!` threw when a filing had no primary document (now returns nil).
+- `filing-by-accession` always returned `:filingDate nil`.
 
 ### Added
-
-**`:url` field on all filing maps**
-- `enrich-filing` in `edgar.filings` now computes and asserts a `:url` key on every filing map returned by `get-filings`, `get-filing`, `latest-effective-filing`, and related functions. `filing-by-accession` also now includes `:url`. The value is the direct HTTPS URL to the primary document. `nil` only when `:primaryDocument` is absent.
-
-**`edgar.filing/filing-doc-url` and `edgar.api/doc-url` — public URL construction**
-- `doc-url` (previously private) is now public as `filing-doc-url` in `edgar.filing` and exposed as `e/doc-url` in `edgar.api`. Builds the SEC archives URL for any named document within a filing map — useful for constructing URLs for exhibits, attachments, and XBRL linkbase files without fetching the document.
-- `(e/doc-url f "R2.htm")` or `(e/doc-url f (:name (e/exhibit f "EX-21")))`
-
-**`edgar.filing-test` — fixture-based offline tests for `parse-filing-index-html`**
-- Two HTML fixtures (`form4-index-html`, `form10k-index-html`) covering phantom-entry exclusion, `primary-doc` selection, form-type parsing, iXBRL viewer href handling, and standard field extraction.
-
-**`edgar.filing-test` — `filing-text` script/style exclusion and `filing-save!` nil-guard tests**
-- `filing-text-excludes-script-style-test`: verifies CSS and JS are stripped from plain-text output.
-- `filing-save-nil-primary-doc-test`: verifies `filing-save!` returns `nil` rather than throwing when the filing index has no primary document.
-
-**`edgar.extract-test` — `\u00A0` normalisation test in `find-item-boundaries`**
-- Inline HTML fixture with `"Item\u00A07"` heading verifies that non-breaking space between "Item" and the item number does not prevent boundary detection.
-
-**`edgar.tables-test` — `\u00A0` normalisation tests in `cell-text`**
-- Two new cases in `cell-text-test`: nbsp in a number cell is normalised to regular space; nbsp-only cell is blank after normalisation.
+- `:url` on every filing map (the primary document's archive URL).
+- `e/doc-url` — the archive URL of any named document in a filing.
 
 ## [0.1.2] — 2026-03-15
 
@@ -597,195 +313,48 @@ Additional tests in existing files:
 
 ### Fixed
 - 404 on Form 4/144 filings: phantom `.html` entries filtered from the filing index.
-- ` ` handling in `tables` node-text and item extraction; primary-doc deduplication.
+- Non-breaking-space handling in `tables` node-text and item extraction; primary-doc deduplication.
 - `filing-text` no longer leaks CSS/JS; `filing-save!` handles a nil primary document.
 - `filing-by-accession` returned `:filingDate` always nil.
 
 ## [0.1.1] — 2026-03-14
 
 ### Fixed
-
-**`edgar.filing/filing-index-url` and `doc-url` — CIK zero-padding in archives path**
-- Both functions were passing the zero-padded 10-digit CIK (e.g. `"0000320193"`) directly into the SEC archives URL path, producing `edgar/data/0000320193/...`. The SEC archives endpoint requires the unpadded numeric CIK (`edgar/data/320193/...`). Fixed by stripping leading zeros via `(str (Long/parseLong cik))` before constructing the URL in both functions.
-
-**`edgar.filing/parse-filing-index-html` — switched from defunct JSON index to HTML index**
-- The SEC no longer serves a structured JSON filing index at the `{accession}-index.json` URL for recent filings. `filing-index-url` now builds the `{accession}-index.html` URL instead. `parse-filing-index-html` was rewritten to parse the HTML index page using hickory. A new private helper `cell-text` recursively extracts all text content from a hickory node, correctly handling filenames wrapped in `<a>` tags (e.g. the iXBRL primary document). The returned `{:files [...] :formType "..."}` shape is unchanged.
-
-### Added
-
-**Integration test suite (`:test-integration` alias)**
-- New `test-integration/edgar/integration_test.clj` — 15 tests covering the full live SEC API round-trip: company lookup (`cik`, `company-name`, `company-metadata`), filings query and amendment flag, `filing-by-accession` with a pinned accession number, filing content (`text`, `items`, `exhibits`), XBRL (`facts`, `concepts`), financial statements (`income`, `balance`, `cashflow`) including `:shape :wide` and `:as-of`, panel with `:ticker` column, and rate limiter burst. Uses hardcoded `"Test User test@example.com"` identity — never runs in CI.
-- New `test-integration/edgar/integration_test_runner.clj` — entry point mirroring the offline runner.
-- New `:test-integration` alias in `deps.edn` pointing at `test-integration/` source path.
-- Run manually before releases with `clj -M:test-integration`.
-
----
+- Archive URLs used the zero-padded CIK, which the SEC archives reject.
+- The filing index is parsed from the HTML index page (the SEC no longer serves the JSON index for recent filings).
 
 ## [0.1.0] — 2026-03-14
 
-### Fixed
+Initial release.
 
-**`edgar.filing/filing-by-accession` — silent nil `:form` on missing index key**
-- The accession lookup previously contained a fallback `:form-type` key that does not exist in the SEC filing index JSON (the correct key is `:formType`, keywordised by jsonista). When `:formType` was absent for any reason, `:form` silently became `nil`, causing `filing-obj` to dispatch on `nil` rather than throwing a useful error. Fixed by removing the fallback entirely; the function now throws `ex-info` with `{:type ::not-found :accession-number "..."}` when `:formType` is absent. Tested in `filing-by-accession-form-type-test`.
+- `edgar.api` facade (`[edgar.api :as e]`) with Malli-validated arguments (`edgar.schema`); ticker or CIK accepted everywhere; keyword options.
+- Company lookup: `e/cik`, `e/company`, `e/company-name`, `e/company-metadata` (SIC, fiscal year end, state of incorporation, addresses, former names), `e/search`.
+- Filings: `e/filings` and `e/filing` with full pagination for large filers and amendments excluded by default (`:include-amends? true`), `e/latest-effective-filing`, `e/filing-by-accession`, `e/daily-filings`, `e/search-filings`, `e/filings-dataset`.
+- Filing content: `e/html`, `e/text`; item-section extraction (`e/items`, `e/item`) returning full section bodies as `{:title :text :method}` for HTML and plain-text 10-K and 10-Q filings, plus `extract/batch-extract!`; HTML tables as datasets (`e/tables`); exhibits and XBRL documents (`e/exhibits`, `e/exhibit`, `e/xbrl-docs`); `e/save!` and `e/save-all!`.
+- Form parsers through the `filing-obj` multimethod (`e/obj`): Form 4 and 13F-HR (XML era), loaded together by `edgar.forms`.
+- XBRL: `e/facts` (with `:label` and `:description`), `e/concepts`, `e/frame`.
+- Financial statements: `e/income`, `e/balance`, `e/cashflow`, `e/financials` with concept fallback chains, restatement dedup, duration/instant filtering, `:shape :wide`, and point-in-time `:as-of`.
+- Panels: `e/panel` (with `:as-of`) and `e/pivot`.
+- Bulk downloads (`edgar.download`): `download-filings!`, `download-batch!` (bounded `:parallelism`, `:skip-existing?`), `download-index!`, returning `{:status :ok|:skipped|:error ...}` envelopes.
+- HTTP layer: SEC User-Agent identity (`e/init!`), 10 requests/second rate limiter, in-memory TTL cache, retry with exponential backoff on 429/5xx.
+- Four unused dependencies (`next.jdbc`, `honeysql`, `sqlite-jdbc`, `datajure`) moved to an optional `:future` alias.
 
-**`edgar.schema/FilingArgs` — `:n` and `:include-amends?` required instead of optional**
-- `FilingArgs` declared `:n` and `:include-amends?` as required fields, while `FilingsArgs` (plural) marked its optional fields with `{:optional true}`. In practice `edgar.api/filing` always supplies defaults for these keys before calling `validate!`, so there was no user-visible failure — but calling `validate!` directly with a minimal map would throw confusingly. Fixed by adding `{:optional true}` to `:n` and `:include-amends?` in `FilingArgs`, aligning the schema with the actual call-site behaviour. Covered by new `schema_test.clj`.
-
-**`edgar.dataset/multi-company-facts` — `(apply ds/concat [])` arity error on empty result**
-- When all tickers threw (bad CIK, HTTP error, etc.) or the input vector was empty, the `for` comprehension produced an empty sequence and `(apply ds/concat [])` threw an arity exception. Fixed in two parts: (1) each ticker fetch is now wrapped in `try/catch` and failed tickers return `nil`, collected via `keep identity`; (2) `ds/concat` is only called when `(seq rows)` is truthy, otherwise an empty dataset is returned. Tested in new `dataset_test.clj` with `with-redefs` stubs covering all three cases: empty input, all-fail, and partial-fail.
-
-**`edgar.tables/extract-table` — `sel/select` recursively included nested-table `<tr>` rows**
-- `extract-table` used `(sel/select (sel/tag :tr) table-node)` to collect rows, which recursively traverses the entire subtree including nested `<table>` elements. This inflated the row count for filings with nested tables (common in SEC HTML exhibits) and caused column misalignment. Fixed by replacing `sel/select` with a new private function `direct-rows` that collects only `<tr>` nodes that are direct children of the `<table>`, `<thead>`, `<tbody>`, or `<tfoot>` elements — the same direct-child pattern already used by `row-cells` for cells. Tested in `extract-table-nested-no-double-count-test`.
-
-**`edgar.extract/item-pattern` — regex could not match 10-Q Roman-numeral item IDs**
-- The `item-pattern` regex only matched `\d{1,2}[AB]?` for the item number, making it impossible to match 10-Q item headings like `"Item I-1. Financial Statements"` or `"Item II-1A. Risk Factors"`. As a result, `extract-items` on 10-Q filings always returned `{}`. Fixed by extending the regex with an optional `(?:[IVXivx]+\s*[-\s]\s*)?` prefix before the digit group. ID normalization (`str/replace #"\s*[-\s]\s*(?=\d)" "-"` + `str/upper-case`) is applied in both `find-item-boundaries` (to produce correctly cased boundary IDs) and in `extract-items` (to normalize user-supplied `:items` to match `items-10q` map keys). Tested in `item-pattern-test`, `find-item-boundaries-10q-test`, and `extract-items-10q-normalized-ids-test`.
-
-**`edgar.filings/parse-filings-recent` — double `(keys recent)` call**
-- `(keys recent)` was called twice: once to build the keyword key sequence and once to get the column values. Although Clojure maps have stable iteration order within a single JVM session, calling `keys` twice is fragile. Bound the result once to `raw-ks` and reused it for both `ks` (keywordised) and `cols` (value extraction). Eliminates any theoretical risk of column/key misalignment.
-
-**`edgar.company` — `search-companies` hardcoded form filter**
-- `search-companies` no longer passes `&forms=10-K` to the EFTS query. Previously excluded companies that had never filed a 10-K.
-
-**`edgar.filings` — silent truncation for large filers**
-- `get-filings` now fetches all submission chunks for active filers with >1000 filings. Previously only read `[:filings :recent]`, silently truncating filing history for large filers such as AAPL.
-
-**`edgar.financials` — `build-statement` docstring mismatch**
-- `build-statement` docstring corrected: returns long-format dataset, not wide. Directs users to `(e/pivot (e/income "AAPL"))` for wide format.
-
-**`edgar.financials/dedup-restatements` and `dedup-point-in-time` — bad `max-key` comparator**
-- Both functions previously used `(apply max-key #(compare (:filed %) "") group)`. `max-key` expects a key function returning a comparable value, not a comparator; using `compare` against `""` returned `-1/0/1` integers, which accidentally selected the lexicographically largest `:filed` string for non-empty values but would silently return a wrong entry for `nil` or empty `:filed`. Replaced with `reduce` + `(pos? (compare (:filed %1) (:filed %2)))`, which is semantically correct in all cases.
-
-**`edgar.extract/remove-tables` — nil nodes in `:content` causing NPE**
-- `clojure.walk/postwalk` replaced `<table>` nodes with `nil`, leaving `nil` entries in parent `:content` vectors. Downstream `node-text` and `flatten-nodes` did not guard against `nil` content entries, causing NullPointerExceptions when extracting items from filings with tables near item boundaries. Fixed by additionally filtering `nil` from each node's `:content` during postwalk.
-
-**`edgar.tables/row-cells` — recursive subtree selection double-counting nested cells**
-- Previously used `(sel/select (sel/tag :th) tr-node)` and `(sel/select (sel/tag :td) tr-node)`, which select all matching elements in the entire subtree including nested tables. For filings with nested tables this double-counted cells and produced misaligned columns. Fixed by filtering direct `<th>` and `<td>` children from `:content` of each `<tr>` node.
-
-**`edgar.forms.form13f/is-amendment?`**
-- Previously checked the XML `reportType` field for the string `"RESTATEMENT"`, which is never present (the field contains values like `"13F HOLDINGS REPORT"`). This caused `:is-amendment?` to always be `false`. Fixed by overriding the value in the `merge` call inside `parse-form13f` using `(= "13F-HR/A" (:form filing))` — the `:form` key of the filing map is the correct source.
-
-### Added
-
-**`test/edgar/schema_test.clj`** (new file)
-- Comprehensive Malli schema unit tests: `validate!` helper (nil on success, `ex-info` on failure, `:args` and `:errors` in ex-data), `FilingArgs` required/optional fields, `FilingsArgs` optional `:form` with `[:maybe FormType]`, `StatementArgs` (`:shape` enum, `:as-of` regex), `AccessionNumber` primitive (dashed format required). Added to `test_runner.clj`.
-
-**`test/edgar/dataset_test.clj`** (new file)
-- Offline tests for `multi-company-facts` robustness using `with-redefs`: empty tickers vector returns empty dataset; all tickers failing returns empty dataset; partial failure returns only the rows from the succeeding ticker. Added to `test_runner.clj`.
-
-**Fixture-based offline tests**
-- `test/edgar/tables_test.clj` — fixture HTML string (`fixture-tables-html`) embedded in the test namespace; fixture-driven tests cover `extract-tables` end-to-end (`:nth`, `:min-rows`, dedup column names), `cell-text`, `row-cells` (direct-child-only extraction), `extract-table`, `matrix->dataset` column deduplication, `parse-number`, `infer-column`, and `layout-table?`. No network access required.
-- `test/edgar/forms/form4_test.clj` — fixture XML string; covers `parse-issuer`, `parse-owner`, `parse-non-derivative`.
-- `test/edgar/forms/form13f_test.clj` — fixture XML string; covers `parse-report-summary`, `parse-holding`, `is-amendment?`.
-- All fixture tests are offline (no HTTP calls) and run under `clj -M:test`.
-
-**Exhibit and XBRL document API (`edgar.filing` / `edgar.api`)**
-- `filing/filing-exhibits` — filters the filing index for entries whose `:type` starts with `"EX-"`. Returns a seq of maps `{:name :type :document :description :sequence}`.
-- `filing/filing-exhibit` — returns the first index entry matching a given exhibit type string (e.g. `"EX-21"`), or `nil`. Fetch its content with `(filing/filing-document filing (:name exhibit))`.
-- `filing/filing-xbrl-docs` — returns index entries whose `:type` starts with `"EX-101"` or whose `:name` ends with `".xsd"`. Covers instance, schema, calculation, label, presentation, and definition linkbases.
-- Exposed via `edgar.api` as `e/exhibits`, `e/exhibit`, and `e/xbrl-docs`.
-
-**`:as-of` on `e/panel` / `edgar.dataset/multi-company-facts`**
-- `dataset/multi-company-facts` now accepts `:as-of "YYYY-MM-DD"`. When set, observations where `:filed > as-of-date` are excluded, then deduplication keeps the most recently filed survivor per `[ticker concept end]` key — identical look-ahead-safe semantics to `edgar.financials/dedup-point-in-time`.
-- Exposed via `(e/panel [...] :as-of "2022-01-01")`. The `:as-of` key is now part of `schema/PanelArgs` and Malli-validated.
-
-**Malli input validation (`edgar.schema` / `edgar.api`)**
-- New namespace `src/edgar/schema.clj` — defines Malli map schemas for every public `edgar.api` function argument and a shared `validate!` helper. Invalid args throw `ex-info` with `{:type ::edgar.schema/invalid-args :args {...} :errors {...}}`.
-- Schemas: `InitArgs`, `FilingsArgs`, `FilingArgs`, `FactsArgs`, `StatementArgs`, `FrameArgs`, `PanelArgs`, `SearchArgs`, `SearchFilingsArgs`, `TablesArgs`, `FilingByAccessionArgs`.
-- Primitive schemas: `NonBlankString`, `TickerOrCIK`, `ISODate`, `FormType`, `ShapeKw`, `ConceptArg`, `AccessionNumber`, `PositiveInt`, `TaxonomyStr`, `FrameStr`.
-- All public functions in `edgar.api` call `schema/validate!` at entry. Inner namespaces (`edgar.filings`, `edgar.xbrl`, etc.) do not validate — validation is centralised in the facade.
-- `metosin/malli` 0.16.4 promoted from `:future` alias to main `deps.edn` deps.
-
-**`edgar.financials` / `edgar.api` — Point-in-time `:as-of` option**
-- All four financial-statement functions (`income-statement`, `balance-sheet`, `cash-flow`, `get-financials` and their `e/` wrappers) now accept `:as-of "YYYY-MM-DD"`. When set, observations where `:filed > as-of-date` are excluded before restatement deduplication, giving look-ahead-safe point-in-time results. Default behaviour (no `:as-of`) is unchanged: latest restated value is returned. Implemented in new private function `edgar.financials/dedup-point-in-time`.
-
-**`edgar.forms.form13f`** (new file)
-- 13F-HR parser — institutional holdings (XML-era, post-2013Q2 only). Registers `filing-obj "13F-HR"` and `filing-obj "13F-HR/A"` methods. Returns `{:form :period-of-report :report-type :is-amendment? :form13f-file-number :table-entry-count :table-value-total :manager {:name :street :city :state :zip} :holdings <tech.ml.dataset> :total-value}`. Holdings dataset columns: `:name :cusip :title :value :shares :shares-type :put-call :investment-discretion :other-managers :voting-sole :voting-shared :voting-none`. `:value` and voting columns are `Long`; `:total-value` is the sum of the `:value` column (thousands of USD as SEC reports it). Uses only `clojure.xml` + `clojure.string`; no new dependencies.
-
-**`edgar.forms`** (new file)
-- Central parser loader namespace. `(require '[edgar.forms])` loads all built-in form parsers (currently `form4` and `form13f`) in a single call, solving the discoverability problem where users would forget to require individual parser namespaces. Individual requires (`[edgar.forms.form4]`, `[edgar.forms.form13f]`) continue to work unchanged.
-
-**`edgar.tables`** (new file)
-- `extract-tables` — parses a filing's HTML with hickory, collects all `<table>` elements, extracts cell text per row (`th` + `td`), uses the first row with ≥2 non-blank cells as the header, aligns data rows to header width, deduplicates column names (suffixes `_1`, `_2`), and infers numeric types (strips `$`, `,`, `%`; converts `(123)` → `-123`). Layout tables with <2 data rows are skipped automatically. Options: `:min-rows`, `:min-cols` for post-hoc filtering; `:nth` to return a single table by index. `row-cells` uses direct-child filtering (not recursive subtree selection) to avoid double-counting cells in nested tables.
-
-**`edgar.financials`**
-- Concept fallback chains — each line item now has a primary GAAP concept and one or more fallback alternatives. Revenue, for example, tries `RevenueFromContractWithCustomerExcludingAssessedTax` (post-ASC-606) before falling back to `Revenues` and `SalesRevenueNet`. The first concept present in the company's facts wins.
-- Duration vs instant filtering — balance sheet uses only observations where `:frame` ends in `"I"` (instant snapshots, e.g. `CY2023Q4I`); income statement and cash flow use only duration observations. Prevents mixing point-in-time and period values.
-- Restatement deduplication — when multiple filings report the same concept+period, the observation with the latest `:filed` date wins. Implemented via `reduce` + `(pos? (compare (:filed %1) (:filed %2)))`.
-- `:line-item` column — all normalized datasets now carry a human-readable label alongside the raw GAAP concept name.
-- `:shape :wide` option — pass `:shape :wide` to `income-statement`, `balance-sheet`, `cash-flow`, or `get-financials` to receive a pivoted dataset with one row per period and one column per line item. Default remains `:long`.
-- Public concept vars — `income-statement-concepts`, `balance-sheet-concepts`, `cash-flow-concepts` are now public `def`s. Users can inspect and override the concept fallback chains for non-standard filers.
-
-**`edgar.company`**
-- `company-metadata` — returns a shaped map extracted from the SEC submissions JSON: `:cik :name :tickers :exchanges :sic :sic-description :entity-type :category :state-of-inc :state-of-inc-description :fiscal-year-end :ein :phone :website :investor-website :addresses {:business {...} :mailing {...}} :former-names`.
-
-**`edgar.filings`**
-- `get-daily-filings` — lazy seq of all SEC filings submitted on a given date. Accepts an ISO date string (`"2026-03-10"`) or `java.time.LocalDate`. Optional `:form` filter and `:filter-fn` predicate. Implemented via EFTS search-index with `dateRange=custom` and lazy `from=` pagination (100 results per page).
-
-**`edgar.core`**
-- In-memory TTL cache on `edgar-get`. JSON responses are cached keyed by URL: 5 minutes for metadata endpoints, 1 hour for `/api/xbrl/` endpoints. Cache is skipped when `:raw? true`. Evict with `(edgar.core/clear-cache!)`.
-- Exponential backoff retry on 429/5xx responses. `http-get-with-retry` retries up to 3 times with delays of 2s → 4s → 8s. Throws `ex-info` with `{:type ::http-error :status N :url "..."}` on exhaustion or non-retryable 4xx. Applied to both `edgar-get` and `edgar-get-bytes`.
-
-**`edgar.filing`**
-- `filing-by-accession` — hydrates a complete filing map from an accession number string. Accepts dashed format (`0000320193-23-000106`) or undashed (`000032019323000106`). Extracts the CIK from the first 10 digits, fetches the filing index, and returns `{:cik :accessionNumber :form :primaryDocument :filingDate}` ready for all downstream functions. Throws `ex-info` with `{:type ::not-found}` if the accession does not exist.
-
-**`edgar.filings`**
-- `latest-effective-filing` — returns the most recent non-amended filing for a company and form type. If an amendment (e.g. `10-K/A`) exists with a newer `:filingDate` than the original, the amendment is returned instead.
-
-**`edgar.xbrl`**
-- `get-concepts` — returns a `tech.ml.dataset` with columns `[:taxonomy :concept :label :description]`, one row per distinct XBRL concept available for a company. Useful for discovering what data is available before calling `get-facts-dataset`.
-- `:label` and `:description` columns added to all facts datasets. `flatten-facts` now preserves these fields from the XBRL taxonomy response. Affects `get-facts-dataset` and any downstream datasets built from it.
-
-**`edgar.forms.form4`**
-- Form 4 parser (Statement of Changes in Beneficial Ownership / insider trades). Parses issuer, reporting owner, non-derivative and derivative transactions from XML. Registers `filing-obj "4"` via the standard multimethod. No new dependencies — uses only `clojure.xml` and `clojure.string`.
-
-**`edgar.api`**
-- `e/company-metadata`, `e/daily-filings`, `e/tables`, `e/filing-by-accession`, `e/latest-effective-filing`, `e/concepts`, `e/exhibits`, `e/exhibit`, `e/xbrl-docs` — new wrapper functions.
-- `e/income`, `e/balance`, `e/cashflow`, `e/financials` — all now accept `:shape :wide` option.
-
-### Changed
-
-**`edgar.filings`**
-- `get-filings` now filters out amended filings (`10-K/A`, `10-Q/A`, etc.) by default. Pass `:include-amends? true` to include them. This is a behaviour change: callers who previously received amendment forms in results and relied on them will need to add `:include-amends? true`.
-- `get-filing` gains `:include-amends?` option (default `false`), threading through to `get-filings`.
-- `get-filing` converted from positional `[ticker-or-cik form]` to keyword args `[ticker-or-cik & {:keys [form n] :or {n 0}}]`. Old call `(get-filing "AAPL" "10-K")` must be updated to `(get-filing "AAPL" :form "10-K")`.
-
-**`edgar.api`**
-- `e/filings` and `e/filing` gain `:include-amends?` option (default `false`).
-- `e/facts` simplified — delegates filtering to `xbrl/get-facts-dataset` directly.
-- `e/frame` updated to new `get-concept-frame` keyword-arg signature.
-- `e/panel` passes `:concept` directly to `multi-company-facts`.
-- `e/pivot` unwrapped — `pivot-wide` now returns a dataset directly.
-- `e/income`, `e/balance`, `e/cashflow`, `e/financials` simplified — no longer pre-resolve CIK before delegating to `edgar.financials`.
-- Removed unused `require` entries for `tech.v3.dataset` and `clojure.string`.
-- Removed private `coerce-concepts` helper (logic moved into `xbrl/get-facts-dataset`).
-
-**`edgar.download`**
-- `download-filings!` gains `:skip-existing?` option (default `false`). When `true`, checks whether the output file already exists before downloading; returns `{:status :skipped :accession-number "..."}` if so.
-- `download-batch!` `:parallelism` parameter is now honoured. Uses `(partition-all parallelism tickers)` + `pmap` per partition for bounded concurrency (previously ignored, used plain `pmap`).
-- `download-batch!` now passes `:download-all?` and `:skip-existing?` through to `download-filings!`.
-- All download functions (`download-filings!`, `download-batch!`, `download-index!`) now return structured result envelopes: `{:status :ok :path "..."}`, `{:status :skipped :accession-number "..."}`, or `{:status :error :accession-number "..." :type ... :message "..."}`. Previously returned bare strings or raw exception messages.
-
-**`edgar.xbrl`**
-- `get-facts-dataset` now accepts `& {:keys [concept form sort]}`. `:concept` accepts a string or collection; `:form` filters by form type; `:sort` defaults to `:desc` (uses `ds/reverse-rows`), pass `nil` to skip.
-- `facts-for-concept`, `annual-facts`, `quarterly-facts` removed. Use `get-facts-dataset` options directly.
-- `get-concept-frame` signature changed from positional `[taxonomy concept unit frame]` to `[concept frame & {:keys [taxonomy unit]}]` with defaults `taxonomy="us-gaap"`, `unit="USD"`. Old call `(get-concept-frame "us-gaap" "Assets" "USD" "CY2023Q4I")` must be updated to `(get-concept-frame "Assets" "CY2023Q4I")`.
-
-**`edgar.financials`**
-- `income-statement`, `balance-sheet`, `cash-flow` now accept ticker or CIK interchangeably (call `company/company-cik` internally). Previously accepted CIK only.
-
-**`edgar.dataset`**
-- `multi-company-facts` option renamed from `:concepts` to `:concept` for consistency. `:concept` accepts a string or collection.
-- `pivot-wide` now returns a `tech.ml.dataset` directly (previously returned a seq of maps).
-- `cross-sectional-dataset` updated to use new `get-concept-frame` keyword-arg signature.
-
-**`edgar.extract`**
-- `extract-items` now returns full section body text, not just the heading node text. Detection algorithm rewritten: flattens the full hickory tree into a document-order node sequence, identifies item heading boundaries by matching `item-pattern` across `heading-tags`, deduplicates by keeping the last match per item-id (body heading wins over TOC entry), then extracts text from the node slice between consecutive boundaries.
-- Return shape changed from `{item-id "text"}` to `{item-id {:title "..." :text "..." :method ...}}`. **Breaking change:** callers that previously did `(get result "7")` and expected a string must now do `(get-in result ["7" :text])`.
-- `extract-item` return shape changed accordingly: returns `{:title "..." :text "..." :method ...}` or `nil` (previously a string or `nil`).
-- Plain-text fallback (`extract-items-text`) is now wired into the main `extract-items` dispatch path. Previously defined but never called.
-- `:method` key added to return maps: `:html-heading-boundaries` for modern HTML filings, `:plain-text-regex` for pre-2000 plain-text fallback.
-- `batch-extract!` arg order changed to `[filing-seq output-dir & opts]`.
-- Removed unused `hickory.zip` and `clojure.zip` requires.
-
-**`deps.edn`**
-- Moved five unused dependencies from core `:deps` to a new `:future` alias: `next.jdbc`, `honeysql`, `sqlite-jdbc`, and `datajure`. None are referenced in any source file.
+[Unreleased]: https://github.com/clojure-finance/edgarjure/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/clojure-finance/edgarjure/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/clojure-finance/edgarjure/compare/v0.4.2...v0.5.0
+[0.4.2]: https://github.com/clojure-finance/edgarjure/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/clojure-finance/edgarjure/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/clojure-finance/edgarjure/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/clojure-finance/edgarjure/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/clojure-finance/edgarjure/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/clojure-finance/edgarjure/compare/v0.1.9...v0.2.0
+[0.1.9]: https://github.com/clojure-finance/edgarjure/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/clojure-finance/edgarjure/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/clojure-finance/edgarjure/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/clojure-finance/edgarjure/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/clojure-finance/edgarjure/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/clojure-finance/edgarjure/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/clojure-finance/edgarjure/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/clojure-finance/edgarjure/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/clojure-finance/edgarjure/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/clojure-finance/edgarjure/releases/tag/v0.1.0

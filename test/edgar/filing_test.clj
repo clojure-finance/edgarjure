@@ -1,5 +1,7 @@
 (ns edgar.filing-test
   (:require [clojure.test :refer [deftest is testing]]
+            [babashka.fs :as fs]
+            [edgar.core]
             [edgar.filing :as filing]
             [clojure.string :as str]))
 
@@ -297,8 +299,7 @@
         (is (= 2 (count (distinct @download-calls)))
             "no URL downloaded twice")
         (finally
-          (doseq [f (file-seq tmp-dir)]
-            (.delete f))))))
+          (fs/delete-tree tmp-dir)))))
 
   (testing "return value has no duplicate paths"
     (let [idx {:files [{:name "doc.htm" :type "10-K" :sequence "1" :size "1000"}
@@ -317,17 +318,16 @@
             (is (= 2 (count paths)) "2 paths returned — not 3")
             (is (= (count paths) (count (distinct paths))) "no duplicate paths")))
         (finally
-          (doseq [f (file-seq tmp-dir)]
-            (.delete f)))))))
+          (fs/delete-tree tmp-dir))))))
 
 (deftest filing-save-amendment-dir-test
   ;; "10-K/A" used to become a nested 10-K/A/ directory pair
   (let [amended {:cik "0000320193" :accessionNumber "0001193125-10-012091" :form "10-K/A"}]
     (testing "save-dir flattens the \"/\" in an amendment form type"
-      (is (= (str (babashka.fs/path "/data" "10-K_A" "0000320193" "0001193125-10-012091"))
+      (is (= (str (fs/path "/data" "10-K_A" "0000320193" "0001193125-10-012091"))
              (str (filing/save-dir amended "/data")))))
     (testing "filing-save! and filing-save-all! write under dir/10-K_A/..."
-      (let [tmp-dir (str (babashka.fs/create-temp-dir))]
+      (let [tmp-dir (str (fs/create-temp-dir))]
         (try
           (with-redefs [edgar.filing/filing-index
                         (fn [_] {:files [{:name "d10ka.htm" :type "10-K/A" :sequence "1" :size "10"}
@@ -335,13 +335,13 @@
                         edgar.core/edgar-get (fn [& _] "<html/>")]
             (let [p (filing/filing-save! amended tmp-dir)
                   ps (filing/filing-save-all! amended tmp-dir)
-                  form-dirs (map str (babashka.fs/list-dir tmp-dir))]
-              (is (= [(str (babashka.fs/path tmp-dir "10-K_A"))] form-dirs)
+                  form-dirs (map str (fs/list-dir tmp-dir))]
+              (is (= [(str (fs/path tmp-dir "10-K_A"))] form-dirs)
                   "exactly one form directory, no nested 10-K/A")
-              (is (= (str (babashka.fs/path tmp-dir "10-K_A" "0000320193" "0001193125-10-012091" "d10ka.htm")) p))
-              (is (every? #(babashka.fs/exists? %) (cons p ps)))))
+              (is (= (str (fs/path tmp-dir "10-K_A" "0000320193" "0001193125-10-012091" "d10ka.htm")) p))
+              (is (every? #(fs/exists? %) (cons p ps)))))
           (finally
-            (babashka.fs/delete-tree tmp-dir)))))))
+            (fs/delete-tree tmp-dir)))))))
 
 (deftest binary-filename-test
   (let [f #'edgar.filing/binary-filename?]
@@ -376,8 +376,8 @@
           text-called (atom false)
           tmp-file (java.io.File/createTempFile "edgar-test-" ".pdf")]
       (try
-        (with-redefs [edgar.core/edgar-get-bytes (fn [_] (do (reset! bytes-called true) (byte-array [1 2 3])))
-                      edgar.core/edgar-get (fn [& _] (do (reset! text-called true) "text"))]
+        (with-redefs [edgar.core/edgar-get-bytes (fn [_] (reset! bytes-called true) (byte-array [1 2 3]))
+                      edgar.core/edgar-get (fn [& _] (reset! text-called true) "text")]
           (#'edgar.filing/save-doc!
            {:cik "320193" :accessionNumber "0000320193-24-000001"}
            {:name "exhibit.pdf"}
@@ -390,8 +390,8 @@
           text-called (atom false)
           tmp-file (java.io.File/createTempFile "edgar-test-" ".htm")]
       (try
-        (with-redefs [edgar.core/edgar-get-bytes (fn [_] (do (reset! bytes-called true) (byte-array [])))
-                      edgar.core/edgar-get (fn [& _] (do (reset! text-called true) "<html/>"))]
+        (with-redefs [edgar.core/edgar-get-bytes (fn [_] (reset! bytes-called true) (byte-array []))
+                      edgar.core/edgar-get (fn [& _] (reset! text-called true) "<html/>")]
           (#'edgar.filing/save-doc!
            {:cik "320193" :accessionNumber "0000320193-24-000001"}
            {:name "report.htm"}
@@ -468,7 +468,36 @@
           (let [ex (try (filing/filing-by-accession "0001193125-12-025113") nil
                         (catch clojure.lang.ExceptionInfo e e))]
             (is (= ::filing/not-found (:type (ex-data ex))))
-            (is (identical? cause (ex-cause ex)))))))))
+            (is (identical? cause (ex-cause ex)))))))
+    (testing "other HTTP failures propagate unchanged, not as ::not-found"
+      (let [cause (ex-info "HTTP 500 from SEC API" {:type :edgar.core/http-error :status 500})]
+        (with-redefs [filing/filing-index (stub cause)]
+          (let [ex (try (filing/filing-by-accession "0001193125-12-025113") nil
+                        (catch clojure.lang.ExceptionInfo e e))]
+            (is (identical? cause ex))))))))
+
+(deftest primary-doc-pre-2001-test
+  (testing "an index listing only the complete submission text file → that file"
+    ;; real shape: AAPL 10-K 0000320193-94-000016
+    (let [txt {:sequence "" :description "Complete submission text file"
+               :name "0000320193-94-000016.txt" :type "" :size "240556"}]
+      (is (= txt (filing/primary-doc {:files [txt]})))))
+  (testing "sequence 1 wins over the complete submission text file"
+    (let [doc {:sequence "1" :description "10-K" :name "aapl-20250927.htm" :type "10-K" :size "1"}]
+      (is (= doc (filing/primary-doc
+                  {:files [doc {:sequence "" :description "Complete submission text file"
+                                :name "0000320193-25-000079.txt" :type "" :size "2"}]}))))))
+
+(deftest xbrl-docs-test
+  (testing "linkbases, schema and the inline-XBRL extracted instance; not the HTML or exhibits"
+    (with-redefs [filing/filing-index
+                  (fn [_] {:files [{:sequence "1" :name "aapl-20250927.htm" :type "10-K"}
+                                   {:sequence "2" :name "a10-kexhibit21109272025.htm" :type "EX-21.1"}
+                                   {:sequence "8" :name "aapl-20250927.xsd" :type "EX-101.SCH"}
+                                   {:sequence "9" :name "aapl-20250927_cal.xml" :type "EX-101.CAL"}
+                                   {:sequence "" :name "aapl-20250927_htm.xml" :type "XML"}]})]
+      (is (= ["aapl-20250927.xsd" "aapl-20250927_cal.xml" "aapl-20250927_htm.xml"]
+             (map :name (filing/filing-xbrl-docs {})))))))
 
 (defn- company-info-html
   "Filing index fixture with one companyName span per [name role cik], in the

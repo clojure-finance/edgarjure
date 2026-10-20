@@ -704,3 +704,41 @@
     (is (= #{"OtherCostAndExpenseOperating"} (chain "Other Operating Expense")))
     (is (= #{"OtherOperatingIncomeExpenseNet"}
            (chain "Other Operating Income (Expense), Net")))))
+
+;;; ---------------------------------------------------------------------------
+;;; Review fixes (2026-10)
+;;; ---------------------------------------------------------------------------
+
+(deftest all-optional-formula-test
+  ;; latent: an all-[:opt] formula with none of its operands present
+  ;; evaluated to 0.0 and emitted a row without :unit/:start/:end
+  (let [f #'edgar.reclass/eval-formula
+        g (by-li [{:line-item "A" :val 100}])]
+    (testing "nothing to evaluate when no operand is present"
+      (is (nil? (f [:+ [:opt "Missing"] [:opt "Absent"]] g)))
+      (is (nil? (f [:- [:opt "Missing"]] g))))
+    (testing "one present optional operand is enough"
+      (is (= {:val 100 :used ["A"]} (f [:+ [:opt "A"] [:opt "Missing"]] g))))
+    (testing "an absent optional operand keeps integer arithmetic integral"
+      (is (= {:val 100 :used ["A"]} (f [:- "A" [:opt "Missing"]] g)))))
+  (testing "apply-ruleset emits no row for such a rule"
+    (let [rows [{:line-item "A" :val 1.0 :unit "USD" :start "2023-01-01" :end "2023-12-31"}]
+          out (reclass/apply-ruleset rows nil {:rules [{:id :t :target "T"
+                                                        :formula [:+ [:opt "X"] [:opt "Y"]]}]})]
+      (is (= ["A"] (mapv :line-item out))))))
+
+(deftest reclassified-rows-drop-operand-metadata-test
+  (let [base {:unit "USD" :start "2023-01-01" :end "2023-12-31" :form "10-K"
+              :taxonomy "us-gaap" :accn "acc" :fy 2023 :fp "FY" :frame "CY2023"
+              :label "Revenue from Contract with Customer" :description "d"}
+        rows [(assoc base :line-item "Revenue" :val 100.0 :concept "Revenues" :filed "2024-02-01")
+              (assoc base :line-item "Cost" :val 60.0 :concept "CostOfRevenue" :filed "2024-02-09")]
+        out (reclass/apply-ruleset rows nil {:rules [{:id :gp :target "GP (Test)"
+                                                      :formula [:- "Revenue" "Cost"]}]})
+        gp (first (filter #(= "GP (Test)" (:line-item %)) out))]
+    (is (= 40.0 (:val gp)))
+    (is (= [:reclassified :gp ["Revenue" "Cost"]] ((juxt :method :rule :derived-from) gp)))
+    (is (every? #(not (contains? gp %)) [:label :description :accn :fy :fp :frame :taxonomy]))
+    (is (nil? (:concept gp)))
+    (is (= ["USD" "2023-01-01" "2023-12-31" "10-K" "2024-02-09"]
+           ((juxt :unit :start :end :form :filed) gp)))))

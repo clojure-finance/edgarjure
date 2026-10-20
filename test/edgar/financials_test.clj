@@ -1,7 +1,11 @@
 (ns edgar.financials-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
+            [edgar.company :as company]
             [edgar.financials :as fin]
+            [edgar.fsds :as fsds]
             [edgar.reclass :as reclass]
+            [edgar.xbrl :as xbrl]
             [tech.v3.dataset :as ds])
   (:import [java.time LocalDate]))
 
@@ -293,8 +297,8 @@
         result (f long-ds)
         col-names (set (map name (ds/column-names result)))]
     (testing "no spurious (Q) or (LTM) columns when source has none"
-      (is (not (some #(clojure.string/ends-with? % " (Q)") col-names)))
-      (is (not (some #(clojure.string/ends-with? % " (LTM)") col-names))))
+      (is (not (some #(str/ends-with? % " (Q)") col-names)))
+      (is (not (some #(str/ends-with? % " (LTM)") col-names))))
     (testing "plain columns still present"
       (is (contains? col-names "Revenue"))
       (is (contains? col-names "Net Income")))))
@@ -392,8 +396,7 @@
         chains [["Total Assets" "Assets"]
                 ["Current Liabilities" "LiabilitiesCurrent"]]
         result (f facts-ds chains "10-K" :instant nil nil)
-        ends (vec (ds/column result :end))
-        labels (vec (ds/column result :line-item))]
+        ends (vec (ds/column result :end))]
     (testing "most recent period comes first (:end descending)"
       (is (= "2023-09-30" (first ends)))
       (is (every? #(>= (compare (first ends) %) 0) ends)))
@@ -670,8 +673,8 @@
         annual (fsds-period "2023-01-01" "2023-12-31")
         calls (atom [])
         run (fn [form rows & {:keys [enabled? context] :or {enabled? true}}]
-              (with-redefs [edgar.fsds/cache-enabled? (fn [] enabled?)
-                            edgar.fsds/annual-filing-context
+              (with-redefs [fsds/cache-enabled? (fn [] enabled?)
+                            fsds/annual-filing-context
                             (fn [cik filed & _] (swap! calls conj [cik filed]) (context))]
                 (vec ((make "0000320193" fsds-ruleset) form rows))))
         by-li (fn [out] (group-by :line-item out))]
@@ -735,8 +738,8 @@
                  :aux-fn (#'edgar.financials/reclass-aux-fn facts nil rs)
                  :fsds-aux-fn (#'edgar.financials/fsds-aux-fn "0000320193" rs)}
         build (fn [form]
-                (with-redefs [edgar.fsds/cache-enabled? (constantly true)
-                              edgar.fsds/annual-filing-context
+                (with-redefs [fsds/cache-enabled? (constantly true)
+                              fsds/annual-filing-context
                               (fn [& _] {:placement {"DepreciationDepletionAndAmortization" #{"IS"}}
                                          :is-extension-values []})]
                   (vec (ds/rows (#'edgar.financials/normalized-statement
@@ -826,8 +829,8 @@
    (fact "NetIncomeLoss" "2016-09-25" "2017-09-30" 48000.0 "2019-10-31")])
 
 (deftest income-statement-10k-shapes-test
-  (with-redefs [edgar.company/company-cik (fn [t] t)
-                edgar.xbrl/get-facts-dataset (fn [_ & _] (ds/->dataset aapl-like-10k-facts))]
+  (with-redefs [company/company-cik (fn [t] t)
+                xbrl/get-facts-dataset (fn [_ & _] (ds/->dataset aapl-like-10k-facts))]
     (testing ":shape :wide carries the fiscal-year value, one row per fiscal year"
       (let [w (fin/income-statement "X" :industry :standard :shape :wide)
             rows (vec (ds/rows w {:nil-missing? true}))]
@@ -986,8 +989,8 @@
                  :accn "0001-24-000001" :fy 2023 :fp "FY" :form "10-K"
                  :filed "2024-02-01" :frame nil :label "" :description ""}])
         run (fn [industry]
-              (with-redefs [edgar.company/company-cik (fn [t] t)
-                            edgar.xbrl/get-facts-dataset (fn [_ & _] facts)]
+              (with-redefs [company/company-cik (fn [t] t)
+                            xbrl/get-facts-dataset (fn [_ & _] facts)]
                 (vec (ds/column (fin/income-statement "X" :view :compustat
                                                       :industry industry)
                                 :method))))]
@@ -1127,3 +1130,223 @@
   (testing "bank/insurance chains include weighted share counts"
     (is (contains? (set (map first fin/bank-income-concepts)) "Shares Basic"))
     (is (contains? (set (map first fin/insurance-income-concepts)) "Shares Diluted"))))
+
+;;; ---------------------------------------------------------------------------
+;;; Review fixes (2026-10)
+;;; ---------------------------------------------------------------------------
+
+(deftest ten-k-footnote-quarters-do-not-displace-10q-quarters-test
+  ;; regression (PG live, 10-Q :view :compustat, quarter ending 2019-09-30):
+  ;; the 10-K's quarterly-footnote rows joined the 10-Q quarter derivation
+  ;; and, as directly reported 3-month values, overrode the 10-Q's own
+  ;; quarters, so :val-ltm summed a 10-K footnote figure (another rule
+  ;; regime) instead of the 10-Q's
+  (let [f #'edgar.financials/normalized-statement
+        q (fn [start end v form filed] (fact "Revenues" start end v filed :form form))
+        facts (ds/->dataset
+               [(q "2022-10-01" "2022-12-31" 100.0 "10-Q" "2023-02-01")
+                (q "2022-10-01" "2023-03-31" 210.0 "10-Q" "2023-05-01")
+                (q "2022-10-01" "2023-06-30" 330.0 "10-Q" "2023-08-01")
+                (q "2022-10-01" "2023-09-30" 460.0 "10-K" "2023-11-15")
+                (q "2023-10-01" "2023-12-31" 140.0 "10-Q" "2024-02-01")
+                ;; quarterly footnote of the FY2024 10-K: same window as the
+                ;; 10-Q's Q1, a different figure
+                (q "2023-10-01" "2023-12-31" 999.0 "10-K" "2024-11-15")
+                ;; and a footnote Q3 of FY2023 that differs from 330 - 210
+                (q "2023-04-01" "2023-06-30" 555.0 "10-K" "2023-11-15")])
+        rows (->> (ds/rows (f facts [["Revenue" "Revenues"]] "10-Q" :duration nil nil)
+                           {:nil-missing? true})
+                  (sort-by (juxt :end :start))
+                  vec)
+        q1 (last rows)]
+    (testing "the 10-Q quarter keeps its own value"
+      (is (= 140.0 (:val-q q1))))
+    (testing "LTM sums the 10-Q quarters and FY - 9M only"
+      (is (= 500.0 (:val-ltm q1)) "140 + 130 + 120 + 110, no 999 or 555"))
+    (testing "the Q3 YTD row derives its quarter from the 10-Q YTD rows"
+      (is (= 120.0 (:val-q (first (filter #(= "2023-06-30" (str (:end %))) rows))))))))
+
+(deftest ten-k-footnote-windows-not-reclassified-test
+  ;; regression (PG live): 10-K quarterly-footnote rows were reclassified
+  ;; with most operands missing, e.g. "OIADP (Compustat)" equal to plain
+  ;; operating income, labelled :rule :oiadp
+  (let [facts (ds/->dataset
+               [(fact "OperatingIncomeLoss" "2022-10-01" "2023-09-30" 400.0 "2023-11-15")
+                (fact "RestructuringCharges" "2022-10-01" "2023-09-30" 50.0 "2023-11-15")
+                (fact "OperatingIncomeLoss" "2023-07-01" "2023-09-30" 90.0 "2023-11-15")])
+        rs reclass/compustat-income-ruleset
+        out (vec (ds/rows (#'edgar.financials/normalized-statement
+                           facts [["Operating Income" "OperatingIncomeLoss"]
+                                  ["Restructuring Charges" "RestructuringCharges"]]
+                           "10-K" :duration nil fin/income-statement-identities
+                           {:ruleset rs
+                            :aux-fn (#'edgar.financials/reclass-aux-fn facts nil rs)})
+                          {:nil-missing? true}))
+        oiadp (filter #(= "OIADP (Compustat)" (:line-item %)) out)]
+    (testing "the fiscal-year window is reclassified"
+      (is (= [[12 450.0]] (mapv (juxt :duration-months :val) oiadp))))
+    (testing "the 3-month footnote window keeps only its as-reported rows"
+      (is (= #{:direct} (set (keep #(when (= 3 (:duration-months %)) (:method %)) out)))))))
+
+(deftest ltm-uneven-fiscal-calendar-test
+  ;; regression (COST live): a 12/12/12/16-week fiscal year left :val-ltm nil
+  ;; for every Q2 and Q3, because the LTM targets were calendar-month offsets
+  ;; (±14 days) from the row's end; quarters now chain by adjacency
+  (let [d (fn [^LocalDate s n] (str (.plusDays s (long n))))
+        fy1 (LocalDate/parse "2022-08-29")
+        fy2 (.plusDays fy1 364)
+        ;; YTD ends after 12, 24, 36 and 52 weeks
+        ytd (fn [start weeks v form filed]
+              (fact "Revenues" (str start) (d start (dec (* 7 weeks))) v filed :form form))
+        q3m (fn [start from-week weeks v filed]
+              (fact "Revenues" (d start (* 7 from-week)) (d start (dec (* 7 (+ from-week weeks))))
+                    v filed :form "10-Q"))
+        facts (ds/->dataset
+               [;; FY1: quarters 10, 11, 12, 20 (Q4 = 53 - 33)
+                (ytd fy1 12 10.0 "10-Q" "2022-12-15")
+                (ytd fy1 24 21.0 "10-Q" "2023-03-15") (q3m fy1 12 12 11.0 "2023-03-15")
+                (ytd fy1 36 33.0 "10-Q" "2023-06-15") (q3m fy1 24 12 12.0 "2023-06-15")
+                (ytd fy1 52 53.0 "10-K" "2023-10-15")
+                ;; FY2: quarters 13, 14, 15
+                (ytd fy2 12 13.0 "10-Q" "2023-12-15")
+                (ytd fy2 24 27.0 "10-Q" "2024-03-15") (q3m fy2 12 12 14.0 "2024-03-15")
+                (ytd fy2 36 42.0 "10-Q" "2024-06-15") (q3m fy2 24 12 15.0 "2024-06-15")])
+        rows (ds/rows (#'edgar.financials/normalized-statement
+                       facts [["Revenue" "Revenues"]] "10-Q" :duration nil nil)
+                      {:nil-missing? true})
+        ltm (into {} (keep #(when (= 3 (:duration-months %)) [(str (:end %)) (:val-ltm %)]))
+                  rows)]
+    (testing "Q1, Q2 and Q3 of the second year all get an LTM"
+      ;; Q1 13 + Q4 20 + Q3 12 + Q2 11; Q2 14 + 13 + 20 + 12; Q3 15 + 14 + 13 + 20
+      (is (= {(d fy2 83) 56.0 (d fy2 167) 59.0 (d fy2 251) 62.0}
+             (select-keys ltm [(d fy2 83) (d fy2 167) (d fy2 251)]))))
+    (testing "the first year's quarters lack a full trailing window"
+      (is (nil? (ltm (d fy1 251)))))))
+
+(deftest to-wide-as-reported-and-column-order-test
+  (let [f #'edgar.financials/to-wide]
+    (testing ":as-reported rows (no :line-item) pivot on :concept"
+      ;; regression (AAPL live): (e/income "AAPL" :view :as-reported :shape
+      ;; :wide) grouped on the absent :line-item and produced one nil column
+      (let [rows [{:concept "Revenues" :start "2022-01-01" :end "2022-12-31" :val 100.0
+                   :filed "2023-02-01"}
+                  ;; an unduplicated restatement: the later filing wins
+                  {:concept "Revenues" :start "2022-01-01" :end "2022-12-31" :val 101.0
+                   :filed "2024-02-01"}
+                  {:concept "NetIncomeLoss" :start "2022-01-01" :end "2022-12-31" :val 9.0
+                   :filed "2023-02-01"}]
+            out (first (ds/rows (f (ds/->dataset rows) "10-K") {:nil-missing? true}))]
+        (is (= 101.0 (get out "Revenues")))
+        (is (= 9.0 (get out "NetIncomeLoss")))
+        (is (not (contains? out nil)))))
+    (testing ":end first, then line items in the given order, (Q)/(LTM) beside each"
+      (let [rows [{:end "2024-03-31" :line-item "Net Income" :val 1 :val-q 1 :val-ltm 4}
+                  {:end "2024-03-31" :line-item "Revenue" :val 2 :val-q 2 :val-ltm 8}
+                  {:end "2024-03-31" :line-item "Zeta (Compustat)" :val 3 :val-q 3 :val-ltm 12}
+                  {:end "2024-03-31" :line-item "Alpha Extra" :val 4 :val-q 4 :val-ltm 16}]
+            result (f (ds/->dataset rows) "10-Q" ["Revenue" "Net Income" "Zeta (Compustat)"])]
+        (is (= [:end
+                "Revenue" "Revenue (Q)" "Revenue (LTM)"
+                "Net Income" "Net Income (Q)" "Net Income (LTM)"
+                "Zeta (Compustat)" "Zeta (Compustat) (Q)" "Zeta (Compustat) (LTM)"
+                "Alpha Extra" "Alpha Extra (Q)" "Alpha Extra (LTM)"]
+               (vec (ds/column-names result))))))))
+
+(deftest total-liabilities-excludes-mezzanine-test
+  ;; regression (DIS FY2023 live): Total Liabilities = L&E - Total Equity
+  ;; included the 9.055B redeemable NCI (101.622B instead of 92.567B), and
+  ;; Non-Current Liabilities inherited it
+  (let [f #'edgar.financials/apply-identities
+        row (fn [li v] {:unit "USD" :start nil :end "2023-09-30" :method :direct
+                        :line-item li :val v})
+        result (vec (f [(row "Total Liabilities and Equity" 1000)
+                        (row "Total Equity" 600)
+                        (row "Redeemable Noncontrolling Interest" 40)
+                        (row "Redeemable Preferred Stock" 10)
+                        (row "Current Liabilities" 150)]
+                       fin/balance-sheet-identities))
+        by (into {} (map (juxt :line-item identity)) result)]
+    (is (= 350 (:val (by "Total Liabilities"))))
+    (is (= ["Total Liabilities and Equity" "Total Equity"
+            "Redeemable Noncontrolling Interest" "Redeemable Preferred Stock"]
+           (:derived-from (by "Total Liabilities"))))
+    (is (= 200 (:val (by "Non-Current Liabilities"))))
+    (testing "the mezzanine labels exist in the balance-sheet chains"
+      (let [labels (set (map first fin/balance-sheet-concepts))]
+        (is (contains? labels "Redeemable Noncontrolling Interest"))
+        (is (contains? labels "Redeemable Preferred Stock"))))))
+
+(deftest balance-sheet-10q-has-no-quarterly-columns-test
+  ;; instant statements have no windows to difference or sum
+  (let [facts (ds/->dataset [(fact "Assets" nil "2024-03-31" 500.0 "2024-05-01" :form "10-Q")])
+        result (#'edgar.financials/normalized-statement
+                facts [["Total Assets" "Assets"]] "10-Q" :instant nil nil)
+        cols (set (ds/column-names result))]
+    (is (= 1 (ds/row-count result)))
+    (is (not-any? cols [:val-q :val-ltm :duration-months]))))
+
+(deftest derived-rows-drop-operand-metadata-test
+  ;; regression (AAPL live): "Gross Profit (Compustat)" carried the revenue
+  ;; operand's :label "Revenue from Contract with Customer..." and :frame
+  (let [f #'edgar.financials/apply-identities
+        base {:unit "USD" :start "2023-01-01" :end "2023-12-31" :method :direct
+              :taxonomy "us-gaap" :accn "acc-1" :fy 2023 :fp "FY" :frame "CY2023"
+              :form "10-K"}
+        gp (->> (f [(assoc base :line-item "Revenue" :val 100 :concept "Revenues"
+                           :label "Revenues label" :description "d" :filed "2024-02-01")
+                    (assoc base :line-item "Cost of Revenue" :val 60 :concept "CostOfRevenue"
+                           :label "COGS label" :description "d" :filed "2024-03-01")]
+                   fin/income-statement-identities)
+                (filter #(= "Gross Profit" (:line-item %)))
+                first)]
+    (is (= 40 (:val gp)))
+    (is (every? #(not (contains? gp %)) [:label :description :accn :fy :fp :frame :taxonomy]))
+    (is (nil? (:concept gp)))
+    (is (= ["USD" "2023-01-01" "2023-12-31" "10-K"] ((juxt :unit :start :end :form) gp)))
+    (is (= "2024-03-01" (:filed gp)) "latest operand filing")))
+
+(deftest unmapped-concepts-known-and-per-company-test
+  ;; regression (live): one e/income call logged 448 "unmapped" concepts,
+  ;; balance-sheet ones like Assets included, and get-financials counted
+  ;; every company three times
+  (fin/clear-unmapped-concepts!)
+  (let [record! #'edgar.financials/record-unmapped!
+        facts-ds (ds/->dataset
+                  [{:taxonomy "us-gaap" :concept "Assets" :form "10-K" :val 1}
+                   {:taxonomy "us-gaap" :concept "NetCashProvidedByUsedInOperatingActivities"
+                    :form "10-K" :val 2}
+                   {:taxonomy "us-gaap" :concept "CustomTagX" :form "10-K" :val 3}
+                   {:taxonomy "us-gaap" :concept "SomeExoticConcept" :form "10-K" :val 4}])]
+    (record! "0000000001" facts-ds fin/income-statement-concepts "10-K")
+    (testing "concepts of every built-in chain count as known"
+      (is (= #{"CustomTagX" "SomeExoticConcept"} (set (keys (fin/unmapped-concepts))))))
+    (testing "custom chains count as known too"
+      (fin/clear-unmapped-concepts!)
+      (record! "0000000001" facts-ds [["X" "CustomTagX"]] "10-K")
+      (is (= #{"SomeExoticConcept"} (set (keys (fin/unmapped-concepts))))))
+    (testing "repeat calls for one company count it once"
+      (record! "0000000001" facts-ds [["X" "CustomTagX"]] "10-K")
+      (record! "0000000001" facts-ds [["X" "CustomTagX"]] "10-K")
+      (is (= 1 (get-in (fin/unmapped-concepts) ["SomeExoticConcept" :count])))
+      (record! "0000000002" facts-ds [["X" "CustomTagX"]] "10-K")
+      (is (= 2 (get-in (fin/unmapped-concepts) ["SomeExoticConcept" :count]))))
+    (testing "clear! also forgets which companies were seen"
+      (fin/clear-unmapped-concepts!)
+      (record! "0000000001" facts-ds [["X" "CustomTagX"]] "10-K")
+      (is (= 1 (get-in (fin/unmapped-concepts) ["SomeExoticConcept" :count]))))
+    (fin/clear-unmapped-concepts!)))
+
+(deftest get-financials-single-fetch-and-nil-view-test
+  (let [calls (atom [])
+        facts (ds/->dataset [(fact "Revenues" "2023-01-01" "2023-12-31" 100.0 "2024-02-01")
+                             (fact "Assets" nil "2023-12-31" 500.0 "2024-02-01")])]
+    (with-redefs [company/company-cik (fn [t] t)
+                  xbrl/get-facts-dataset (fn [cik & opts] (swap! calls conj [cik opts]) facts)]
+      (let [out (fin/get-financials "X" :view nil :industry :standard)]
+        (testing "a nil :view means :normalized"
+          (is (= #{:direct} (set (ds/column (:income-statement out) :method)))))
+        (testing "the facts are fetched once, unsorted"
+          (is (= [["X" [:sort nil]]] @calls))))
+      (testing "single statements accept a nil :view too"
+        (is (= 1 (ds/row-count (fin/balance-sheet "X" :view nil))))))
+    (fin/clear-unmapped-concepts!)))

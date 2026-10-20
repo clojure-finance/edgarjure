@@ -12,7 +12,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ## What You Can Do
 
-**Pull financial statements** — income statement, balance sheet, and cash flow, with automatic line-item resolution across different XBRL tags, restatement deduplication, and long or wide output. Four views per statement: as-reported, normalized (default), standardized — imputes missing line items from arithmetic identities (Gross Profit, Free Cash Flow, …) with full provenance — and compustat, which reclassifies line items to approximate Compustat definitions on both the income statement (D&A out of COGS, R&D folded into XSGA, special items added back to operating income) and the balance sheet (retained earnings incl. AOCI, debt incl. lease obligations, mezzanine vs equity-section noncontrolling interest, and more). Banks, insurers, and REITs automatically get industry-specific line items. Override the mappings for non-standard filers. For 10-Q data, quarterly and trailing-twelve-month values are derived automatically from YTD figures.
+**Pull financial statements** — income statement, balance sheet, and cash flow, with automatic line-item resolution across different XBRL tags, restatement deduplication, and long or wide output. Four views per statement: as-reported, normalized (default), standardized — imputes missing line items from arithmetic identities (Gross Profit, Free Cash Flow, …) with full provenance — and compustat, which adds line items approximating Compustat item definitions on the income statement and balance sheet. Banks, insurers, and REITs automatically get industry-specific line items. Override the mappings for non-standard filers. For 10-Q data, quarterly and trailing-twelve-month values are derived automatically from YTD figures.
 
 **Backtest without look-ahead bias** — the `:as-of` option on every financial statement and panel query restricts data to what was actually filed on or before a given date. Essential for event studies, strategy backtests, and panel regressions.
 
@@ -37,7 +37,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ```clojure
 ;; deps.edn
-{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.5.0"}}}
+{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.5.1"}}}
 ```
 
 ## Getting Started
@@ -82,19 +82,26 @@ Every function accepts a ticker or CIK interchangeably (a CIK may be a string or
 
 (e/init! "Your Name your@email.com")
 
-;; Pull net income from XBRL — one line
+;; Raw XBRL facts: every 10-K also reports the prior years, so a fiscal
+;; year appears once per filing that contains it
 (-> (e/facts "AAPL" :concept "NetIncomeLoss" :form "10-K")
     (ds/select-columns [:end :val :filed])
-    (ds/head 3))
-;=> :end        | :val          | :filed
-;   2024-09-28  | 93736000000   | 2024-11-01
-;   2023-09-30  | 96995000000   | 2023-11-03
-;   2022-10-01  | 99803000000   | 2022-10-28
+    (ds/head 4))
+;=> | :end       | :val         | :filed     |
+;   | 2025-09-27 | 112010000000 | 2025-10-31 |
+;   | 2024-09-28 |  93736000000 | 2025-10-31 |
+;   | 2024-09-28 |  93736000000 | 2024-11-01 |
+;   | 2023-09-30 |  96995000000 | 2025-10-31 |
 
-;; Or use the normalized income statement (handles line-item resolution + restatement dedup)
+;; The normalized income statement resolves line items and deduplicates
+;; restatements — one row per fiscal year
 (-> (e/income "AAPL" :shape :wide)
     (ds/select-columns [:end "Net Income"])
     (ds/head 3))
+;=> | :end       | Net Income   |
+;   | 2025-09-27 | 112010000000 |
+;   | 2024-09-28 |  93736000000 |
+;   | 2023-09-30 |  96995000000 |
 ```
 
 ### Example: Gross Margin — Apple vs. Peers
@@ -109,23 +116,26 @@ Every function accepts a ticker or CIK interchangeably (a CIK may be a string or
 ;; Filter to a peer group — :cik is a zero-padded string, same as (e/cik ...)
 (def peers #{"0000320193" "0000789019"})   ; AAPL, MSFT
 
-(def rev-peers (ds/filter-column revenue  :cik peers))
-(def gp-peers  (ds/filter-column gross-pr :cik peers))
+(def rev-peers (-> (ds/filter-column revenue :cik peers)
+                   (ds/select-columns [:cik :entityName :val])
+                   (ds/rename-columns {:entityName :company :val "Revenue"})))
+(def gp-peers  (-> (ds/filter-column gross-pr :cik peers)
+                   (ds/select-columns [:cik :val])
+                   (ds/rename-columns {:val "Gross Profit"})))
 
 ;; Join and compute gross margin
+(require '[tech.v3.dataset.join :as j])
 (def result
-  (-> (ds/inner-join :cik rev-peers gp-peers)
-      (ds/rename-columns {:val "Revenue" :right.val "Gross Profit"
-                          :entityName :company})
-      (ds/map-columns :gross-margin ["Gross Profit" "Revenue"]
-                      (fn [gp rev] (when (pos? rev) (double (/ gp rev)))))
+  (-> (j/inner-join :cik rev-peers gp-peers)
+      (ds/column-map :gross-margin (fn [gp rev] (when (pos? rev) (double (/ gp rev))))
+                     ["Gross Profit" "Revenue"])
       (ds/sort-by-column :gross-margin >)
       (ds/select-columns [:company "Revenue" "Gross Profit" :gross-margin])))
 
 result
-;=> | :company              | Revenue        | Gross Profit   | :gross-margin |
-;   | MICROSOFT CORPORATION | 211915000000   | 146052000000   | 0.689         |
-;   | Apple Inc.            | 383285000000   | 169148000000   | 0.441         |
+;=> | :company              | Revenue      | Gross Profit | :gross-margin |
+;   | MICROSOFT CORPORATION | 211915000000 | 146052000000 | 0.689         |
+;   | Apple Inc.            | 383285000000 | 169148000000 | 0.441         |
 ```
 
 The `revenue` and `gross-pr` datasets already contain every filer — to screen
@@ -159,6 +169,7 @@ clj -M:clerk:nrepl
 (e/cik "AAPL")                ;=> "0000320193"
 (e/cik "BRK.B")               ;=> "0001067983" (share-class dots accepted)
 (e/cik 320193)                ;=> "0000320193" (integer CIKs accepted)
+(e/ticker 1652044)            ;=> "GOOGL" (reverse lookup; primary share class, nil if unlisted)
 (e/company-name "AAPL")       ;=> "Apple Inc."
 (e/company "AAPL")            ; full SEC submissions map
 
@@ -206,6 +217,15 @@ clj -M:clerk:nrepl
 ;=> ({:accessionNumber "..." :form "8-K" :filingDate "2026-03-10"
 ;     :cik "..." :companyName "..." :filers [{:cik "..." :name "..."}]} ...)
 
+;; :cik is the FIRST listed filer (for a Form 4 often the owner) — match on :filers
+(e/daily-filings "2026-03-10" :form "4"
+                 :filter-fn (fn [f] (some #(= "0000320193" (:cik %)) (:filers f))))
+
+;; Quarterly full index (1993 onward) — every filing in a quarter
+(e/quarterly-index 2025 4 :form "10-K")      ; :form is exact
+;=> ({:cik "0001000230" :company-name "OPTICAL CABLE CORP" :form-type "10-K"
+;     :date-filed "2025-12-18" :filename "edgar/data/1000230/0001437749-25-038228.txt"} ...)
+
 ;; Full-text search via SEC EFTS (filings since 2001) — one map per filing
 (e/search-filings "climate risk" :forms ["10-K"] :start-date "2022-01-01")
 ;=> ({:accessionNumber "..." :cik "..." :form "10-K" :filingDate "..." :companyName "..."
@@ -215,7 +235,7 @@ clj -M:clerk:nrepl
 (e/filings-dataset "AAPL" :form "10-K")
 ```
 
-Every map these functions return works directly with `e/html`, `e/text`, `e/items`, `e/obj`, and the exhibit API below. The daily index is the SEC's daily master index: it is complete, but it carries neither the primary document nor 8-K item numbers — call `e/filing-by-accession` for the former, and use `e/search-filings` (whose hits carry `:items`) to filter 8-Ks by item. It is empty for weekends, holidays, future dates, and the current day until the SEC publishes the index around 10 pm ET. EFTS caps search results at 10,000 offsets — narrow the query or date range for exhaustive sweeps.
+Every map these functions return works directly with `e/html`, `e/text`, `e/items`, `e/obj`, and the exhibit API below. The daily index is the SEC's daily master index: it is complete, but it carries neither the primary document nor 8-K item numbers — call `e/filing-by-accession` for the former, and use `e/search-filings` (whose hits carry `:items`) to filter 8-Ks by item. It is empty for weekends, holidays, future dates, and the current day until the SEC publishes the index around 10 pm ET; it throws when the SEC refuses access (e.g. a missing User-Agent). `e/quarterly-index` reads the quarter's `master.idx` (30–60 MB; not held in the in-memory cache). For `e/search-filings`, a single `:start-date` or `:end-date` works (the other bound defaults to today or 2001-01-01), and `:forms` also matches amendments (`["8-K"]` returns 8-K/A too). EFTS caps search results at 10,000 offsets — narrow the query or date range for exhaustive sweeps.
 
 ### Filing Content and Section Extraction
 
@@ -260,15 +280,15 @@ Every map these functions return works directly with `e/html`, `e/text`, `e/item
 ;; HTML tables → seq of tech.ml.dataset (with numeric type inference)
 (e/tables f)
 (e/tables f :min-rows 5 :min-cols 3)   ; filter small tables (:min-rows 1 keeps single-row tables)
-(e/tables f :nth 0)                    ; first table only
+(e/tables f :n 0)                      ; first table only
 
 ;; Exhibits and XBRL linkbase documents
 (e/exhibits f)              ; seq of exhibit maps {:name :type :description :sequence :size}
-(e/exhibit f "EX-21")       ; subsidiaries exhibit, or nil
+(e/exhibit f "EX-21.1")     ; subsidiaries exhibit, or nil — :type must match exactly
 (e/xbrl-docs f)             ; XBRL instance, schema, and linkbase files
 
 ;; Fetch exhibit content — two equivalent patterns:
-(def ex (e/exhibit f "EX-21"))
+(def ex (e/exhibit f "EX-21.1"))
 (e/filing-document f (:name ex))   ; raw content string
 (e/doc-url f (:name ex))           ; SEC archives URL
 
@@ -280,7 +300,9 @@ Every map these functions return works directly with `e/html`, `e/text`, `e/item
 (e/save-all! f "/data/filings")  ; all attachments
 ```
 
-Pre-2001 plain-text filings are parsed line by line (item headings such as `ITEM 7. MANAGEMENT'S DISCUSSION ...`), with the same `:only` filtering. Known limitations: PART headings are not section boundaries, so the last Part I item of a 10-K ends with the "PART II" heading text; 8-K item titles come back empty when a filing puts the title in a separate HTML element from the "Item 2.02" label.
+`e/tables` skips layout tables and turns each data table into a dataset: column names come from the header row (a sub-header row such as units is folded in, e.g. `"2025 Amount (in millions)"`), colspan grids collapse to one column per header cell, `$`/`%`/`)` fragment cells merge into their number, parentheses become negatives, and `—`/`-` placeholders read as nil so the column stays numeric. Most filings number their exhibits, so `e/exhibit` wants the full type (`"EX-21.1"`, not `"EX-21"`) — list them with `e/exhibits`.
+
+Pre-2001 plain-text filings are parsed line by line (item headings such as `ITEM 7. MANAGEMENT'S DISCUSSION ...`), with the same `:only` filtering; when the index lists only the complete submission text file, that file serves as the primary document. Older variants (10-K405, 10-KT, 10-KSB, 10-QSB, 10-QT) and amendments use the item list of their base form (10-KSB: MD&A is Item 6). Known limitations: PART headings are not section boundaries, so the last Part I item of a 10-K ends with the "PART II" heading text; 8-K item titles come back empty when a filing puts the title in a separate HTML element from the "Item 2.02" label.
 
 ### XBRL Facts and Concept Discovery
 
@@ -290,6 +312,7 @@ Pre-2001 plain-text filings are parsed line by line (item headings such as `ITEM
 (e/facts "AAPL")
 (e/facts "AAPL" :concept "Assets")
 (e/facts "AAPL" :concept ["Assets" "NetIncomeLoss"] :form "10-K")
+;; :unit is the full XBRL unit: "USD", "shares", per-share facts "USD/shares"
 
 ;; Discover what concepts are available
 (e/concepts "AAPL")   ;=> dataset [:taxonomy :concept :label :description]
@@ -363,9 +386,9 @@ Every statement function takes a `:view` option exposing four layers of the same
 
 The standardized view fills gaps commercial databases fill by hand: if a filer doesn't tag `GrossProfit`, it is derived as Revenue − Cost of Revenue; Total Liabilities from L&E − Equity; a `"Free Cash Flow"` line item (OCF − Capex) is added to the cash flow statement. Derived rows are fully auditable — they carry `:method :derived` and `:derived-from [operand labels]`, while reported rows carry `:method :direct`.
 
-The Compustat view goes one step further: a data-driven reclassification rule engine (`edgar.reclass`, rules in `resources/edgar/reclass/`) adds line items that approximate Compustat's item definitions, alongside the originals. On the income statement: `"COGS (Compustat)"` (D&A stripped out, sourced from the cash-flow statement), `"XSGA (Compustat)"` (R&D folded in, with a component fallback for filers that tag S&M and G&A separately), `"OIADP (Compustat)"` (restructuring/impairment charges added back), plus `"DP (Compustat)"`, `"XOPR (Compustat)"`, `"OIBDP (Compustat)"`, `"Special Items (Compustat)"`, excise-netted `"Revenue (Compustat)"`, `"Gross Profit (Compustat)"` (that revenue less Compustat COGS), and — with FSDS enabled, see below — `"XRD (Compustat)"`. On the balance sheet, rules build the analogous aggregates from the filer's tagged components: `"RE (Compustat)"` (retained earnings *including* accumulated OCI, as in Compustat's RE), `"DLC (Compustat)"` / `"DLTT (Compustat)"` (debt including finance-lease — and, post-ASC-842, operating-lease — obligations), `"MIB (Compustat)"` / `"MIBN (Compustat)"` / `"MIBT (Compustat)"` (mezzanine redeemable vs equity-section noncontrolling interest, and their total), `"PSTK (Compustat)"` (preferred including mezzanine redeemable preferred), `"SEQ (Compustat)"`/`"CEQ (Compustat)"`/`"TEQ (Compustat)"`, `"RECT (Compustat)"` (total receivables incl. non-trade and tax refunds), and `"CHE (Compustat)"` (cash + short-term investments). Reclassified rows carry `:method :reclassified`, the `:rule` that produced them, and `:derived-from`; inspect the active rules with `(e/reclass-rules :income)` or `(e/reclass-rules :balance)`. The income rules were fitted on the standard (industrial) chains and only apply there: for companies routed to bank, insurance, or REIT chains, `:view :compustat` on the income statement equals `:view :standardized`. How close the approximation gets is measured in [Validation against Compustat](#validation-against-compustat).
+The Compustat view goes one step further: a data-driven reclassification rule engine (`edgar.reclass`, rules in `resources/edgar/reclass/`) adds line items that approximate Compustat's item definitions, alongside the originals. On the income statement: `"COGS (Compustat)"` (D&A stripped out, sourced from the cash-flow statement), `"XSGA (Compustat)"` (R&D folded in, with a component fallback for filers that tag S&M and G&A separately), `"OIADP (Compustat)"` (restructuring/impairment charges added back), plus `"DP (Compustat)"`, `"XOPR (Compustat)"`, `"OIBDP (Compustat)"`, `"Special Items (Compustat)"`, excise-netted `"Revenue (Compustat)"`, `"Gross Profit (Compustat)"` (that revenue less Compustat COGS), and `"XRD (Compustat)"` (the reported R&D line; an extension-tag variant, e.g. AMZN's technology and content, needs FSDS — see below). On the balance sheet, rules build the analogous aggregates from the filer's tagged components: `"RE (Compustat)"` (retained earnings *including* accumulated OCI, as in Compustat's RE), `"DLC (Compustat)"` / `"DLTT (Compustat)"` (debt including finance-lease — and, post-ASC-842, operating-lease — obligations), `"MIB (Compustat)"` / `"MIBN (Compustat)"` / `"MIBT (Compustat)"` (mezzanine redeemable vs equity-section noncontrolling interest, and their total), `"PSTK (Compustat)"` (preferred including mezzanine redeemable preferred), `"SEQ (Compustat)"`/`"CEQ (Compustat)"`/`"TEQ (Compustat)"`, `"RECT (Compustat)"` (total receivables incl. non-trade and tax refunds), and `"CHE (Compustat)"` (cash + short-term investments). Reclassified rows carry `:method :reclassified`, the `:rule` that produced them, and `:derived-from`; inspect the active rules with `(e/reclass-rules :income)` or `(e/reclass-rules :balance)`. The income rules were fitted on the standard (industrial) chains and only apply there: for companies routed to bank, insurance, or REIT chains, `:view :compustat` on the income statement equals `:view :standardized`. How close the approximation gets is measured in [Validation against Compustat](#validation-against-compustat).
 
-Two expense-classification questions cannot be answered from the companyfacts API at all: *where* a filer's D&A sits (own income-statement line, or embedded in COGS/SG&A?) and what its custom extension expense lines contain (Amazon's Fulfillment and Technology & content, which Compustat folds into XSGA/XRD). `(e/enable-fsds!)` turns on a local cache of the SEC's quarterly [Financial Statement Data Sets](https://www.sec.gov/dera/data/financial-statement-data-sets) (downloaded on first use into `~/.edgarjure/fsds`, shared across all companies), and the `:compustat` income view then uses statement placement to guard the D&A strip and extension-tag values as reclassification operands — including a first-class `"XRD (Compustat)"` line item:
+Two expense-classification questions cannot be answered from the companyfacts API at all: *where* a filer's D&A sits (own income-statement line, or embedded in COGS/SG&A?) and what its custom extension expense lines contain (Amazon's Fulfillment and Technology & content, which Compustat folds into XSGA/XRD). `(e/enable-fsds!)` turns on a local cache of the SEC's quarterly [Financial Statement Data Sets](https://www.sec.gov/data-research/sec-markets-data/financial-statement-data-sets) (downloaded on first use into `~/.edgarjure/fsds`, shared across all companies), and the `:compustat` income view then uses statement placement to guard the D&A strip and extension-tag values as reclassification operands (e.g. AMZN's technology line as `"XRD (Compustat)"`):
 
 ```clojure
 (e/enable-fsds!)                        ; opt-in; quarter files are 50-130 MB
@@ -378,7 +401,7 @@ FSDS operands apply to 10-K periods only. 10-Q queries never trigger FSDS downlo
 
 ### Industry Routing
 
-Banks, insurers, and REITs use fundamentally different income statement line items (Net Interest Income, Provision for Credit Losses, Premiums Earned, Rental Revenue, Property Operating Expense). edgarjure auto-detects them from the company's SIC code and switches concept chains:
+Banks, insurers, and REITs use fundamentally different income statement line items (Net Interest Income, Provision for Credit Losses, Premiums Earned, Rental Revenue, Property Operating Expense). edgarjure auto-detects them from the company's SIC code — banks 6000–6199 and 6712, insurers 6300–6399 and 6411, REITs 6798 (plus real-estate operators 6500–6553) — and switches concept chains. Coverage is partial and grows via the unmapped-concepts feedback loop (below):
 
 ```clojure
 (e/income "JPM")                        ; auto-routes to bank chains
@@ -437,15 +460,19 @@ For bulk standardization work, `edgar.fsds` downloads the SEC Financial Statemen
 (e/pivot some-facts-ds)
 ```
 
-`e/pivot` keeps one value per cell: the longest window wins (the fiscal year over quarterly-footnote rows), then the latest `:filed`. Units are never mixed — a concept reported in several units gets one `"<concept> (<unit>)"` column per unit.
+`e/pivot` keeps one value per cell: the longest window wins, then the latest `:filed`; 10-K quarterly-footnote rows (3/6/9-month windows) are dropped, so 10-K input pivots to annual values only. Units are never mixed — a concept reported in several units gets one `"<concept> (<unit>)"` column per unit. Columns: `:ticker` (panel input) and `:end`, then the concepts alphabetically.
+
+```clojure
+(e/pivot (e/panel ["AAPL" "MSFT"] :concept ["Assets" "NetIncomeLoss"] :form "10-K"))
+;=> | :ticker | :end       | Assets       | NetIncomeLoss |
+;   | AAPL    | 2025-09-27 | 359241000000 | 112010000000  |
+;   | AAPL    | 2024-09-28 | 364980000000 |  93736000000  |
+;   ...
+```
 
 ### Form Parsers
 
-Form-specific parsers register via the `filing-obj` multimethod and activate on require:
-
-```clojure
-(require '[edgar.forms])   ; loads all built-in parsers at once
-```
+`e/obj` dispatches on the filing's form type through the `filing-obj` multimethod; `edgar.api` loads all built-in parsers, and unparsed forms return `{:form ... :raw-html ...}`.
 
 **Forms 3, 4, 5 — Beneficial Ownership (initial, changes, annual):**
 
@@ -473,13 +500,13 @@ All three (plus their `/A` amendments) share the ownership XML schema and one pa
 ```clojure
 (-> (e/filing "AAPL" :form "SCHEDULE 13G") e/obj)
 ;=> {:form "SCHEDULE 13G" :schedule :13g
-;    :security-class "Common Stock" :event-date "03/31/2026" :rule "Rule 13d-1(b)"
+;    :security-class "Common Stock" :event-date "03/31/2026" :rules ["Rule 13d-1(b)"]
 ;    :issuer {:cik "0000320193" :name "Apple Inc" :cusip "037833100"}
 ;    :reporting-persons [{:name "..." :aggregate-owned 1.099E9
-;                         :percent-of-class 7.48 :type "IA" ...}]}
+;                         :percent-of-class 7.48 :types ["IA"] ...}]}
 ```
 
-The 13D and 13G XML schemas spell their fields differently; both normalize to the same shape, and activist group filings yield one entry per reporting person. Legacy `SC 13D`/`SC 13G` filings (pre-Dec-2024, HTML/text) fall through to the default raw-HTML result.
+The 13D and 13G XML schemas spell their fields differently; both normalize to the same shape, and activist group filings yield one entry per reporting person. `:rules` and `:types` are always vectors (`[]` when absent) — a filer may list several (`["IA" "PN"]`). Legacy `SC 13D`/`SC 13G` filings (pre-Dec-2024, HTML/text) fall through to the default raw-HTML result.
 
 **13F-HR — Institutional Holdings (XML era, 2013 Q2+):**
 
@@ -490,7 +517,7 @@ The 13D and 13G XML schemas spell their fields differently; both normalize to th
 ;    :report-type "13F HOLDINGS REPORT"
 ;    :is-amendment? false
 ;    :table-entry-count 89
-;    :table-value-total 299253556246     ; whole dollars (filings since Jan 2023; thousands before)
+;    :table-value-total 299253556246
 ;    :manager {:name "..." :street "..." :city "..." :state "..." :zip "..."}
 ;    :holdings <tech.ml.dataset>         ; :name :cusip :value :shares :put-call :voting-sole ...
 ;    :total-value 299253556246}          ; sum of the :value column
@@ -510,6 +537,9 @@ Also returned: `:form13f-file-number`, `:other-managers-count`, and on amendment
 (download/download-batch! ["AAPL" "MSFT" "GOOG"] "/data/filings"
                            :form "10-K" :limit 3 :parallelism 4)
 
+;; Raw quarterly index files, written to dir/<year>/QTR<q>/<type>.idx
+(download/download-index! 2020 2024 "/data/index" :type "master")   ; "company" (default) | "form" | "master"
+
 ;; All functions return structured envelopes:
 ;; {:status :ok :path "..."} or {:status :skipped ...} or {:status :error ...}
 ```
@@ -522,12 +552,10 @@ How close is edgarjure to a commercial database? The method, item mappings, and 
 
 **`:compustat` view.** Measured 2026-10-15 on the current rules against a current-vintage Compustat extract: 13 industrials (AAPL MSFT IBM INTC KO PEP PG WMT CAT CVX HON UPS CSCO), FY2009–2025, 221 firm-years, FSDS enabled.
 
-- Income: XRD **84%**, DP **74%**, XSGA **50%**, COGS **45%**, XOPR 42%, Gross Profit 40%, OIADP 28%, OIBDP 23%. Problem filers set aside from the 13: AMZN COGS 17/17, XSGA 16/17, XRD 16/17 (its fulfillment and technology lines come from FSDS extension tags); GE's conglomerate format matches poorly.
+- Income: XRD **84%**, DP **74%**, XSGA **50%**, COGS **45%**, XOPR 42%, Gross Profit 40%, OIADP 28%, OIBDP 23%. Reported separately (not among the 13): AMZN COGS 17/17, XSGA 16/17, XRD 16/17 (fulfillment and technology lines come from FSDS extension tags); GE's conglomerate format matches poorly.
 - Income, out-of-sample (2026-07, FY2016+, ~190 firm-years the rules were never fitted on): COGS **54%** (as reported 1%), XSGA **43%** (16%), OIADP **34%** (19%), OIBDP 33%, DP 76%.
 - Balance sheet: SEQ/CEQ/TEQ **97%**, RE **96%** (the raw retained-earnings tag: 12% — Compustat RE includes accumulated OCI), MIBN **96%**, MIBT 94%, DLTT **86%**, MIB **83%**, RECT 69%, CHE 68%, DLC 58%, PSTK 34%. Equity items hold up for banks and insurers too (RE 95%, SEQ/TEQ 95%); classified-balance-sheet items (debt/receivables/cash buckets) do not apply to financial-format filers and REITs.
 - Excise taxes (MO, out of sample): Gross Profit 53%, Revenue (Compustat) 59%.
-
-Earlier published income figures (XSGA 58%, COGS 52%, July 2026) do not reproduce on the current extract under either the old or the new rules; absolute rates depend on the extract, so compare rule versions on one extract — the CHANGELOG reports each change that way.
 
 The remainder is mostly footnote-level allocation that the companyfacts API doesn't carry (partial D&A splits between COGS and SG&A, R&D embedded in COGS, special items only visible in text). Per-share items need split-vintage alignment (AJEX).
 
@@ -560,29 +588,22 @@ The remainder is mostly footnote-level allocation that the companyfacts API does
 | `edgar.validation` | Match-rate harness against benchmark datasets (Compustat extracts, hand-collected figures) |
 | `edgar.fsds` | SEC Financial Statement Data Sets (DERA quarterly dumps) — download, load as datasets, placement/extension queries, the `e/enable-fsds!` cache |
 | `edgar.extract` | Item-section extraction (10-K, 10-Q, 8-K; HTML and plain text); batch mode |
-| `edgar.dataset` | Panel datasets, cross-sectional snapshots, pivot helpers |
+| `edgar.dataset` | Panel datasets, filing-list datasets, pivot helpers |
 | `edgar.tables` | HTML table extraction → `tech.ml.dataset` |
-| `edgar.forms` | Central loader — `(require '[edgar.forms])` activates all built-in parsers |
+| `edgar.forms` | Central loader for the built-in form parsers (required by `edgar.api`) |
 | `edgar.forms.ownership` | Forms 3/4/5 parser (beneficial ownership: initial holdings, insider trades, annual statements; includes `/A` amendments) |
 | `edgar.forms.form13f` | 13F-HR parser (institutional holdings, XML era 2013 Q2+) |
 | `edgar.forms.schedule13` | Schedule 13D/13G parser (>5% beneficial ownership, XML era Dec 2024+) |
 | `edgar.forms.xml` | Shared XML helpers for the form parsers (namespace-prefix-tolerant tag matching; external entities disabled) |
+| `edgar.util` | Internal helpers (date parsing, period windows, restatement dedup) — not a public API |
 
 ## Conventions
 
-- **Keyword args throughout** — no positional parameters
-- **Ticker or CIK interchangeably** — every function resolves via `company-cik`; CIKs may be strings (with or without leading zeros) or integers, and share-class tickers accept dots (`"BRK.B"`)
-- **CIKs come back as zero-padded 10-digit strings** — in every returned map and dataset (`"0000320193"`), so results join directly
-- **Long-name aliases** — `e/income-statement`, `e/balance-sheet`, `e/cash-flow`, and `e/search-companies` are the same vars as their short names
+- **CIKs come back as zero-padded 10-digit strings** — in every returned map and dataset (`"0000320193"`), so results join directly; CIK inputs may be strings (with or without leading zeros) or integers
 - **Options as keywords or a single map** — `(e/income "AAPL" :form "10-Q")` and `(e/income "AAPL" {:form "10-Q"})` are equivalent
-- **`e/filing` with `:n` out of range returns nil** — never an exception
-- **`:concept` accepts string or collection** — coerced to a set internally
-- **Amendments excluded by default** — pass `:include-amends? true` to include `10-K/A` etc., or ask for the amendment form itself (`:form "10-K/A"`)
-- **Datasets always return `tech.ml.dataset`** — never seq-of-maps
-- **Form parsers must be required** — `(require '[edgar.forms])` loads all at once
-- **Download results are structured envelopes** — `{:status :ok/:skipped/:error ...}`
-- **Core `edgar.api` query functions are Malli-validated** — bad args throw `ex-info` with `:type ::edgar.schema/invalid-args` (simple wrappers and toggles skip validation)
-- **Banks, insurers, and REITs are auto-routed** — `e/income` detects SIC 6000–6199/6712 (banks), 6300–6399/6411 (insurers), and 6798/6500–6553 (REITs and real-estate operators) and switches to industry-specific concept chains; coverage is partial and grows via the unmapped-concepts feedback loop
+- **Long-name aliases** — `e/income-statement`, `e/balance-sheet`, `e/cash-flow`, and `e/search-companies` are the same vars as their short names
+- **`:n` picks the nth item, 0-indexed** (`e/filing`, `e/tables`) — out of range returns nil, never an exception
+- **Invalid arguments throw** `ex-info` with `:type ::edgar.schema/invalid-args` — filing-content functions also check the filing map (`:cik` and `:accessionNumber`)
 
 ## Rate Limits and Caching
 
@@ -605,16 +626,15 @@ Disk entries expire after 24 hours for JSON endpoints and the daily-changing ful
 # Start REPL (random port, written to .nrepl-port)
 clj -M:nrepl
 
-# Run offline unit tests (262 tests, 1457 assertions, no network)
+# Run offline unit tests (293 tests, 1587 assertions, no network)
 clj -M:test
 
-# Run live integration tests (manual only, requires network)
+# Run live integration tests (36 tests, 186 assertions; manual only, requires network)
 clj -M:test-integration
 ```
 
 ```clojure
 (require '[edgar.api :as e]
-         '[edgar.forms]
          '[tech.v3.dataset :as ds])
 
 (e/init! "Your Name your@email.com")

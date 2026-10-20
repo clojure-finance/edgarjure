@@ -1,6 +1,10 @@
 (ns edgar.extract-test
   (:require [clojure.test :refer [deftest is testing]]
             [edgar.extract :as extract]
+            [edgar.filing]
+            [babashka.fs :as fs]
+            [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [hickory.core :as hickory]))
 
@@ -58,6 +62,16 @@
     (is (= extract/items-10k (extract/items-for-form "10-K/A")))
     (is (= extract/items-10q (extract/items-for-form "10-Q/A")))
     (is (= extract/items-8k (extract/items-for-form "8-K/A"))))
+  (testing "pre-2009 and transition-report variants use their base form's items"
+    (doseq [form ["10-K405" "10-K405/A" "10-KT" "10-KT/A" "10-KT405"]]
+      (is (= extract/items-10k (extract/items-for-form form)) form))
+    (doseq [form ["10-QSB" "10-QSB/A" "10-QT" "10-QT/A"]]
+      (is (= extract/items-10q (extract/items-for-form form)) form))
+    (doseq [form ["10-KSB" "10-KSB/A" "10-KSB40" "10-KSB40/A"]]
+      (is (= extract/items-10ksb (extract/items-for-form form)) form)))
+  (testing "10-KSB numbering: MD&A is item 6, controls and procedures 8A"
+    (is (str/starts-with? (get extract/items-10ksb "6") "Management's Discussion"))
+    (is (= "Controls and Procedures" (get extract/items-10ksb "8A"))))
   (testing "unknown form returns empty map"
     (is (= {} (extract/items-for-form "SC 13G")))
     (is (= {} (extract/items-for-form "4"))))
@@ -106,6 +120,51 @@
     (testing "a title glued to the id is not read as a letter suffix"
       (is (= ["1" "Business"] (id+title "Item 1Business")))
       (is (= ["1A" "Risk Factors"] (id+title "Item 1ARisk Factors"))))))
+
+(deftest resolve-letter-suffix-test
+  (let [f #'edgar.extract/resolve-letter-suffix]
+    (testing "an all-caps title glued to the number gets its first letter back"
+      (is (= ["1" "BUSINESS"] (f "1B" "USINESS" true nil)))
+      (is (= ["2" "PROPERTIES"] (f "2P" "ROPERTIES" true nil)))
+      (is (= ["7" "MANAGEMENT'S DISCUSSION"] (f "7M" "ANAGEMENT'S DISCUSSION" true nil)))
+      (is (= ["9" "CHANGES IN AND DISAGREEMENTS"] (f "9C" "HANGES IN AND DISAGREEMENTS" true nil))))
+    (testing "lettered items whose title does not spell the bare item's title keep the letter"
+      (is (= ["1A" "RISK FACTORS"] (f "1A" "RISK FACTORS" true nil)))
+      (is (= ["1B" "UNRESOLVED STAFF COMMENTS"] (f "1B" "UNRESOLVED STAFF COMMENTS" true nil)))
+      (is (= ["7A" "QUANTITATIVE"] (f "7A" "QUANTITATIVE" true nil)))
+      (is (= ["8A" "CONTROLS"] (f "8A" "CONTROLS" true extract/items-10ksb)))
+      (is (= ["II-1A" "RISK FACTORS"] (f "II-1A" "RISK FACTORS" true extract/items-10q))))
+    (testing "mixed-case adjacency keeps the letter (item-pattern already left 1Business alone)"
+      (is (= ["1A" "Risk Factors"] (f "1A" "Risk Factors" true nil))))
+    (testing "a separated title is never re-read"
+      (is (= ["1B" "Business"] (f "1B" "Business" false nil))))
+    (testing "ids without a letter are unchanged"
+      (is (= ["5.07" "X"] (f "5.07" "X" true nil)))
+      (is (= ["7" "MD&A"] (f "7" "MD&A" true nil))))))
+
+(deftest extract-items-glued-all-caps-headings-test
+  (let [html "<html><body>
+               <p>ITEM 1BUSINESS</p><p>Business body.</p>
+               <p>ITEM 1ARISK FACTORS</p><p>Risk body.</p>
+               <p>ITEM 1BUNRESOLVED STAFF COMMENTS</p><p>None.</p>
+               <p>ITEM 2PROPERTIES</p><p>Property body.</p>
+               <p>ITEM 7AQUANTITATIVE AND QUALITATIVE DISCLOSURES</p><p>Market risk body.</p>
+              </body></html>"
+        text "ITEM 1BUSINESS\nBusiness body.\n\nITEM 1ARISK FACTORS\nRisk body.\n\nITEM 2PROPERTIES\nProperty body.\n"]
+    (testing "HTML path"
+      (let [result (with-redefs [edgar.filing/filing-html (fn [_] html)]
+                     (extract/extract-items {:form "10-K"}))]
+        (is (= #{"1" "1A" "1B" "2" "7A"} (set (keys result))))
+        (is (= "BUSINESS" (get-in result ["1" :title])))
+        (is (= "Business body." (get-in result ["1" :text])))
+        (is (= "PROPERTIES" (get-in result ["2" :title])))
+        (is (= "RISK FACTORS" (get-in result ["1A" :title])))))
+    (testing "plain-text path"
+      (let [result (with-redefs [edgar.filing/filing-html (fn [_] text)]
+                     (extract/extract-items {:form "10-K405"}))]
+        (is (= #{"1" "1A" "2"} (set (keys result))))
+        (is (= "BUSINESS" (get-in result ["1" :title])))
+        (is (= "Property body." (get-in result ["2" :text])))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Inline HTML fixture — simple
@@ -289,7 +348,7 @@
 ;;; ---------------------------------------------------------------------------
 
 (def ^:private fixture-html
-  (slurp (clojure.java.io/resource "fixtures/10k_simple.html")))
+  (slurp (io/resource "fixtures/10k_simple.html")))
 
 (deftest fixture-html-find-boundaries-test
   (let [tree (-> fixture-html hickory/parse hickory/as-hickory)
@@ -519,7 +578,7 @@
 ;;; ---------------------------------------------------------------------------
 
 (def ^:private fixture-text
-  (slurp (clojure.java.io/resource "fixtures/10k_plaintext.txt")))
+  (slurp (io/resource "fixtures/10k_plaintext.txt")))
 
 (def ^:private all-10k-ids (set (keys extract/items-10k)))
 
@@ -614,20 +673,15 @@
     (is (str/starts-with? (get-in result ["I-2" :text]) "Sales grew."))
     (is (= "Lawsuits." (get-in result ["II-1" :text])))))
 
-(deftest html-content-predicate-test
-  (let [f #'edgar.extract/html-content?]
-    (testing "recognises HTML DOCTYPE"
-      (is (f "<!DOCTYPE html><html><body></body></html>")))
-    (testing "recognises lowercase html tag"
-      (is (f "<html><body>text</body></html>")))
-    (testing "recognises mixed-case"
-      (is (f "<HTML><BODY></BODY></HTML>")))
-    (testing "rejects plain text"
-      (is (not (f "ITEM 1. Business\nSome business text."))))
-    (testing "rejects blank string"
-      (is (not (f "   "))))
-    (testing "rejects nil-like empty"
-      (is (not (f ""))))))
+(deftest sgml-table-tags-stay-on-plain-text-path-test
+  ;; Pre-2001 .txt filings mark tables with SGML <TABLE> tags; they must not
+  ;; be routed to the HTML path (edgar.tables/html-content? is shared).
+  (let [text "ITEM 1. BUSINESS\nWidgets.\n<TABLE>\n<CAPTION>\nSales  100\n</TABLE>\n\nITEM 2. PROPERTIES\nPlants.\n"
+        result (with-redefs [edgar.filing/filing-html (fn [_] text)]
+                 (extract/extract-items {:form "10-K405"}))]
+    (is (= #{"1" "2"} (set (keys result))))
+    (is (every? #(= :plain-text-regex (:method %)) (vals result)))
+    (is (= "Plants." (get-in result ["2" :text])))))
 
 (def ^:private plain-text-filing-content
   "ANNUAL REPORT ON FORM 10-K
@@ -697,3 +751,18 @@ Operating income improved year over year.")
       (is (= "MANAGEMENT'S DISCUSSION AND ANALYSIS"
              (:title (with-redefs [edgar.filing/filing-html (fn [_] plain-text-filing-content)]
                        (extract/extract-item {:form "10-K"} "7"))))))))
+
+(deftest batch-extract-result-keys-test
+  (let [dir (str (fs/create-temp-dir))
+        html "<html><body><p>Item 1. Business</p><p>Body.</p></body></html>"
+        result (with-redefs [edgar.filing/filing-html (fn [_] html)]
+                 (extract/batch-extract! [{:form "10-K" :accessionNumber "0000000000-25-000001"}]
+                                         dir))]
+    (try
+      (testing "result maps carry :accession-number, as download-filings! does"
+        (is (= [{:accession-number "0000000000-25-000001" :status :ok :items ["1"]}]
+               (mapv #(update % :items vec) result))))
+      (testing "the EDN file is named after the accession number"
+        (is (= "Body." (get-in (edn/read-string (slurp (str dir "/0000000000-25-000001.edn")))
+                               ["1" :text]))))
+      (finally (fs/delete-tree dir)))))

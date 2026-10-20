@@ -34,3 +34,6 @@ jobs:
 
       - name: Run tests
         run: clojure -M:test
+
+      - name: Build jar
+        run: clojure -T:build jar

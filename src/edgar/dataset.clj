@@ -1,10 +1,10 @@
 (ns edgar.dataset
-  (:require [edgar.filings :as filings]
+  (:require [clojure.string :as str]
+            [edgar.filings :as filings]
             [edgar.xbrl :as xbrl]
             [edgar.company :as company]
-            [tech.v3.dataset :as ds])
-  (:import [java.time LocalDate]
-           [java.time.temporal ChronoUnit]))
+            [edgar.util :as util]
+            [tech.v3.dataset :as ds]))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Filings index → dataset
@@ -43,15 +43,13 @@
      :as-of     - \"YYYY-MM-DD\" string; exclude filings submitted after this date
                   and keep only the most recently filed observation per [ticker concept unit start end]"
   [tickers & {:keys [concept form as-of] :or {form "10-K"}}]
-  (let [concept-set (when concept
-                      (if (string? concept) #{concept} (set concept)))
-        rows (keep identity
+  (let [rows (keep identity
                    (for [ticker tickers]
                      (try
                        (let [cik (company/company-cik ticker)
                              d (xbrl/get-facts-dataset cik
                                                        :form form
-                                                       :concept concept-set
+                                                       :concept concept
                                                        :sort nil)]
                          (ds/add-column d (ds/new-column :ticker (repeat (ds/row-count d) ticker))))
                        (catch Exception _
@@ -62,90 +60,42 @@
     ;; the empty dataset has no :filed column, so the as-of filter would throw
     (if (or (nil? as-of) (zero? (ds/row-count combined)))
       combined
-      (let [filtered (ds/filter-column combined :filed #(not (pos? (compare % as-of))))
-            deduped (reduce (fn [acc row]
-                              (let [k [(:ticker row) (:concept row) (:unit row) (:start row) (:end row)]]
-                                (if (or (not (contains? acc k))
-                                        (pos? (compare (:filed row) (:filed (get acc k)))))
-                                  (assoc acc k row)
-                                  acc)))
-                            {}
-                            (ds/rows filtered {:nil-missing? true}))]
-        (ds/->dataset (vals deduped))))))
+      (->> (ds/rows combined {:nil-missing? true})
+           (filter #(util/filed-on-or-before? as-of %))
+           (util/latest-filed (juxt :ticker :concept :unit :start :end))
+           vec
+           ds/->dataset))))
 
-;;; ---------------------------------------------------------------------------
-;;; Cross-sectional frame dataset
-;;; Pull a single concept for all companies in one API call
-;;; ---------------------------------------------------------------------------
-
-(defn cross-sectional-dataset
-  "Build a cross-sectional dataset for a concept across all companies.
-   Uses the SEC frames endpoint (much faster than per-company fetches).
-   taxonomy : \"us-gaap\" | \"dei\" | \"ifrs-full\"
-   concept  : e.g. \"Assets\" \"Revenues\"
-   unit     : e.g. \"USD\" \"shares\"
-   frame    : e.g. \"CY2023Q4I\" \"CY2023\" \"CY2022Q3\"
-   Returns a dataset sorted by :val descending (as edgar.xbrl/get-concept-frame
-   already returns it)."
-  [taxonomy concept unit frame]
-  (xbrl/get-concept-frame concept frame :taxonomy taxonomy :unit unit))
-
-;;; ---------------------------------------------------------------------------
-;;; Helpers for financial research workflows
-;;; These bridge edgar.dataset with typical empirical finance patterns
-;;; and Datajure downstream use
-;;; ---------------------------------------------------------------------------
-
-(defn add-market-cap-rank
-  "Sort descending by col and add a :rank column (1 = largest)."
-  [ds col]
-  (let [sorted (ds/sort-by-column ds col #(compare %2 %1))]
-    (ds/add-or-update-column sorted :rank
-                             (vec (range 1 (inc (ds/row-count sorted)))))))
-
-(defn filter-form
-  "Filter a facts dataset to a specific form type."
-  [ds form]
-  (ds/filter-column ds :form #(= % form)))
-
-(defn- window-days
-  "Length in days of a fact's :start..:end window; -1 for instant facts
-   (and for unparseable dates), so any duration window outranks them."
-  ^long [row]
-  (let [parse (fn [d] (when d (try (LocalDate/parse (str d)) (catch Exception _ nil))))
-        s (parse (:start row))
-        e (parse (:end row))]
-    (if (and s e) (.between ChronoUnit/DAYS s e) -1)))
-
-(defn- preferred-fact?
-  "True when fact a should replace fact b as the pivot cell value: the
-   longer window wins; for the same window length the later :filed wins."
-  [a b]
-  (let [c (compare (window-days a) (window-days b))]
-    (if (zero? c)
-      (pos? (compare (str (:filed a)) (str (:filed b))))
-      (pos? c))))
+(defn- annual-form? [form]
+  (str/starts-with? (str form) "10-K"))
 
 (defn pivot-wide
   "Pivot a long-format facts dataset to wide format: one row per period
    (:end) — per [:ticker :end] when the dataset has a :ticker column, as
    e/panel output does — and one column per :concept, valued from :val.
 
+   Facts from 10-K filings (:form \"10-K\", \"10-K/A\", ...) whose window is
+   3, 6 or 9 months are dropped first: a 10-K carries quarterly-footnote
+   windows next to its fiscal-year figures, and those must neither replace
+   an annual value nor surface as extra quarter-end rows.
+
    One observation is kept per [ticker end concept unit]:
      - duration facts: the longest window ending at :end wins (a 10-K's
-       fiscal-year figure over the quarterly-footnote row sharing its end
-       date; a 10-Q's year-to-date figure over its 3-month figure)
+       fiscal-year figure over an irregular window sharing its end date; a
+       10-Q's year-to-date figure over its 3-month figure)
      - among observations of the same window length, the most recently
        :filed wins (restatements)
    Units are never mixed in one column: a concept reported in a single unit
    keeps its plain name as the column; a concept reported in several units
    gets one column per unit, named \"<concept> (<unit>)\".
-   Rows are sorted by :ticker (when present), then :end descending.
-   Returns a tech.ml.dataset."
+   Columns: :ticker (when present) and :end first, then the concept columns
+   alphabetically. Rows are sorted by :ticker (when present), then :end
+   descending. Returns a tech.ml.dataset."
   [ds]
   (if (zero? (ds/row-count ds))
     (ds/->dataset [])
-    (let [rows (ds/rows ds {:nil-missing? true})
+    (let [rows (remove #(and (annual-form? (:form %)) (util/quarterly-window? %))
+                       (ds/rows ds {:nil-missing? true}))
           ticker? (contains? (set (ds/column-names ds)) :ticker)
           units (reduce (fn [m r] (update m (:concept r) (fnil conj #{}) (:unit r)))
                         {} rows)
@@ -156,11 +106,11 @@
           best (reduce (fn [acc r]
                          (let [k [(when ticker? (:ticker r)) (:end r) (col-name r)]
                                cur (get acc k)]
-                           (if (or (nil? cur) (preferred-fact? r cur))
+                           (if (or (nil? cur) (util/preferred-observation? r cur))
                              (assoc acc k r)
                              acc)))
                        {} rows)]
-      (ds/->dataset
+      (util/ordered-dataset
        (->> best
             (group-by (fn [[[ticker end _] _]] [ticker end]))
             (sort-by key (fn [[ta ea] [tb eb]]
@@ -169,4 +119,5 @@
             (map (fn [[[ticker end] cells]]
                    (into (if ticker? {:ticker ticker :end end} {:end end})
                          (map (fn [[[_ _ col] r]] [col (:val r)]))
-                         cells))))))))
+                         cells))))
+       [:ticker :end]))))

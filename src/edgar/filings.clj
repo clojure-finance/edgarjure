@@ -16,26 +16,17 @@
         rows (apply map vector cols)]
     (map #(zipmap ks %) rows)))
 
-(defn- accession->str
-  "Normalise an accession number to dashed format: XXXXXXXXXX-YY-ZZZZZZ"
-  [s]
-  (if (re-matches #"\d{18}" s)
-    (str (subs s 0 10) "-" (subs s 10 12) "-" (subs s 12))
-    s))
-
 (defn- enrich-filing
-  "Add derived keys to a raw filing map."
+  "Add derived keys to a raw filing map. :url is nil when the submissions
+   data names no primary document (pre-2001 filings)."
   [cik filing]
-  (let [acc (accession->str (:accessionNumber filing))
-        acc-clean (str/replace acc "-" "")
-        cik-numeric (str (Long/parseLong cik))
-        primary (:primaryDocument filing)
-        url (when primary
-              (str core/archives-url "/" cik-numeric "/" acc-clean "/" primary))]
-    (-> filing
-        (assoc :cik cik
-               :accessionNumber acc
-               :url url))))
+  (let [acc (core/dashed-accession (:accessionNumber filing))
+        primary (:primaryDocument filing)]
+    (assoc filing
+           :cik cik
+           :accessionNumber acc
+           :url (when-not (str/blank? primary)
+                  (core/archive-url cik acc primary)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Get filings for a company
@@ -86,9 +77,10 @@
                      (map #(enrich-filing cik %)))
         strip-amends? (not (or include-amends? (amended? {:form form})))]
     (cond->> filings
+      ;; the seq is newest-first, so stop instead of fetching older chunks
+      start-date (take-while #(>= (compare (:filingDate %) start-date) 0))
       strip-amends? (remove amended?)
       form (filter #(= form (:form %)))
-      start-date (filter #(>= (compare (:filingDate %) start-date) 0))
       end-date (filter #(<= (compare (:filingDate %) end-date) 0))
       limit (take limit))))
 
@@ -98,18 +90,19 @@
    Options:
      :form - form type string e.g. \"10-K\""
   [ticker-or-cik & {:keys [form]}]
-  (let [amend-form (when form (str form "/A"))
-        all (get-filings ticker-or-cik :include-amends? true)
-        matching (filter #(or (= form (:form %)) (= amend-form (:form %))) all)
-        non-amended (filter #(= form (:form %)) matching)
-        amendments (filter #(= amend-form (:form %)) matching)
-        latest-original (first non-amended)
-        latest-amendment (first amendments)]
-    (if (and latest-amendment latest-original
-             (pos? (compare (:filingDate latest-amendment)
-                            (:filingDate latest-original))))
-      latest-amendment
-      (or latest-original latest-amendment))))
+  (let [amend-form (str form "/A")
+        ;; newest-first, so an amendment that supersedes the latest original
+        ;; precedes it: the scan stops at the first original
+        matching (filter #(contains? #{form amend-form} (:form %))
+                         (get-filings ticker-or-cik :include-amends? true))
+        latest (first matching)]
+    (if (= amend-form (:form latest))
+      (let [original (first (filter #(= form (:form %)) matching))]
+        (if (and original
+                 (not (pos? (compare (:filingDate latest) (:filingDate original)))))
+          original
+          latest))
+      latest)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Full-index quarterly (for bulk / historical crawling)
@@ -147,32 +140,27 @@
   "Fetch and parse the full quarterly index for year/quarter.
    Returns a seq of maps with :cik (zero-padded 10-digit string)
    :company-name :form-type :date-filed (YYYY-MM-DD) :filename.
+   Options:
+     :form - keep only this exact form type (\"8-K\" excludes \"8-K/A\")
 
    Uses master.idx, the pipe-delimited variant of the quarterly index.
    (company.idx and form.idx are fixed-width files; master.idx carries the
    same rows in a machine-friendly format.) The 30-60 MB file bypasses the
    in-memory response cache (the opt-in disk cache still applies)."
-  [year quarter]
-  (->> (parse-master-idx (core/edgar-get (full-index-url year quarter "master")
-                                         :raw? true :cache :disk))
-       (map (fn [[cik nm form date file]]
-              {:cik (core/pad-cik cik)
-               :company-name nm
-               :form-type form
-               :date-filed date
-               :filename file}))))
-
-(defn get-quarterly-index-by-form
-  "Like get-quarterly-index but pre-filtered to a specific form type."
-  [year quarter form]
-  (filter #(= form (:form-type %)) (get-quarterly-index year quarter)))
+  [year quarter & {:keys [form]}]
+  (cond->> (map (fn [[cik nm form-type date file]]
+                  {:cik (core/pad-cik cik)
+                   :company-name nm
+                   :form-type form-type
+                   :date-filed date
+                   :filename file})
+                (parse-master-idx (core/edgar-get (full-index-url year quarter "master")
+                                                  :raw? true :cache :disk)))
+    form (filter #(= form (:form-type %)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; EFTS full-text search
 ;;; ---------------------------------------------------------------------------
-
-(defn- url-encode ^String [s]
-  (str/replace (java.net.URLEncoder/encode (str s) "UTF-8") "+" "%20"))
 
 (defn- shape-search-hit
   "Shape one EFTS full-text hit. The raw _source map is kept (snake_case
@@ -183,7 +171,7 @@
    the document the query matched, often an exhibit."
   [{:keys [_id _source]}]
   (let [doc (second (str/split (str _id) #":" 2))
-        acc (some-> (:adsh _source) accession->str)
+        acc (some-> (:adsh _source) core/dashed-accession)
         cik (some-> (first (:ciks _source)) core/pad-cik)]
     (assoc _source
            :accessionNumber acc
@@ -192,15 +180,15 @@
            :companyName (first (:display_names _source))
            :document doc
            :url (when (and cik acc (not (str/blank? doc)))
-                  (str core/archives-url "/" (Long/parseLong cik) "/"
-                       (str/replace acc "-" "") "/" doc)))))
+                  (core/archive-url cik acc doc)))))
 
 (defn search-filings
   "Full-text search across SEC EDGAR filings (EFTS, filings since 2001).
    Options:
-     :forms       - vector of form types e.g. [\"10-K\" \"10-Q\"]
-     :start-date  - \"YYYY-MM-DD\"
-     :end-date    - \"YYYY-MM-DD\"
+     :forms       - vector of form types e.g. [\"10-K\" \"10-Q\"]; EFTS also
+                    returns their amendments (\"8-K\" matches 8-K/A)
+     :start-date  - \"YYYY-MM-DD\" (alone: through today)
+     :end-date    - \"YYYY-MM-DD\" (alone: from 2001-01-01)
      :limit       - max results (default 10)
 
    Returns a lazy seq of one map per FILING, best match first. EFTS indexes
@@ -221,13 +209,14 @@
    may exceed the EFTS page size. Note that EFTS itself caps result offsets
    at 10,000 — narrow the query or date range for exhaustive sweeps."
   [query & {:keys [forms start-date end-date limit] :or {limit 10}}]
-  (let [base-params (cond-> (str "?q=" (url-encode query))
-                      forms (str "&forms=" (url-encode (str/join "," forms)))
-                      ;; EFTS ignores startdt/enddt without dateRange=custom,
-                      ;; so emit it when EITHER bound is given
-                      (or start-date end-date) (str "&dateRange=custom")
-                      start-date (str "&startdt=" start-date)
-                      end-date (str "&enddt=" end-date))]
+  (let [;; EFTS applies a date range only with dateRange=custom and BOTH
+        ;; bounds, so a one-sided range gets the other bound filled in
+        base-params (cond-> (str "?q=" (core/url-encode query))
+                      forms (str "&forms=" (core/url-encode (str/join "," forms)))
+                      (or start-date end-date)
+                      (str "&dateRange=custom"
+                           "&startdt=" (or start-date "2001-01-01")
+                           "&enddt=" (or end-date (str (java.time.LocalDate/now)))))]
     (letfn [(fetch-page [from]
               (lazy-seq
                (let [resp (core/edgar-get (str core/efts-url base-params "&from=" from))
@@ -266,8 +255,10 @@
 (defn- fetch-daily-master
   "Raw text of the daily master index for a LocalDate, or nil when the SEC
    published none for that date. A 403/404 on the expected file name is
-   checked against the quarter's directory listing, so a genuine access
-   failure is rethrown instead of being read as an empty day."
+   checked against the quarter's directory listing, and a missing listing
+   (a quarter not yet begun) against the daily-index root, so a genuine
+   access failure — a blocked User-Agent or IP gets 403 everywhere — is
+   rethrown instead of being read as an empty day."
   [^java.time.LocalDate d]
   (let [dir (str core/daily-index-url "/" (.getYear d)
                  "/QTR" (inc (quot (dec (.getMonthValue d)) 3)))
@@ -281,7 +272,10 @@
     (or (get-file name8)
         (let [listing (try (core/edgar-get (str dir "/index.json") :cache :none)
                            (catch clojure.lang.ExceptionInfo e
-                             (when-not (missing-archive-file? e) (throw e))))
+                             (when-not (missing-archive-file? e) (throw e))
+                             ;; rethrows when the archive refuses us entirely
+                             (core/edgar-get (str core/daily-index-url "/index.json") :cache :none)
+                             nil))
               names (set (map :name (get-in listing [:directory :item])))]
           (cond
             (contains? names name6) (core/edgar-get (str dir "/" name6) :raw? true)
