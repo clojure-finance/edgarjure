@@ -1,10 +1,12 @@
 (ns edgar.reclass
-  "Reclassification rule engine (roadmap 4.1c).
+  "Reclassification rule engine.
 
-   Approximates commercial-database item definitions (currently Compustat)
-   by reclassifying standardized line items: stripping D&A out of COGS,
-   folding R&D into SG&A, adding special-item charges back to operating
-   income, netting excise taxes from revenue, etc.
+   Approximates commercial-database item constructions (currently
+   Compustat) by reclassifying standardized line items: stripping D&A out of
+   COGS, folding R&D into SG&A, adding special-item charges back to
+   operating income, netting excise taxes from revenue, etc. The rules are
+   an independent empirical approximation computed from public SEC filings
+   only.
 
    Rules are data, loaded from EDN under resources/edgar/reclass/ and applied
    per [unit start end] period group on top of the :standardized row set.
@@ -13,6 +15,10 @@
      :method       :reclassified
      :rule         the rule :id that produced the row
      :derived-from labels of the operand line items actually used
+   They keep the period fields (:unit :start :end :form) of their operands;
+   per-fact metadata that no longer describes the row (:concept :label
+   :description :taxonomy :accn :fy :fp :frame) is dropped, and :filed is the
+   latest :filed among the operands used.
 
    Rule format:
      {:id      :cogs-ex-da           ; unique keyword
@@ -117,7 +123,8 @@
 (defn- resolve-operands
   "Resolve formula operands against the period group's {line-item row} map.
    Returns {:vals [..] :used [labels]} or nil when a required operand is
-   missing. Optional operands contribute 0.0 when absent; negated operands
+   missing. Optional operands contribute (long) 0 when absent, so they never
+   change the numeric type of the present operands' result; negated operands
    contribute their value's negation."
   [operands by-li]
   (reduce (fn [acc o]
@@ -128,7 +135,7 @@
                 (some? v) (-> acc
                               (update :vals conj (if (negated-operand? o) (- v) v))
                               (update :used conj label))
-                (optional-operand? o) (update acc :vals conj 0.0)
+                (optional-operand? o) (update acc :vals conj 0)
                 :else (reduced nil))))
           {:vals [] :used []}
           operands))
@@ -148,12 +155,30 @@
         (when-let [{:keys [vals used]} (resolve-operands present by-li)]
           {:val (- (reduce + vals)) :used used})))
     (when-let [{:keys [vals used]} (resolve-operands operands by-li)]
-      (when (seq vals)
+      ;; at least one operand must be present: an all-[:opt] formula with
+      ;; none of them in the period has nothing to evaluate (and no operand
+      ;; row to take the period fields from)
+      (when (seq used)
         {:val (case op
                 := (first vals)
                 :+ (reduce + vals)
                 :- (reduce - vals))
          :used used}))))
+
+(defn derived-row
+  "The row for a formula result: the period fields (:unit :start :end :form
+   ...) of the first operand used, without the per-fact metadata that no
+   longer describes it (:concept :label :description :taxonomy :accn :fy
+   :fp :frame :fsds-tag), and with :filed set to the latest :filed among the
+   operands used. Callers assoc :line-item, :val and provenance. Shared by
+   the reclassification rules and edgar.financials' identities."
+  [by-li used]
+  (let [rows (keep #(get by-li %) used)
+        filed (some->> (keep :filed rows) seq (reduce #(if (pos? (compare (str %1) (str %2))) %1 %2)))]
+    (-> (first rows)
+        (dissoc ::aux :label :description :taxonomy :accn :fy :fp :frame :fsds-tag)
+        (assoc :concept nil)
+        (cond-> filed (assoc :filed filed)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Guards
@@ -207,11 +232,9 @@
                         (if-let [{:keys [val used]}
                                  (when (guards-pass? (or guards []) by-li)
                                    (eval-formula formula by-li))]
-                          (let [row (-> (get by-li (first used))
-                                        (dissoc ::aux)
+                          (let [row (-> (derived-row by-li used)
                                         (assoc :line-item target
                                                :val val
-                                               :concept nil
                                                :method :reclassified
                                                :rule id
                                                :derived-from (vec used)))]

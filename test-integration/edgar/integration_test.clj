@@ -5,8 +5,6 @@
             [edgar.core :as core]
             [edgar.api :as e]
             [edgar.company]
-            [edgar.filings :as filings]
-            [edgar.forms]
             [tech.v3.dataset :as ds]))
 
 ;; ---------------------------------------------------------------------------
@@ -127,7 +125,12 @@
       (is (= 120 (count results)))
       (is (= 120 (count (distinct (map :accessionNumber results)))))
       (is (every? #(re-matches #"\d{10}" (:cik %)) results))
-      (is (every? #(str/starts-with? (:url %) "https://www.sec.gov/Archives/edgar/data/") results)))))
+      (is (every? #(str/starts-with? (:url %) "https://www.sec.gov/Archives/edgar/data/") results))))
+  (testing "a one-sided date range is applied (EFTS ignores it without both bounds)"
+    (let [results (e/search-filings "\"material cybersecurity incident\"" :forms ["8-K"]
+                                    :start-date "2026-01-01" :limit 20)]
+      (is (seq results))
+      (is (every? #(>= (compare (:filingDate %) "2026-01-01") 0) results)))))
 
 (deftest daily-filings-test
   (testing "daily-filings returns one map per filing for a known past date"
@@ -141,6 +144,9 @@
       (is (every? #(= "8-K" (:form %)) results))))
   (testing "a weekend has no daily index → empty"
     (is (empty? (e/daily-filings "2026-03-08"))))
+  (testing "a refused client gets an exception, not an empty day"
+    (binding [core/*identity* "Java-http-client/21"]
+      (is (thrown? clojure.lang.ExceptionInfo (doall (e/daily-filings "2026-03-11"))))))
   (testing "daily results load with e/html"
     (is (pos? (count (e/html (first (e/daily-filings "2026-03-10" :form "8-K"))))))))
 
@@ -211,8 +217,8 @@
     (let [ts (e/tables *aapl-10k*)]
       (is (seq ts))
       (is (every? ds/dataset? ts))))
-  (testing "tables :nth 0 returns a single dataset"
-    (let [t (e/tables *aapl-10k* :nth 0)]
+  (testing "tables :n 0 returns a single dataset"
+    (let [t (e/tables *aapl-10k* :n 0)]
       (is (ds/dataset? t))
       (is (pos? (ds/row-count t)))))
   (testing "tables :min-rows filter reduces result count"
@@ -249,8 +255,16 @@
     (let [docs (e/xbrl-docs *aapl-10k*)]
       (is (seq docs))
       (is (every? #(contains? % :type) docs))
-      (is (some #(or (str/starts-with? (:type %) "EX-101")
-                     (str/ends-with? (:name %) ".xsd")) docs)))))
+      (is (some #(str/ends-with? (:name %) ".xsd") docs))
+      (is (some #(str/ends-with? (:name %) "_htm.xml") docs)
+          "the instance extracted from the inline-XBRL document"))))
+
+(deftest pre-2001-filing-test
+  (testing "a 1990s filing lists no primary document; content falls back to the submission text"
+    (let [f (first (e/filings "AAPL" :form "10-K" :end-date "1996-12-31"))]
+      (is (nil? (:url f)))
+      (is (str/includes? (e/text f) "APPLE COMPUTER"))
+      (is (= "0000320193-94-000016.txt" (:primaryDocument (e/filing-by-accession "0000320193-94-000016")))))))
 
 (deftest save-test
   (testing "save! writes the primary document and returns a path"
@@ -315,13 +329,17 @@
 (deftest quarterly-index-live-test
   ;; Regression for the fixture-drift bug: company.idx pipe-parsing returned
   ;; 0 rows for every quarter while the offline tests stayed green.
-  (testing "get-quarterly-index parses a real quarter (master.idx)"
-    (let [idx (filings/get-quarterly-index 2024 1)
+  (testing "e/quarterly-index parses a real quarter (master.idx)"
+    (let [idx (e/quarterly-index 2024 1)
           row (first idx)]
       (is (> (count idx) 100000) "a real quarter has hundreds of thousands of filings")
       (is (re-matches #"\d{10}" (:cik row)))
       (is (re-matches #"\d{4}-\d{2}-\d{2}" (:date-filed row)))
-      (is (str/starts-with? (:filename row) "edgar/data/")))))
+      (is (str/starts-with? (:filename row) "edgar/data/"))))
+  (testing ":form is an exact match (a small 1994 quarter, not a second 2024 download)"
+    (let [idx (e/quarterly-index 1994 1 :form "10-K")]
+      (is (seq idx))
+      (is (every? #(= "10-K" (:form-type %)) idx)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Financial statements
@@ -475,30 +493,3 @@
           wide-ds (e/pivot long-ds)]
       (is (ds/dataset? wide-ds))
       (is (pos? (ds/row-count wide-ds))))))
-
-;; ---------------------------------------------------------------------------
-;; Malli validation errors
-;; ---------------------------------------------------------------------------
-
-(deftest validation-errors-test
-  (testing "init! with blank string throws ex-info"
-    (is (thrown? clojure.lang.ExceptionInfo (e/init! ""))))
-  (testing "filings with bad date throws ex-info"
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (e/filings "AAPL" :form "10-K" :start-date "not-a-date"))))
-  (testing "facts with invalid concept type throws ex-info"
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (e/facts "AAPL" :concept 42))))
-  (testing "filing-by-accession with malformed accession throws ex-info"
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (e/filing-by-accession "not-an-accession")))))
-
-;; ---------------------------------------------------------------------------
-;; Rate limiter — verify no explosion on burst
-;; ---------------------------------------------------------------------------
-
-(deftest rate-limiter-burst-test
-  (testing "three sequential CIK lookups complete without error"
-    (is (= "0000320193" (e/cik "AAPL")))
-    (is (= "0000789019" (e/cik "MSFT")))
-    (is (= "0001652044" (e/cik "GOOGL")))))

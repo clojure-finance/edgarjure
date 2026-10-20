@@ -1,5 +1,5 @@
 (ns compustat-validation
-  "Validation study: edgarjure standardized statements vs Compustat (roadmap 4.1f).
+  "Validation study: edgarjure standardized statements vs Compustat.
 
    Reproduces the July 2026 study that graded edgarjure against licensed Compustat
    extracts for 19 large filers (13 industrials/tech, 3 banks, 3 insurers).
@@ -16,8 +16,9 @@
        SALEQ/NIQ) 98.6% (205/208); quarterly Total Assets 100% (104/104).
      Reclassification-sensitive items (COGS, SG&A, R&D, Operating Income,
        Gross Profit vs REVT-COGS) match only ~15-18% as reported — the
-       Compustat reclassification gap (D&A stripped out of COGS/SG&A, etc.)
-       that the :view :compustat rules address. Rates for the reclassified
+       Compustat reclassification gap (D&A stripped out of COGS, R&D folded
+       into SG&A, special items added back to operating income, etc.) that
+       the :view :compustat rules address. Rates for the reclassified
        items are listed once, by context, under \"Reclassified-item match
        rates\" below.
      Extended items (annual): Investing/Financing Cash Flow 96.2%, Goodwill
@@ -121,7 +122,11 @@
             [edgar.validation :as validation]
             [tech.v3.dataset :as ds]))
 
-(def banks #{"JPM" "BAC" "WFC" "C" "GS" "MS" "USB" "PNC"})
+;; Tickers whose benchmark revenue is the derived bank "Total Gross Revenue".
+;; Only filers that edgarjure routes to the bank chains (SIC 6000-6199, 6712)
+;; belong here: broker-dealers such as GS and MS (SIC 6211) get the standard
+;; chains, which have no "Total Gross Revenue" line.
+(def banks #{"JPM" "BAC" "WFC" "C" "USB" "PNC"})
 (def insurers #{"MET" "TRV" "AIG" "PRU" "AFL" "ALL" "PGR"})
 
 (def annual-core-items
@@ -166,9 +171,10 @@
                ["Deferred Taxes (CF)" :txdc 1e6]]})
 
 (def annual-reclass-items
-  "Income items where Compustat reclassifies (D&A stripped from COGS/XSGA,
-   etc.), compared as reported (:view :standardized); these match only
-   ~15-18%. The reclassified counterparts are annual-compustat-items."
+  "Income items where Compustat reclassifies (D&A stripped from COGS, R&D
+   folded into XSGA, special items added back to OIADP, etc.), compared as
+   reported (:view :standardized); these match only ~15-18%. The
+   reclassified counterparts are annual-compustat-items."
   [["Cost of Revenue" :cogs]
    ["SG&A Expense" :xsga]
    ["R&D Expense" :xrd]
@@ -222,7 +228,9 @@
    Pass :as-of as the extract's vintage date so restatements filed after the
    Compustat snapshot don't contaminate the comparison.
    statement-key routing: income items -> :income, balance -> :balance,
-   cash flow -> :cash-flow; this helper runs all three and merges."
+   cash flow -> :cash-flow; this helper runs all three and returns
+   {:income result :balance result :cash-flow result} (the same keys as
+   validate-items)."
   [ticker compustat-rows & {:keys [as-of date-tolerance-days]
                             :or {date-tolerance-days 10}}]
   (let [bench-for (fn [lis] (filterv #(lis (:line-item %))
@@ -236,7 +244,7 @@
                                        "Pre-Tax Income" "Income Tax Expense" "Net Income"}))
      :balance (run :balance (bench-for #{"Total Assets" "Total Liabilities" "Stockholders Equity"
                                          "Current Assets" "Current Liabilities"}))
-     :cashflow (run :cash-flow (bench-for #{"Operating Cash Flow" "Capex"}))}))
+     :cash-flow (run :cash-flow (bench-for #{"Operating Cash Flow" "Capex"}))}))
 
 (defn validate-items
   "Validate one firm's items grouped by statement ({statement [item ...]},
@@ -307,7 +315,7 @@
 
   (def annual (load-funda-tsv "/path/to/funda-extract.tsv"))
   (validate-annual "AAPL" annual :as-of "2016-08-30")
-  ;; => {:income {:match-rate 1.0 ...} :balance {...} :cashflow {...}}
+  ;; => {:income {:match-rate 1.0 ...} :balance {...} :cash-flow {...}}
 
   ;; Second/third-pass items are grouped by statement; validate-items runs
   ;; each group against its own statement:

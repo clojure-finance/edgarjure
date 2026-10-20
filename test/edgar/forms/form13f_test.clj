@@ -337,6 +337,12 @@
     (is (= {:cover "primary_doc.xml" :infotable "infotable.xml"}
            (fetched-names [{:name "primary_doc.xml" :type "13F-HR"}
                            {:name "infotable.xml" :type ""}]))))
+  (testing "XBRL documents are never cover or infotable"
+    (is (= {:cover "primary_doc.xml" :infotable "56757.xml"}
+           (fetched-names [{:name "x_htm.xml" :type "EX-101.INS"}
+                           {:name "x_cal.xml" :type "EX-101.CAL"}
+                           {:name "primary_doc.xml" :type "13F-HR"}
+                           {:name "56757.xml" :type "INFORMATION TABLE"}]))))
   (testing "no infotable at all: the cover is not reused as an infotable"
     (is (= {:cover "primary_doc.xml" :infotable nil}
            (fetched-names [{:name "primary_doc.xml" :type "13F-HR"}])))))
@@ -344,6 +350,11 @@
 ;;; ---------------------------------------------------------------------------
 ;;; Full parse
 ;;; ---------------------------------------------------------------------------
+
+(def ^:private holding-column-order
+  "The :holdings column order documented in parse-form13f."
+  [:name :cusip :title :value :shares :shares-type :put-call
+   :investment-discretion :other-managers :voting-sole :voting-shared :voting-none])
 
 (defn- parse-with [filing docs]
   (with-redefs [edgar.forms.form13f/fetch-documents (fn [_] docs)]
@@ -361,6 +372,8 @@
       (is (false? (:is-amendment? r)))
       (is (= "Berkshire Hathaway Inc" (get-in r [:manager :name])))
       (is (= 2 (ds/row-count (:holdings r))))
+      (is (= holding-column-order (ds/column-names (:holdings r)))
+          "columns in the documented order, not hash-map order")
       (is (= (+ 577211815 128838056) (:total-value r)))
       (is (not (contains? r :submission-type)))))
   (testing "13F-HR/A: :form and amendment fields from the XML"
@@ -379,6 +392,7 @@
   (testing "missing infotable: empty holdings dataset, cover still parsed"
     (let [r (parse-with {:form "13F-HR"} {:cover cover-xml :infotable nil})]
       (is (= 0 (ds/row-count (:holdings r))))
+      (is (= holding-column-order (ds/column-names (:holdings r))))
       (is (= 0 (:total-value r)))
       (is (= 89 (:table-entry-count r)))))
   (testing "nil when the filing has neither document"

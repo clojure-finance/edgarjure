@@ -81,8 +81,48 @@
   [node & tags]
   (text (reduce find-tag node tags)))
 
-(defn parse-double-safe
-  "Parse a numeric string to a double; nil for nil or unparseable input."
+(defn texts
+  "Trimmed texts of every descendant element matching tag (repeated tags
+   such as typeOfReportingPerson), in document order; [] when there are
+   none."
+  [node tag]
+  (into [] (keep text) (find-tags node tag)))
+
+;;; ---------------------------------------------------------------------------
+;;; Number coercion
+;;; ---------------------------------------------------------------------------
+
+(defn- number-text
+  "s trimmed with thousands separators removed, or nil when blank."
   [s]
-  (when s
-    (try (parse-double s) (catch Exception _ nil))))
+  (some-> s str/trim (str/replace "," "") not-empty))
+
+(defn parse-long-safe
+  "Parse an integer string (\"1,234\" allowed) to a long; nil for nil,
+   blank or unparseable input."
+  [s]
+  (some-> (number-text s) parse-long))
+
+(defn parse-double-safe
+  "Parse a numeric string (\"1,234.5\" allowed) to a double; nil for nil,
+   blank or unparseable input."
+  [s]
+  (some-> (number-text s) parse-double))
+
+;;; ---------------------------------------------------------------------------
+;;; Attachment lookup
+;;; ---------------------------------------------------------------------------
+
+(defn xml-documents
+  "The entries of a filing index's :files that can hold form data: names
+   ending in .xml, minus XBRL documents (inline-XBRL instances *_htm.xml,
+   EX-101 attachments, or any document typed XBRL)."
+  [files]
+  (filterv (fn [{:keys [name type]}]
+             (let [name (str/lower-case (str name))
+                   type (str/upper-case (str type))]
+               (and (str/ends-with? name ".xml")
+                    (not (str/ends-with? name "_htm.xml"))
+                    (not (str/starts-with? type "EX-101"))
+                    (not (str/includes? type "XBRL")))))
+           files))

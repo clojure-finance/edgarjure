@@ -2,7 +2,7 @@
  :industry :bank
  :taxonomy "us-gaap"
  :version "2026-07-15"
- :notes "Income statement chains for banks (SIC 6000-6199, 6712). Verified against JPMorgan Chase company facts. Coverage is partial — see roadmap 4.1d."
+ :notes "Income statement chains for banks (SIC 6000-6199, 6712). Verified against JPMorgan Chase company facts. Coverage is partial."
  :line-items
  [{:label "Interest Income"
    :concepts ["InterestAndDividendIncomeOperating"

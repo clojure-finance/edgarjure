@@ -17,7 +17,8 @@
      ;    :reporting-owners [...] :transactions [...] :holdings [...]}"
   (:require [edgar.filing :as filing]
             [edgar.forms.xml :refer [parse-str find-tag find-tags tag-text
-                                     nested-text parse-double-safe]]
+                                     nested-text parse-double-safe
+                                     xml-documents]]
             [clojure.string :as str]))
 
 ;;; ---------------------------------------------------------------------------
@@ -134,14 +135,8 @@
    has no XML attachment (falling back to a non-XML document would only hand
    HTML to the XML parser)."
   [filing]
-  (let [idx (filing/filing-index filing)
-        docs (:files idx)
-        xml-doc (first (filter (fn [{:keys [name]}]
-                                 (and (str/ends-with? (str name) ".xml")
-                                      (not (str/ends-with? (str name) "_htm.xml"))))
-                               docs))]
-    (when xml-doc
-      (filing/filing-document filing (:name xml-doc) :raw? true))))
+  (when-let [xml-doc (first (xml-documents (:files (filing/filing-index filing))))]
+    (filing/filing-document filing (:name xml-doc))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Public parse entry point
@@ -185,5 +180,5 @@
 ;;; ---------------------------------------------------------------------------
 
 (doseq [form-type ["3" "3/A" "4" "4/A" "5" "5/A"]]
-  (.addMethod ^clojure.lang.MultiFn filing/filing-obj form-type
-              parse-ownership-form))
+  (defmethod filing/filing-obj form-type [filing]
+    (parse-ownership-form filing)))

@@ -61,29 +61,10 @@
         (is (= "https://data.sec.gov/submissions/CIK0000320193.json" @url))))))
 
 (deftest company-cik-numeric-string
-  (testing "numeric string input is zero-padded to 10 digits"
-    (is (= "0000320193" (company/company-cik "320193"))))
-  (testing "already 10-digit numeric input is unchanged"
-    (is (= "0000320193" (company/company-cik "0000320193"))))
-  (testing "integer-like string with leading zeros is preserved"
+  (testing "numeric strings, padded or not, normalise to the 10-digit form"
+    (is (= "0000320193" (company/company-cik "320193")))
+    (is (= "0000320193" (company/company-cik "0000320193")))
     (is (= "0000000001" (company/company-cik "1")))))
-
-(deftest company-cik-format
-  (testing "result is always exactly 10 characters"
-    (is (= 10 (count (company/company-cik "320193"))))))
-
-;;; ---------------------------------------------------------------------------
-;;; shape-address via company-metadata (testing the shaping logic indirectly)
-;;; We can test the metadata map keys without a live HTTP call by mocking the
-;;; underlying get-company response.  Since that requires HTTP, we only test
-;;; the structural contract of company-cik (pure) here and keep HTTP-dependent
-;;; tests in a separate :test-integration alias.
-;;; ---------------------------------------------------------------------------
-
-(deftest company-cik-pure-branch
-  (testing "pure numeric-string branch always zero-pads"
-    (is (= "0000001234" (company/company-cik "1234")))
-    (is (= "0000000042" (company/company-cik "42")))))
 
 (deftest company-cik-unknown-ticker-test
   (testing "unknown ticker throws ex-info with ::unknown-ticker type"
@@ -125,6 +106,17 @@
     (with-redefs [edgar.company/load-tickers!
                   (fn [] {0 {:cik_str "320193" :ticker "AAPL"}})]
       (is (nil? (company/cik->ticker "9999999999"))))))
+
+(deftest shape-address-foreign-test
+  (testing "a foreign address keeps its country (SONY's real submissions node)"
+    (is (= {:street1 "1-7-1, KONAN" :street2 "MINATO-KU" :city "TOKYO"
+            :state nil :state-description nil :zip "108-0075"
+            :country "Japan" :country-code "M0" :foreign? true}
+           (#'edgar.company/shape-address
+            {:zipCode "108-0075" :street1 "1-7-1, KONAN" :stateOrCountryDescription nil
+             :stateOrCountry nil :city "TOKYO" :street2 "MINATO-KU"
+             :foreignStateTerritory nil :isForeignLocation 1
+             :country "Japan" :countryCode "M0"})))))
 
 (deftest shape-address-nil-street2-test
   (let [f #'edgar.company/shape-address]

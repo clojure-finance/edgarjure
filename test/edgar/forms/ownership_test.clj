@@ -336,7 +336,7 @@
                 (fn [_] {:files [{:name "ownership.xml" :type "3" :sequence "1"}]})
                 filing/filing-document
                 (fn [_ _ & _] form3-xml)]
-    (let [result (edgar.forms.ownership/parse-ownership-form {:form "3"})]
+    (let [result (ownership/parse-ownership-form {:form "3"})]
       (testing ":form comes from the XML documentType"
         (is (= "3" (:form result))))
       (testing "period, issuer, owner, holdings all present"

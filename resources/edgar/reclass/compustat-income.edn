@@ -3,7 +3,8 @@
  :taxonomy "us-gaap"
  :version "2026-10-15"
  :notes "Reclassification rules approximating Compustat income statement item
-definitions (roadmap 4.1c). Derived empirically against a licensed Compustat annual extract
+definitions, as an independent empirical approximation computed from public
+SEC filings only. Developed and checked against a licensed Compustat annual extract
 (18 large industrials; fitted on FY2010-2015, checked out-of-sample on
 FY2016+): match rates within 1% are quoted per rule as as-reported ->
 reclassified. Original line items are always preserved alongside the
@@ -126,8 +127,8 @@ their tagged Revenues."}
    :target "Gross Profit (Compustat)"
    :compustat "REVT - COGS"
    :formula [:- "Revenue (Compustat)" "COGS (Compustat)"]
-   :notes "Gross profit under Compustat's definitions: excise-netted revenue
-(REVT) less COGS before D&A."}
+   :notes "Gross profit approximating Compustat's construction: excise-netted
+revenue (REVT) less COGS before D&A."}
   {:id :gross-profit
    :target "Gross Profit (Compustat)"
    :compustat "REVT - COGS"

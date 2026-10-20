@@ -17,7 +17,9 @@
 (deftest cached-quarter-failure-handling-test
   (testing "a 404 marks the quarter missing for the session"
     (with-redefs [fsds/download-quarter!
-                  (fn [& _] (throw (ex-info "HTTP 404 Not Found" {})))]
+                  (fn [& _] (throw (ex-info "HTTP 404 from SEC API"
+                                            {:type :edgar.core/http-error :status 404
+                                             :url (fsds/quarter-url 1997 1)})))]
       (is (nil? (fsds/cached-quarter! 1997 1 :dir "/tmp/nonexistent-fsds"))))
     ;; second call must not re-download (would throw a different error if tried)
     (with-redefs [fsds/download-quarter!
@@ -25,7 +27,9 @@
       (is (nil? (fsds/cached-quarter! 1997 1 :dir "/tmp/nonexistent-fsds")))))
   (testing "a transient failure rethrows WITHOUT poisoning the quarter"
     (with-redefs [fsds/download-quarter!
-                  (fn [& _] (throw (ex-info "HTTP 503 Service Unavailable" {})))]
+                  (fn [& _] (throw (ex-info "HTTP 503 from SEC API"
+                                            {:type :edgar.core/http-error :status 503
+                                             :url (fsds/quarter-url 1998 2)})))]
       (is (thrown? Exception (fsds/cached-quarter! 1998 2 :dir "/tmp/nonexistent-fsds"))))
     ;; the quarter stays retryable: a later successful download goes through
     (with-redefs [fsds/download-quarter! (fn [& _] "/tmp/fake-1998q2.zip")]

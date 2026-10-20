@@ -20,7 +20,7 @@
      ;    :reporting-persons [{:name ... :aggregate-owned ... :percent-of-class ...} ...]}"
   (:require [edgar.filing :as filing]
             [edgar.forms.xml :refer [parse-str find-tag find-tags tag-text
-                                     parse-double-safe]]
+                                     texts parse-double-safe]]
             [clojure.string :as str]))
 
 ;;; ---------------------------------------------------------------------------
@@ -41,7 +41,7 @@
                      (tag-text node :aggregateAmountOwned
                                :reportingPersonBeneficiallyOwnedAggregateNumberOfShares))
    :percent-of-class (parse-double-safe (tag-text node :percentOfClass :classPercent))
-   :type (tag-text node :typeOfReportingPerson)
+   :types (texts node :typeOfReportingPerson)
    :fund-type (tag-text node :fundType)
    :comments (tag-text node :comments)})
 
@@ -66,7 +66,7 @@
                                    docs))
                     (first (filter #(= "primary_doc.xml" (:name %)) docs)))]
     (when xml-doc
-      (filing/filing-document filing (:name xml-doc) :raw? true))))
+      (filing/filing-document filing (:name xml-doc)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Public parse entry point
@@ -80,12 +80,15 @@
       :schedule          :13d | :13g
       :security-class    class of securities the schedule covers
       :event-date        \"MM/DD/YYYY\" event date triggering the filing
-      :rule              designated rule (13G only, e.g. \"Rule 13d-1(b)\")
+      :rules             vector of the designated rules, in filing order
+                         (13G only, e.g. [\"Rule 13d-1(b)\"]; [] for 13D)
       :issuer            {:cik ... :name ... :cusip ...}
       :reporting-persons [{:cik :name :citizenship :sole-voting :shared-voting
                            :sole-dispositive :shared-dispositive
-                           :aggregate-owned :percent-of-class :type
-                           :fund-type :comments} ...]}"
+                           :aggregate-owned :percent-of-class :types
+                           :fund-type :comments} ...]
+                         :types is the vector of every typeOfReportingPerson
+                         code, in filing order (e.g. [\"IA\" \"PN\"])}"
   [filing]
   (when-let [raw (schedule-xml filing)]
     (let [root (parse-str raw)
@@ -98,22 +101,18 @@
                    :else nil)
        :security-class (tag-text root :securitiesClassTitle)
        :event-date (tag-text root :dateOfEvent :eventDateRequiresFilingThisStatement)
-       :rule (tag-text root :designateRulePursuantThisScheduleFiled)
+       :rules (texts root :designateRulePursuantThisScheduleFiled)
        :issuer (let [info (find-tag root :issuerInfo)]
                  {:cik (tag-text info :issuerCIK :issuerCik)
                   :name (tag-text info :issuerName)
-                  :cusip (tag-text info :issuerCUSIP :issuerCusipNumber)})
+                  :cusip (tag-text info :issuerCUSIP :issuerCusip :issuerCusipNumber)})
        :reporting-persons (reporting-persons root)})))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Register filing-obj methods
 ;;; ---------------------------------------------------------------------------
 
-;; \"SCHEDULE\" is kept for filing maps produced before the index parser
-;; captured multi-word form types (or from other sources that truncate at
-;; the first space); the XML submissionType disambiguates 13D vs 13G.
 (doseq [form-type ["SCHEDULE 13D" "SCHEDULE 13D/A"
-                   "SCHEDULE 13G" "SCHEDULE 13G/A"
-                   "SCHEDULE"]]
-  (.addMethod ^clojure.lang.MultiFn filing/filing-obj form-type
-              parse-schedule13))
+                   "SCHEDULE 13G" "SCHEDULE 13G/A"]]
+  (defmethod filing/filing-obj form-type [filing]
+    (parse-schedule13 filing)))

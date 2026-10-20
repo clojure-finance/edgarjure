@@ -10,7 +10,8 @@
      (edgar.filing/filing-obj filing)  ; => {:form \"13F-HR\" :holdings <dataset> ...}"
   (:require [edgar.filing :as filing]
             [edgar.forms.xml :refer [parse-str find-tag find-tags tag-text
-                                     child child-text]]
+                                     child child-text parse-long-safe
+                                     xml-documents]]
             [clojure.string :as str]
             [tech.v3.dataset :as ds]))
 
@@ -31,15 +32,11 @@
   "Fetch the raw cover (primary_doc.xml) and information-table XML of a 13F
    submission. Returns {:cover <string|nil> :infotable <string|nil>}."
   [filing]
-  (let [xml-docs (filter (fn [{:keys [name type]}]
-                           (and (str/ends-with? (str name) ".xml")
-                                (not (str/ends-with? (str name) "_htm.xml"))
-                                (not (str/includes? (str/lower-case (str type)) "xbrl"))))
-                         (:files (filing/filing-index filing)))
+  (let [xml-docs (xml-documents (:files (filing/filing-index filing)))
         cover-doc (first (remove information-table? xml-docs))
         info-doc (or (first (filter information-table? xml-docs))
                      (first (remove #(= % cover-doc) xml-docs)))
-        fetch #(when % (filing/filing-document filing (:name %) :raw? true))]
+        fetch #(when % (filing/filing-document filing (:name %)))]
     {:cover (fetch cover-doc)
      :infotable (fetch info-doc)}))
 
@@ -62,10 +59,6 @@
   (if-let [[_ m d y] (some->> s (re-matches #"(\d{2})-(\d{2})-(\d{4})"))]
     (str y "-" m "-" d)
     s))
-
-(defn- parse-long-safe [s]
-  (when (not-empty (str/trim (or s "")))
-    (try (parse-long (str/replace s "," "")) (catch Exception _ nil))))
 
 (defn- parse-manager [root]
   (let [filer (find-tag root :filingManager)
@@ -120,13 +113,17 @@
   (let [entries (find-tags infotable-root :infoTable)]
     (mapv parse-holding entries)))
 
-(defn- holdings->dataset [holdings]
-  (if (empty? holdings)
-    (ds/->dataset {:name [] :cusip [] :title [] :value []
-                   :shares [] :shares-type [] :put-call []
-                   :investment-discretion [] :other-managers []
-                   :voting-sole [] :voting-shared [] :voting-none []})
-    (ds/->dataset holdings)))
+(def ^:private holding-columns
+  "Column order of the :holdings dataset (as documented in parse-form13f)."
+  [:name :cusip :title :value :shares :shares-type :put-call
+   :investment-discretion :other-managers
+   :voting-sole :voting-shared :voting-none])
+
+(defn- holdings->dataset
+  "Holdings maps as a dataset with columns in holding-columns order (a
+   dataset built from the 12-key maps would take their hash-map order)."
+  [holdings]
+  (ds/new-dataset (map #(ds/new-column % (mapv % holdings)) holding-columns)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Public parse entry point
@@ -182,8 +179,6 @@
 ;;; Register filing-obj methods
 ;;; ---------------------------------------------------------------------------
 
-(defmethod filing/filing-obj "13F-HR" [filing]
-  (parse-form13f filing))
-
-(defmethod filing/filing-obj "13F-HR/A" [filing]
-  (parse-form13f filing))
+(doseq [form-type ["13F-HR" "13F-HR/A"]]
+  (defmethod filing/filing-obj form-type [filing]
+    (parse-form13f filing)))

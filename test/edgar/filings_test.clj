@@ -1,5 +1,6 @@
 (ns edgar.filings-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [edgar.core :as core]
             [edgar.filings :as filings]))
 
@@ -104,14 +105,15 @@
     (with-redefs [edgar.core/edgar-get (fn [_ & _] "just a header\nno pipe data here\n")]
       (let [result (vec (filings/get-quarterly-index 2023 1))]
         (is (= [] result)))))
-  (testing "get-quarterly-index-by-form filters correctly"
-    (let [fake-idx (clojure.string/join "\n"
-                                        ["320193|APPLE INC|10-K|2023-01-20|edgar/data/1/0001.txt"
-                                         "789019|MICROSOFT CORP|10-Q|2023-02-15|edgar/data/2/0002.txt"
-                                         "1018724|AMAZON COM INC|10-K|2023-03-01|edgar/data/3/0003.txt"])]
+  (testing ":form keeps only that exact form type"
+    (let [fake-idx (str/join "\n"
+                             ["320193|APPLE INC|10-K|2023-01-20|edgar/data/1/0001.txt"
+                              "789019|MICROSOFT CORP|10-Q|2023-02-15|edgar/data/2/0002.txt"
+                              "1018724|AMAZON COM INC|10-K/A|2023-03-01|edgar/data/3/0003.txt"
+                              "1018724|AMAZON COM INC|10-K|2023-03-01|edgar/data/3/0004.txt"])]
       (with-redefs [edgar.core/edgar-get (fn [_ & _] fake-idx)]
-        (let [result (vec (filings/get-quarterly-index-by-form 2023 1 "10-K"))]
-          (is (= 2 (count result)))
+        (let [result (vec (filings/get-quarterly-index 2023 1 :form "10-K"))]
+          (is (= ["0000320193" "0001018724"] (map :cik result)))
           (is (every? #(= "10-K" (:form-type %)) result)))))))
 
 ;;; ---------------------------------------------------------------------------
@@ -124,15 +126,6 @@
       (with-redefs [core/edgar-get (fn [_ & kvs] (reset! opts (apply hash-map kvs)) "")]
         (dorun (filings/get-quarterly-index 2024 1))
         (is (= {:raw? true :cache :disk} @opts))))))
-
-(deftest accession-normalization-test
-  (let [f #'edgar.filings/accession->str]
-    (testing "18-digit undashed string gets dashes inserted"
-      (is (= "0000320193-23-000064" (f "000032019323000064"))))
-    (testing "already-dashed string is returned unchanged"
-      (is (= "0000320193-23-000064" (f "0000320193-23-000064"))))
-    (testing "another real accession number"
-      (is (= "0001193125-22-082474" (f "000119312522082474"))))))
 
 (deftest amended-predicate-test
   (let [amended? #'edgar.filings/amended?]
@@ -150,32 +143,16 @@
       (is (not (amended? {:form "4"}))))))
 
 (deftest parse-filings-recent-test
-  (let [f #'edgar.filings/parse-filings-recent
-        recent {"form" ["10-K" "10-Q"]
-                "filingDate" ["2023-11-03" "2023-07-28"]
-                "accessionNumber" ["0000320193-23-000106" "0000320193-23-000077"]}
-        result (vec (f recent))]
-    (testing "returns one map per filing row"
-      (is (= 2 (count result))))
-    (testing "first row :form"
-      (is (= "10-K" (:form (first result)))))
-    (testing "first row :filingDate"
-      (is (= "2023-11-03" (:filingDate (first result)))))
-    (testing "first row :accessionNumber"
-      (is (= "0000320193-23-000106" (:accessionNumber (first result)))))
-    (testing "second row :form is 10-Q"
-      (is (= "10-Q" (:form (second result)))))))
-
-(deftest parse-filings-recent-single-row-test
-  (let [f #'edgar.filings/parse-filings-recent
-        recent {"form" ["8-K"]
-                "filingDate" ["2024-01-15"]
-                "accessionNumber" ["0000320193-24-000005"]}
-        result (vec (f recent))]
-    (testing "single-row map parses to one filing"
-      (is (= 1 (count result))))
-    (testing "form is preserved"
-      (is (= "8-K" (:form (first result)))))))
+  (let [f #'edgar.filings/parse-filings-recent]
+    (testing "columnar map (keyword keys, as core/edgar-get returns) → one map per row"
+      (is (= [{:form "10-K" :filingDate "2023-11-03" :accessionNumber "0000320193-23-000106"}
+              {:form "10-Q" :filingDate "2023-07-28" :accessionNumber "0000320193-23-000077"}]
+             (vec (f {:form ["10-K" "10-Q"]
+                      :filingDate ["2023-11-03" "2023-07-28"]
+                      :accessionNumber ["0000320193-23-000106" "0000320193-23-000077"]})))))
+    (testing "single row"
+      (is (= [{:form "8-K" :filingDate "2024-01-15"}]
+             (vec (f {:form ["8-K"] :filingDate ["2024-01-15"]})))))))
 
 (deftest enrich-filing-url-test
   (let [enrich #'edgar.filings/enrich-filing
@@ -189,23 +166,63 @@
              (:url result))))
     (testing ":url is nil when primaryDocument is absent"
       (let [r (enrich cik (dissoc filing :primaryDocument))]
-        (is (nil? (:url r)))))))
+        (is (nil? (:url r)))))
+    (testing ":url is nil for the blank primaryDocument of pre-2001 filings"
+      (is (nil? (:url (enrich cik (assoc filing :primaryDocument ""))))))))
 
-(deftest fetch-extra-filings-flat-chunk-test
-  (let [f #'edgar.filings/fetch-extra-filings]
-    (testing "fetch-extra-filings returns empty (lazy) seq when no :files key"
-      (let [company {:filings {:recent {}}}]
-        (is (empty? (f company)))))
-    (testing "parse-filings-recent handles flat columnar chunk (no :recent wrapper)"
-      (let [parse #'edgar.filings/parse-filings-recent
-            chunk {"form" ["10-K" "10-Q"]
-                   "filingDate" ["2020-01-01" "2020-07-01"]
-                   "accessionNumber" ["0000320193-20-000001" "0000320193-20-000002"]
-                   "primaryDocument" ["doc1.htm" "doc2.htm"]}
-            result (vec (parse chunk))]
-        (is (= 2 (count result)))
-        (is (= "10-K" (:form (first result))))
-        (is (= "10-Q" (:form (second result))))))))
+(def ^:private chunked-company
+  "Submissions JSON whose history spills into two extra chunks, listed out
+   of date order (the SEC does not guarantee the order of :files)."
+  {:filings {:recent {:accessionNumber ["0000320193-24-000003" "0000320193-23-000002"]
+                      :form ["10-K" "10-K"]
+                      :filingDate ["2024-11-01" "2023-11-03"]
+                      :primaryDocument ["a.htm" "b.htm"]}
+             :files [{:name "CIK0000320193-submissions-001.json"
+                      :filingFrom "2010-01-01" :filingTo "2015-12-31"}
+                     {:name "CIK0000320193-submissions-002.json"
+                      :filingFrom "2016-01-01" :filingTo "2022-12-31"}]}})
+
+(def ^:private chunk-bodies
+  {"CIK0000320193-submissions-002.json" {:accessionNumber ["0000320193-22-000001"]
+                                         :form ["10-K"]
+                                         :filingDate ["2022-10-28"]
+                                         :primaryDocument ["c.htm"]}
+   "CIK0000320193-submissions-001.json" {:accessionNumber ["0000320193-15-000001"]
+                                         :form ["10-K"]
+                                         :filingDate ["2015-10-28"]
+                                         :primaryDocument ["d.htm"]}})
+
+(defn- chunked-edgar-get
+  "Stub for core/edgar-get serving chunked-company and its chunks, recording
+   every chunk fetched in the fetched atom."
+  [fetched]
+  (fn [url & _]
+    (if-let [[_ nm] (re-find #"/submissions/(CIK\d{10}-submissions-\d{3}\.json)$" url)]
+      (do (swap! fetched conj nm) (get chunk-bodies nm))
+      chunked-company)))
+
+(deftest fetch-extra-filings-test
+  (testing "no :files → empty seq"
+    (is (empty? (#'edgar.filings/fetch-extra-filings {:filings {:recent {}}}))))
+  (testing "chunks are fetched newest-first and concatenated date-descending"
+    (let [fetched (atom [])]
+      (with-redefs [core/edgar-get (chunked-edgar-get fetched)]
+        (is (= ["2024-11-01" "2023-11-03" "2022-10-28" "2015-10-28"]
+               (map :filingDate (filings/get-filings "320193"))))
+        (is (= ["CIK0000320193-submissions-002.json" "CIK0000320193-submissions-001.json"]
+               @fetched)))))
+  (testing "no chunk is fetched when :limit is met inside :recent"
+    (let [fetched (atom [])]
+      (with-redefs [core/edgar-get (chunked-edgar-get fetched)]
+        (is (= 2 (count (filings/get-filings "320193" :limit 2))))
+        (is (empty? @fetched)))))
+  (testing ":start-date stops the scan instead of fetching older chunks"
+    (let [fetched (atom [])]
+      (with-redefs [core/edgar-get (chunked-edgar-get fetched)]
+        (is (= ["2024-11-01" "2023-11-03"]
+               (map :filingDate (filings/get-filings "320193" :start-date "2023-01-01"))))
+        (is (= ["CIK0000320193-submissions-002.json"] @fetched)
+            "only the chunk holding the first filing before :start-date")))))
 
 (deftest latest-effective-filing-logic-test
   (let [original {:form "10-K" :filingDate "2023-11-03" :accessionNumber "A"}
@@ -222,7 +239,12 @@
         (is (= original (filings/latest-effective-filing "AAPL" :form "10-K")))))
     (testing "no original → amendment returned"
       (with-redefs [edgar.filings/get-filings (fn [_ & _] [amendment])]
-        (is (= amendment (filings/latest-effective-filing "AAPL" :form "10-K")))))))
+        (is (= amendment (filings/latest-effective-filing "AAPL" :form "10-K")))))
+    (testing "the scan stops at the latest original (no full-history walk)"
+      (with-redefs [edgar.filings/get-filings
+                    (fn [_ & _] (concat [original]
+                                        (lazy-seq (throw (ex-info "history beyond the original was read" {})))))]
+        (is (= original (filings/latest-effective-filing "AAPL" :form "10-K")))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; get-daily-filings — daily master index
@@ -294,9 +316,15 @@
                       {:directory {:item [{:name "master.20261009.idx"} {:name "master.20261013.idx"}]}}
                       (throw (missing-file-ex url))))]
       (is (= [] (vec (filings/get-daily-filings "2026-10-11"))))))
-  (testing "future quarter: the listing itself is missing → empty seq"
-    (with-redefs [core/edgar-get (fn [url & _] (throw (missing-file-ex url)))]
+  (testing "future quarter: the quarter listing is missing, the root is not → empty seq"
+    (with-redefs [core/edgar-get (fn [url & _]
+                                   (if (= url "https://www.sec.gov/Archives/edgar/daily-index/index.json")
+                                     {:directory {:item [{:name "2026"}]}}
+                                     (throw (missing-file-ex url))))]
       (is (empty? (filings/get-daily-filings "2027-01-04")))))
+  (testing "blocked client: 403 everywhere, root included → throws, not empty"
+    (with-redefs [core/edgar-get (fn [url & _] (throw (missing-file-ex url)))]
+      (is (thrown? clojure.lang.ExceptionInfo (doall (filings/get-daily-filings "2026-10-13"))))))
   (testing "file listed but not fetchable (e.g. a block) → throws, not empty"
     (with-redefs [core/edgar-get
                   (fn [url & _]
@@ -382,11 +410,12 @@
                                               (reset! captured url)
                                               fake-resp)]
                  (doall (apply filings/search-filings "apple" opts))))]
-    (testing ":end-date alone still emits dateRange=custom (EFTS ignores enddt without it)"
+    (testing "a one-sided range gets the other bound filled in (EFTS needs both)"
       (run! :end-date "2024-01-31")
-      (is (clojure.string/includes? @captured "dateRange=custom"))
-      (is (clojure.string/includes? @captured "enddt=2024-01-31"))
-      (is (not (clojure.string/includes? @captured "startdt"))))
+      (is (str/includes? @captured "dateRange=custom&startdt=2001-01-01&enddt=2024-01-31"))
+      (run! :start-date "2026-01-01")
+      (is (str/includes? @captured (str "dateRange=custom&startdt=2026-01-01&enddt="
+                                        (java.time.LocalDate/now)))))
     (testing "both dates emit dateRange=custom exactly once"
       (run! :start-date "2023-01-01" :end-date "2024-01-31")
       (is (= 1 (count (re-seq #"dateRange=custom" @captured))))

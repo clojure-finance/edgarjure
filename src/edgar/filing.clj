@@ -14,18 +14,20 @@
 (defn filing-index-url
   "Build the HTML submission index URL for a filing."
   [{:keys [cik accessionNumber]}]
-  (let [acc-clean (str/replace accessionNumber "-" "")
-        cik-numeric (str (Long/parseLong cik))]
-    (str core/archives-url "/" cik-numeric "/" acc-clean "/" accessionNumber "-index.html")))
+  (core/archive-url cik accessionNumber (str accessionNumber "-index.html")))
 
-(defn- cell-text
-  "Recursively extract all text from a hickory node.
-   Normalizes non-breaking spaces (\\u00A0) to regular spaces."
-  [node]
-  (cond
-    (string? node) (str/replace node "\u00A0" " ")
-    (map? node) (str/join "" (map cell-text (:content node)))
-    :else ""))
+(defn- node-text
+  "Recursively extract all text from a hickory node, skipping the subtrees
+   of tags in the excluded set. Normalizes non-breaking spaces (\\u00A0) to
+   regular spaces."
+  ([node] (node-text #{} node))
+  ([excluded node]
+   (cond
+     (string? node) (str/replace node "\u00A0" " ")
+     (map? node) (if (excluded (:tag node))
+                   ""
+                   (str/join "" (map #(node-text excluded %) (:content node))))
+     :else "")))
 
 (defn- parse-filing-index-html
   "Parse an HTML filing index page into
@@ -39,7 +41,7 @@
         ;; capture the full form type — multi-word forms exist (SCHEDULE 13D,
         ;; SC 13D, S-1 MEF, N-CSRS); a \" - description\" suffix is dropped
         form-type (some->> (sel/select (sel/tag :strong) tree)
-                           (map #(str/trim (cell-text %)))
+                           (map #(str/trim (node-text %)))
                            (some #(second (re-matches #"Form\s+(.+?)(?:\s+-\s.*)?" %))))
         filing-date (some->> (map vector
                                   (map node-str (sel/select (sel/class "infoHead") tree))
@@ -48,14 +50,14 @@
         ;; one companyName span per entity: "STARBUCKS CORP (Filer) CIK: 0000829224 (see all ...)"
         filers (->> (sel/select (sel/class "companyName") tree)
                     (keep #(when-let [[_ nm role cik] (re-find #"(?s)^\s*(.*?)\s*\(\s*([^)]+?)\s*\)\s*CIK\s*:\s*(\d{10})"
-                                                               (cell-text %))]
+                                                               (node-text %))]
                              {:name nm :role role :cik (core/pad-cik cik)}))
                     vec)
         rows (sel/select (sel/descendant (sel/tag :table) (sel/tag :tr)) tree)
         files (->> rows
                    (map (fn [row]
                           (let [cells (sel/select (sel/child (sel/tag :td)) row)
-                                texts (mapv #(str/trim (cell-text %)) cells)]
+                                texts (mapv #(str/trim (node-text %)) cells)]
                             (when (= 5 (count texts))
                               {:sequence (nth texts 0)
                                :description (nth texts 1)
@@ -63,8 +65,8 @@
                                            a-node (first (when doc-cell
                                                            (sel/select (sel/tag :a) doc-cell)))]
                                        (if a-node
-                                         (str/trim (cell-text a-node))
-                                         (let [t (str/trim (cell-text doc-cell))]
+                                         (str/trim (node-text a-node))
+                                         (let [t (str/trim (node-text doc-cell))]
                                            (when-not (str/blank? t) t))))
                                :type (nth texts 3)
                                :size (nth texts 4)}))))
@@ -84,11 +86,12 @@
    (core/edgar-get (filing-index-url filing) :raw? true)))
 
 (defn primary-doc
-  "Return the primary document entry from a filing index."
+  "Return the primary document entry from a filing index: sequence 1, or
+   for filings that list no documents (pre-2001) the complete submission
+   text file."
   [index]
-  (->> (:files index)
-       (filter #(= "1" (str (:sequence %))))
-       first))
+  (or (first (filter #(= "1" (str (:sequence %))) (:files index)))
+      (first (filter #(= "Complete submission text file" (:description %)) (:files index)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Filing content access
@@ -99,12 +102,12 @@
    doc-name is the filename as it appears in the filing index (e.g. \"goog-20260304.htm\", \"R2.htm\").
    Use (filing-index filing) to discover available document names."
   [{:keys [cik accessionNumber]} doc-name]
-  (let [acc-clean (str/replace accessionNumber "-" "")
-        cik-numeric (str (Long/parseLong cik))]
-    (str core/archives-url "/" cik-numeric "/" acc-clean "/" doc-name)))
+  (core/archive-url cik accessionNumber doc-name))
 
 (defn filing-html
-  "Fetch the primary HTML document of a filing as a string."
+  "Fetch the primary document of a filing as a string — HTML for most
+   forms, XML for the structured forms (3/4/5, 13F, 13D/G), plain text for
+   pre-2001 filings."
   [filing]
   (let [idx (filing-index filing)
         primary (primary-doc idx)]
@@ -116,21 +119,9 @@
    Script and style elements and their subtree content are excluded."
   [filing]
   (when-let [html (filing-html filing)]
-    (let [excluded-tags #{:script :style}
-          extract-text
-          (fn extract-text [node]
-            (cond
-              (string? node) (str/replace node "\u00A0" " ")
-              (map? node) (if (excluded-tags (:tag node))
-                            ""
-                            (str/join "" (map extract-text (:content node))))
-              :else ""))]
-      (-> html
-          hickory/parse
-          hickory/as-hickory
-          extract-text
-          (str/replace #"\s+" " ")
-          str/trim))))
+    (-> (node-text #{:script :style} (hickory/as-hickory (hickory/parse html)))
+        (str/replace #"\s+" " ")
+        str/trim)))
 
 (defn filing-document
   "Fetch a specific named document from a filing as a string."
@@ -157,9 +148,7 @@
   [filing doc out-file]
   (let [url (filing-doc-url filing (:name doc))]
     (if (binary-filename? (:name doc))
-      (let [^bytes bytes (core/edgar-get-bytes url)]
-        (with-open [out (java.io.FileOutputStream. (str out-file))]
-          (.write out bytes)))
+      (fs/write-bytes out-file (core/edgar-get-bytes url))
       (spit (str out-file)
             (core/edgar-get url :raw? true)))))
 
@@ -191,8 +180,9 @@
 
 (defn filing-save-all!
   "Download all documents in a filing to a directory (layout as in
-   filing-save!). Duplicate filenames in the index are deduplicated (last
-   entry wins). Returns a seq of saved file paths."
+   filing-save!), including the complete submission text file (the whole
+   filing as one SGML file). Duplicate filenames in the index are
+   deduplicated (last entry wins). Returns a seq of saved file paths."
   [filing dir]
   (let [idx (filing-index filing)
         out-dir (save-dir filing dir)
@@ -232,12 +222,14 @@
 (defn filing-xbrl-docs
   "Return all XBRL-related document entries from a filing's index as a seq of maps.
    Covers EX-101.* linkbases (instance, schema, calculation, label,
-   presentation, definition) and .xsd schema files."
+   presentation, definition), .xsd schema files, and the instance SEC
+   extracts from an inline-XBRL document (*_htm.xml, :type \"XML\")."
   [filing]
   (let [idx (filing-index filing)]
     (->> (:files idx)
          (filter #(or (some-> (:type %) (str/starts-with? "EX-101"))
-                      (some-> (:name %) (str/ends-with? ".xsd")))))))
+                      (some-> (:name %) (str/ends-with? ".xsd"))
+                      (some-> (:name %) (str/ends-with? "_htm.xml")))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Form-type dispatch — edgar.filing/obj
@@ -264,7 +256,8 @@
    :filingDate :url :filers, ready for filing-html, filing-text, filing-obj,
    extract-items, etc. :cik and every :filers :cik are zero-padded 10-digit
    strings.
-   Throws ex-info with ::not-found if the accession number does not exist.
+   Throws ex-info with ::not-found if the accession number does not exist
+   (the SEC answers 403 or 404); other HTTP failures propagate unchanged.
 
    The first 10 digits of an accession number are the SUBMITTER's CIK, which
    for agent-filed documents (e.g. 0001193125... = Donnelley) is a filing
@@ -274,17 +267,18 @@
    issuer, a DFAN14A to the target company). All listed entities are in
    :filers as {:name :role :cik}."
   [accession-number]
-  (let [digits (str/replace accession-number "-" "")
-        submitter-cik (core/pad-cik (subs digits 0 10))
-        acc-dashed (str (subs digits 0 10) "-" (subs digits 10 12) "-" (subs digits 12))
+  (let [acc-dashed (core/dashed-accession accession-number)
+        submitter-cik (core/pad-cik (subs acc-dashed 0 10))
         ;; the index page resolves under the submitter's path, documents may not
         idx (try
               (filing-index {:cik submitter-cik :accessionNumber acc-dashed})
-              (catch Exception e
-                (throw (ex-info "Filing not found"
-                                {:type ::not-found
-                                 :accession-number accession-number}
-                                e))))
+              (catch clojure.lang.ExceptionInfo e
+                (if (contains? #{403 404} (:status (ex-data e)))
+                  (throw (ex-info "Filing not found"
+                                  {:type ::not-found
+                                   :accession-number accession-number}
+                                  e))
+                  (throw e))))
         primary (primary-doc idx)
         form-type (or (:formType idx)
                       (throw (ex-info "Could not determine form type from filing index"

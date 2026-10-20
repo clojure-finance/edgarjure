@@ -47,7 +47,8 @@
     (ds/head 5))
 
 ;; Standardized: derived rows carry full provenance (`:method :derived`,
-;; `:derived-from`). Amazon never tags `GrossProfit` — here it is imputed:
+;; `:derived-from`). Amazon hasn't tagged `GrossProfit` since FY2009 — here
+;; it is imputed:
 (->> (ds/rows (e/income "AMZN" :view :standardized) {:nil-missing? true})
      (filter #(= "Gross Profit" (:line-item %)))
      (take 3)

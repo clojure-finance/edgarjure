@@ -2,7 +2,7 @@
  :industry :insurance
  :taxonomy "us-gaap"
  :version "2026-07-15"
- :notes "Income statement chains for insurers (SIC 6300-6399, 6411). Verified against MetLife company facts. Coverage is partial — see roadmap 4.1d."
+ :notes "Income statement chains for insurers (SIC 6300-6399, 6411). Verified against MetLife company facts. Coverage is partial."
  :line-items
  [{:label "Premiums Earned"
    :concepts ["PremiumsEarnedNet"]}

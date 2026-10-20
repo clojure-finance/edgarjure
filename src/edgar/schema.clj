@@ -2,7 +2,7 @@
   "Malli schemas and validation helpers for the edgarjure public API.
 
    Usage (in edgar.api):
-     (schema/validate! ::filings-args {:ticker-or-cik toc :form form ...})
+     (schema/validate! schema/FilingsArgs {:ticker-or-cik toc :form form ...})
 
    All public validate! calls throw ex-info with :type ::invalid-args on failure.
    The error message includes the human-readable Malli explanation."
@@ -43,7 +43,7 @@
   [:and :string [:re {:error/message "must be an accession number XXXXXXXXXX-YY-ZZZZZZ (dashes optional)"}
                  #"^(\d{10}-\d{2}-\d{6}|\d{18})$"]])
 
-(def PositiveInt
+(def NonNegInt
   [:int {:min 0 :error/message "must be a non-negative integer"}])
 
 (def TaxonomyStr
@@ -72,14 +72,14 @@
    [:form {:optional true} [:maybe FormType]]
    [:start-date {:optional true} [:maybe ISODate]]
    [:end-date {:optional true} [:maybe ISODate]]
-   [:limit {:optional true} [:maybe PositiveInt]]
+   [:limit {:optional true} [:maybe NonNegInt]]
    [:include-amends? {:optional true} :boolean]])
 
 (def FilingArgs
   [:map
    [:ticker-or-cik TickerOrCIK]
    [:form FormType]
-   [:n {:optional true} PositiveInt]
+   [:n {:optional true} NonNegInt]
    [:include-amends? {:optional true} :boolean]])
 
 (def FactsArgs
@@ -127,7 +127,7 @@
 (def SearchArgs
   [:map
    [:query NonBlankString]
-   [:limit PositiveInt]])
+   [:limit NonNegInt]])
 
 (def SearchFilingsArgs
   [:map
@@ -135,14 +135,43 @@
    [:forms {:optional true} [:maybe [:sequential FormType]]]
    [:start-date {:optional true} [:maybe ISODate]]
    [:end-date {:optional true} [:maybe ISODate]]
-   [:limit PositiveInt]])
+   [:limit NonNegInt]])
+
+(def FilingMap
+  "What filing-content functions need from a filing map: the company and the
+   accession number (every map edgarjure returns for a filing has both)."
+  [:map {:error/message "must be a filing map with :cik and :accessionNumber"}
+   [:cik TickerOrCIK]
+   [:accessionNumber AccessionNumber]])
+
+(def FilingMapArgs
+  [:map
+   [:filing-map FilingMap]])
+
+(def LatestEffectiveFilingArgs
+  [:map
+   [:ticker-or-cik TickerOrCIK]
+   [:form FormType]])
+
+(def DailyFilingsArgs
+  [:map
+   [:date [:or ISODate [:fn {:error/message "must be a YYYY-MM-DD string or a java.time.LocalDate"}
+                        #(instance? java.time.LocalDate %)]]]
+   [:form {:optional true} [:maybe FormType]]
+   [:filter-fn {:optional true} [:maybe ifn?]]])
+
+(def QuarterlyIndexArgs
+  [:map
+   [:year [:int {:min 1993 :error/message "must be a year from 1993 on"}]]
+   [:quarter [:int {:min 1 :max 4 :error/message "must be a quarter 1-4"}]]
+   [:form {:optional true} [:maybe FormType]]])
 
 (def TablesArgs
   [:map
-   [:filing-map [:map [:accessionNumber :string]]]
-   [:nth {:optional true} [:maybe PositiveInt]]
-   [:min-rows PositiveInt]
-   [:min-cols PositiveInt]])
+   [:filing-map FilingMap]
+   [:n {:optional true} [:maybe NonNegInt]]
+   [:min-rows NonNegInt]
+   [:min-cols NonNegInt]])
 
 (def FilingByAccessionArgs
   [:map

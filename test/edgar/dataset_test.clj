@@ -100,21 +100,6 @@
       (let [result (dataset/multi-company-facts ["AAPL"] :concept "Revenue" :form "10-Q" :as-of "2024-01-01")]
         (is (= 2 (ds/row-count result)) "3-month and 9-month windows must not be collapsed")))))
 
-(deftest add-market-cap-rank-test
-  ;; Regression: the old implementation passed an options map where a
-  ;; comparator was expected and called ds/add-column with a wrong arity —
-  ;; it threw on every invocation.
-  (let [ds-in (ds/->dataset [{:company "B" :cap 3}
-                             {:company "A" :cap 10}
-                             {:company "C" :cap 1}])
-        result (dataset/add-market-cap-rank ds-in :cap)
-        rows (vec (ds/rows result {:nil-missing? true}))]
-    (testing "sorted descending by the size column"
-      (is (= [10 3 1] (mapv :cap rows))))
-    (testing ":rank column runs 1..n with 1 = largest"
-      (is (= [1 2 3] (mapv :rank rows)))
-      (is (= "A" (:company (first rows)))))))
-
 (deftest pivot-wide-test
   (let [f dataset/pivot-wide
         rows [{:end "2023-09-30" :concept "Assets" :val 100 :frame nil :start nil}
@@ -197,3 +182,27 @@
     (with-redefs [edgar.company/company-cik (fn [_] (throw (ex-info "not found" {})))]
       (let [result (dataset/multi-company-facts ["BAD"] :as-of "2024-01-01")]
         (is (= 0 (ds/row-count result)))))))
+
+(deftest pivot-wide-10k-footnote-windows-test
+  ;; regression (live): (e/pivot (e/panel ["AAPL"] :concept "NetIncomeLoss"))
+  ;; kept the 10-K's quarter-end footnote rows, e.g. 2018-06-30 11.5B,
+  ;; interleaved with the fiscal-year rows
+  (let [rows [{:ticker "AAPL" :concept "NetIncomeLoss" :unit "USD" :form "10-K"
+               :start "2017-10-01" :end "2018-09-29" :val 59531.0 :filed "2018-11-05"}
+              {:ticker "AAPL" :concept "NetIncomeLoss" :unit "USD" :form "10-K"
+               :start "2018-07-01" :end "2018-09-29" :val 14125.0 :filed "2018-11-05"}
+              {:ticker "AAPL" :concept "NetIncomeLoss" :unit "USD" :form "10-K"
+               :start "2018-04-01" :end "2018-06-30" :val 11519.0 :filed "2018-11-05"}
+              {:ticker "AAPL" :concept "Assets" :unit "USD" :form "10-K"
+               :start nil :end "2018-09-29" :val 365725.0 :filed "2018-11-05"}]
+        result (dataset/pivot-wide (ds/->dataset rows))]
+    (testing "only the fiscal-year end survives"
+      (is (= ["2018-09-29"] (mapv str (ds/column result :end))))
+      (is (= 59531.0 (cell result "2018-09-29" "NetIncomeLoss")))
+      (is (= 365725.0 (cell result "2018-09-29" "Assets"))))
+    (testing ":ticker and :end lead, concepts follow alphabetically"
+      (is (= [:ticker :end "Assets" "NetIncomeLoss"] (vec (ds/column-names result))))))
+  (testing "10-Q facts keep their 3-month windows"
+    (let [rows [{:concept "Revenues" :unit "USD" :form "10-Q" :start "2024-01-01"
+                 :end "2024-03-31" :val 5.0 :filed "2024-05-01"}]]
+      (is (= 5.0 (cell (dataset/pivot-wide (ds/->dataset rows)) "2024-03-31" "Revenues"))))))

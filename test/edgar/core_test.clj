@@ -1,5 +1,6 @@
 (ns edgar.core-test
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [hato.client]
             [edgar.core :as core]))
 
 ;; These tests set a throwaway identity and clear the caches; restore the
@@ -38,16 +39,28 @@
     (core/set-identity! "Test User test@example.com")
     (is (= "Test User test@example.com" core/*identity*))))
 
-(deftest base-urls-test
-  (testing "base URLs are defined and non-empty"
-    (is (string? core/base-url))
-    (is (string? core/data-url))
-    (is (string? core/archives-url))
-    (is (string? core/submissions-url))
-    (is (string? core/facts-url))
-    (is (string? core/tickers-url))
-    (is (clojure.string/starts-with? core/base-url "https://"))
-    (is (clojure.string/starts-with? core/data-url "https://"))))
+(deftest endpoint-urls-test
+  (testing "endpoint builders pad the CIK"
+    (is (= "https://data.sec.gov/submissions/CIK0000320193.json" (core/cik-url 320193)))
+    (is (= "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"
+           (core/facts-endpoint "320193"))))
+  (testing "archive-url strips CIK zeros and accession dashes"
+    (is (= "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/"
+           (core/archive-url "0000320193" "0000320193-25-000079")))
+    (is (= "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm"
+           (core/archive-url 320193 "000032019325000079" "aapl-20250927.htm")))))
+
+(deftest cik-and-accession-normalisation-test
+  (is (= "0000320193" (core/pad-cik " 320193 ")))
+  (is (= "320193" (core/unpad-cik "0000320193")))
+  (testing "dashed-accession accepts undashed and dashed input, passes others through"
+    (is (= "0000320193-23-000064" (core/dashed-accession "000032019323000064")))
+    (is (= "0001193125-22-082474" (core/dashed-accession "0001193125-22-082474")))
+    (is (= "not-an-accession" (core/dashed-accession "not-an-accession")))))
+
+(deftest url-encode-test
+  (testing "spaces become %20 (EFTS rejects +), reserved characters are escaped"
+    (is (= "%22material%20weakness%22%20%2B%20a%26b" (core/url-encode "\"material weakness\" + a&b")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Retry / backoff behaviour (no real HTTP — stub via with-redefs)
