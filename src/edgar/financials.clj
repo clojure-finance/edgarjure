@@ -20,10 +20,14 @@
                       operating income, ...). Reclassified rows carry
                       :method :reclassified, :rule and :derived-from.
                       Rules live in resources/edgar/reclass/ (edgar.reclass);
-                      income statement and balance sheet (cash flow equals
-                      :standardized). With the FSDS cache enabled
-                      (edgar.fsds/enable-cache!), 10-K income periods gain
-                      statement-placement guards and extension-tag operands.
+                      income statement and balance sheet (cash flow has no
+                      rules). 10-K statements under this view keep each
+                      value as FIRST reported - by the fiscal year's own
+                      10-K - instead of the latest restatement, matching
+                      how Compustat's annual items behave empirically. With
+                      the FSDS cache enabled (edgar.fsds/enable-cache!),
+                      10-K income periods gain statement-placement guards
+                      and extension-tag operands.
 
    Concept fallback chains: each line item is a vector of concept names tried
    in order; the first one present in the facts data wins. Chains are loaded
@@ -53,7 +57,9 @@
    Point-in-time / look-ahead-safe mode:
      Pass :as-of \"YYYY-MM-DD\" to any public function to restrict to filings
      where :filed <= as-of-date.  Without :as-of the latest restated value is
-     returned (always-latest behaviour).
+     returned (always-latest behaviour) - except for 10-K statements under
+     :view :compustat, which return the first-reported value (with :as-of,
+     the first-reported value filed on or before the date).
 
    Quarterly and LTM derivation (10-Q only, flow variables only):
      :duration-months - 3/6/9/12 classification of the observation window
@@ -359,6 +365,28 @@
    (if as-of-date
      (filter #(util/filed-on-or-before? as-of-date %) rows)
      rows)))
+
+(defn- first-reported-10k-facts
+  "Keep only the first-filed 10-K observation per [concept unit start end]
+   tuple; rows of every other form pass through untouched.
+
+   :view :compustat uses this instead of the always-latest dedup for 10-K
+   statements: empirically, Compustat's annual values are the ones the
+   fiscal year's own 10-K reported, not the restated comparatives of later
+   10-Ks (re-presentations for discontinued operations, accounting changes,
+   segment reclassifications). On the 21-firm validation sample keeping the
+   first-reported value lifts every income item by 2-6 points within 1% and
+   the equity items to 100% for the financials."
+  [facts-ds]
+  (let [rows (ds/rows facts-ds {:nil-missing? true})
+        {tenk true other false} (group-by #(= "10-K" (:form %)) rows)
+        firsts (->> tenk
+                    (group-by (juxt :concept :unit :start :end))
+                    vals
+                    (map (fn [group]
+                           (reduce #(if (neg? (compare (str (:filed %2)) (str (:filed %1)))) %2 %1)
+                                   group))))]
+    (ds/->dataset (vec (concat firsts other)))))
 
 (defn- dedup-by-priority
   "Within each [line-item unit start end] group, keep only the row whose
@@ -720,9 +748,13 @@
      - annual values of extension tags presented on the income statement,
        relabeled via :extension-labels pattern pairs (e.g. AMZN's
        FulfillmentExpense -> \"Fulfillment Expense\")
-     - a marker row (:da-marker) for periods whose filing presents one of
-       :da-tags on the income statement - the signal that reported expense
-       lines already exclude D&A.
+     - marker rows, one per :markers entry {:label :tags :on-income-statement}
+       whose condition holds for the period's filing: with
+       :on-income-statement true, one of :tags is presented on the income
+       statement (e.g. D&A as its own line - the signal that the reported
+       expense lines already exclude it); with false, none of them is (e.g.
+       R&D disclosed only in the notes, inside another expense line). A
+       period whose filing is not found in FSDS gets no marker either way.
    Rows join period groups by copying [unit start end] from the statement's
    own rows (FSDS dates are month-end normalized, so matching is by ±10-day
    proximity). Only fires for 10-K rows with the FSDS cache enabled; every
@@ -730,60 +762,93 @@
   [cik ruleset]
   (when-let [spec (:fsds ruleset)]
     (let [patterns (mapv (fn [[p l]] [(re-pattern p) l]) (:extension-labels spec))
-          da-tags (vec (:da-tags spec))]
+          markers (:markers spec)]
       (fn [form rows]
         (when (and (= form "10-K") (fsds/cache-enabled?))
-          (->> (map (juxt :unit :start :end :filed) rows)
-               distinct
+          (->> rows
+               (group-by (juxt :unit :start :end))
                ;; annual windows only: 10-K facts also carry quarterly
                ;; windows sharing the fiscal-year end date, and the FSDS
                ;; operand values are annual (qtrs=4) — a transition-period
                ;; fiscal year must not receive 4-quarter operands.
                ;; USD only: the FSDS values are filtered to uom=USD, so they
                ;; must not be injected into a non-USD period group.
-               (filter (fn [[unit start end _]]
-                         (and (= "USD" unit)
+               (filter (fn [[[unit start end] _]]
+                         (and (= "USD" unit) end
                               (= 12 (duration-months {:start start :end end})))))
                (mapcat
-                (fn [[unit start end filed]]
-                  (when (and end filed)
-                    (when-let [ctx (try (fsds/annual-filing-context cik filed)
-                                        (catch Exception _ nil))]
-                      (let [base {:unit unit :start start :end end
-                                  :form form :filed filed :concept nil}
-                            ext (->> (:is-extension-values ctx)
-                                     (keep (fn [{:keys [tag value] :as v}]
-                                             (when-let [label (some (fn [[re l]]
-                                                                      (when (re-find re tag) l))
-                                                                    patterns)]
-                                               (when (and value (:end v)
-                                                          (close-dates? (:end v) end 10))
-                                                 (assoc base :line-item label :val value
-                                                        :method :fsds :fsds-tag tag)))))
-                                     ;; one row per label per period
-                                     (reduce (fn [m r] (if (m (:line-item r)) m
-                                                           (assoc m (:line-item r) r))) {})
-                                     vals)
-                            marker (when (some #(contains? (get (:placement ctx) % #{}) "IS")
-                                               da-tags)
-                                     [(assoc base :line-item (:da-marker spec) :val 1.0
-                                             :method :fsds)])]
-                        (concat ext marker))))))
+                (fn [[[unit start end] prows]]
+                  (let [;; the period's filings, earliest (its own 10-K) first;
+                        ;; contexts are looked up lazily, at most once each
+                        filings (->> (keep :filed prows) (map str) distinct sort
+                                     (map (fn [filed]
+                                            [filed (delay (try (fsds/annual-filing-context cik filed)
+                                                               (catch Exception _ nil)))])))
+                        base {:unit unit :start start :end end :form form :concept nil}
+                        ext-rows (fn [filed ctx]
+                                   (->> (:is-extension-values ctx)
+                                        (keep (fn [{:keys [tag value] :as v}]
+                                                (when-let [label (some (fn [[re l]]
+                                                                         (when (re-find re tag) l))
+                                                                       patterns)]
+                                                  (when (and value (:end v)
+                                                             (close-dates? (:end v) end 10))
+                                                    (assoc base :line-item label :val value
+                                                           :filed filed :method :fsds
+                                                           :fsds-tag tag)))))))
+                        ;; extension operands: per label, the earliest filing
+                        ;; that carries it - early XBRL filings can lack an
+                        ;; extension value a later 10-K repeats as a
+                        ;; comparative (AMZN FY2009-2010)
+                        ext (vals (reduce (fn [m [filed ctx]]
+                                            (if (= (count m) (count (distinct (map second patterns))))
+                                              (reduced m)
+                                              (reduce (fn [m r] (if (m (:line-item r)) m
+                                                                    (assoc m (:line-item r) r)))
+                                                      m (ext-rows filed @ctx))))
+                                          {} filings))
+                        ;; placement markers: the period's own filing only - a
+                        ;; later 10-K's presentation says nothing about how
+                        ;; this year was presented (INTC FY2016 picked up the
+                        ;; FY2017 filing's D&A-on-IS marker)
+                        [own-filed own-ctx] (first filings)
+                        ctx (some-> own-ctx deref)
+                        on-is? (fn [tags]
+                                 (boolean (some #(contains? (get (:placement ctx) % #{}) "IS")
+                                                tags)))
+                        marker-rows (when ctx
+                                      (for [{:keys [label tags on-income-statement]} markers
+                                            :when (= (boolean on-income-statement)
+                                                     (on-is? tags))]
+                                        (assoc base :line-item label :val 1.0
+                                               :filed own-filed :method :fsds)))]
+                    (concat ext marker-rows))))
                doall))))))
 
 (defn- reclass-aux-fn
-  "Return (fn [form] rows) supplying cross-statement operand rows for
-   reclassification, per the ruleset's :aux spec. Currently supports
-   {:aux {:cash-flow [line-items]}}: builds the standardized cash-flow rows
-   for the same form/as-of (from the same facts dataset, no extra fetch) and
-   keeps only the listed line items."
+  "Return (fn [form] rows) supplying extra operand rows for reclassification,
+   per the ruleset's :aux spec (both keys optional; built from the same facts
+   dataset for the same form/as-of, no extra fetch):
+     :cash-flow [line-items] - the standardized cash-flow rows for the listed
+                               line items
+     :concepts  [concepts]   - the deduplicated rows of individual XBRL
+                               concepts, each labeled with its own concept
+                               name (e.g. \"ExplorationExpense\"), for rules
+                               that need a tag no statement chain exposes or
+                               a chain member other than the chain winner"
   [facts-ds as-of ruleset]
-  (when-let [cf-items (seq (get-in ruleset [:aux :cash-flow]))]
-    (let [wanted (set cf-items)]
+  (let [{cf-items :cash-flow concepts :concepts} (:aux ruleset)
+        wanted (set cf-items)
+        concept-chains (mapv (fn [c] [c c]) concepts)]
+    (when (or (seq cf-items) (seq concepts))
       (fn [form]
-        (->> (build-statement-rows facts-ds cash-flow-concepts form :duration
-                                   as-of cash-flow-identities)
-             (filter #(wanted (:line-item %))))))))
+        (concat
+         (when (seq cf-items)
+           (->> (build-statement-rows facts-ds cash-flow-concepts form :duration
+                                      as-of cash-flow-identities)
+                (filter #(wanted (:line-item %)))))
+         (when (seq concepts)
+           (build-statement-rows facts-ds concept-chains form :duration as-of nil)))))))
 
 (def ^:private long-column-order
   "Leading columns of long-format statement output; any other columns (the
@@ -971,7 +1036,8 @@
         reclass? (or (not= statement-key :income)
                      (nil? resolved-industry)
                      (= :standard resolved-industry))
-        facts (or facts (xbrl/get-facts-dataset cik :sort nil))
+        facts (cond-> (or facts (xbrl/get-facts-dataset cik :sort nil))
+                (and (= view :compustat) (= form "10-K")) first-reported-10k-facts)
         identities (when (#{:standardized :compustat} view)
                      (statement-identities statement-key))
         ruleset (when (and (= view :compustat) reclass?)
@@ -1025,7 +1091,7 @@
                  industry-specific chains). The :compustat reclassification
                  rules were fitted on :standard chains and only apply there;
                  for :bank/:insurance/:reit, :view :compustat equals
-                 :standardized
+                 :standardized with first-reported 10-K values
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, excludes filings where :filed > as-of-date,
                  giving point-in-time / look-ahead-safe results suitable
@@ -1080,9 +1146,9 @@
                  | :compustat
                  (:standardized adds a derived \"Free Cash Flow\" line item
                  and imputes \"D&A\" for filers tagging depreciation and
-                 intangible amortization separately; :compustat currently
-                 equals :standardized - no cash flow reclassification rules
-                 exist yet)
+                 intangible amortization separately; :compustat has no
+                 cash flow reclassification rules and differs from
+                 :standardized only in keeping first-reported 10-K values)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).
                  When set, excludes filings where :filed > as-of-date,
                  giving point-in-time / look-ahead-safe results.
@@ -1110,7 +1176,8 @@
      :shape    - :long (default) or :wide
      :view     - :normalized (default) | :as-reported | :standardized
                  | :compustat (reclassified line items on the income statement
-                 and balance sheet; cash flow equals :standardized)
+                 and balance sheet; first-reported 10-K values on all three
+                 statements)
      :industry - :standard | :bank | :insurance | :reit (income statement only;
                  auto-detected from SIC when omitted)
      :as-of    - ISO date string \"YYYY-MM-DD\" (default nil).

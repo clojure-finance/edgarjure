@@ -4,6 +4,23 @@ All notable changes to edgarjure are documented here.
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-10-20
+
+`:view :compustat` gets substantially closer to Compustat. Measured on the 13 industrials (AAPL MSFT IBM INTC KO PEP PG WMT CAT CVX HON UPS CSCO, FY2009–2025, 221 firm-years, FSDS on), old vs new code on one current-vintage extract, share within 1%: COGS 44.8 → 62.9%, XOPR 41.6 → 62.9%, XSGA 50.0 → 65.7%, Gross Profit 39.8 → 51.1%, OIBDP 22.6 → 30.3%, OIADP 28.1 → 34.8%, DP 74.2 → 80.1%, XRD 83.5 → 90.0%, Revenue (Compustat) 95.9% (newly emitted for every filer); SEQ/CEQ/TEQ 97.3 → 98.2%, RE 95.9 → 97.7%, RECT 68.8 → 70.6%; banks and insurers RE/SEQ/TEQ 95.1 → 100%. Across all 22 sample firms 538 firm-year items moved to a match and 33 away from one.
+
+### Breaking
+- 10-K statements under `:view :compustat` keep each value as **first reported** (by the fiscal year's own 10-K) instead of the latest restatement — empirically how Compustat's annual items behave. Applies to all three statements, including cash flow and the bank/insurance/REIT income statements, which therefore no longer equal `:standardized`. Other views and 10-Q statements are unchanged.
+- `"Revenue (Compustat)"` is emitted for every filer (the revenue line when no excise netting applies), not only for excise filers; the `:gross-profit` rule is gone (`:gross-profit-net-revenue` always applies).
+- The ruleset `:fsds` spec replaces `:da-marker`/`:da-tags` with `:markers`, a vector of `{:label :tags :on-income-statement}`.
+
+### Added
+- Reclassification engine: `[:max ...]` formula operator, `[:at-least formula b ratio]` guard, and `:aux {:concepts [...]}` — individual XBRL concepts as rule operands, labeled with their concept name.
+- Income rules: `:dp-largest-tag` (the largest combined D&A tag when the filer tags several — the smaller is typically a footnote subset) and a fragment guard on `:dp-components`; `:xsga-rd-off-statement` (with FSDS: R&D disclosed only in the notes is not added to SG&A again — PG, PEP, HON); oil-presentation rules `:cogs-oil-gas`, `:cogs-oil-gas-purchased`, `:xsga-oil-gas`, `:revt-oil-gas` (CVX); `:revt-incl-tax-ex-excise`; `:cogs-total-costs`/`:xopr-total-costs` for filers with neither a cost-of-sales nor an SG&A line (UPS); `:oiadp-bottom-up` for filers without an operating-income line, only when XOPR + DP ties to reported total costs within 2%.
+
+### Fixed
+- FSDS placement markers came from every 10-K that reported a period, so a later filing's presentation could flip an earlier year's D&A guard (INTC FY2016); markers now come from the period's own 10-K only, while extension operands still fall back to later filings.
+- The FSDS extension patterns were unanchored and also matched stock-compensation tags (`StockBasedCompensationExpenseAssociatedWithFulfillmentExpense`), so AMZN's fulfillment and technology operands depended on row order.
+
 ## [0.5.1] — 2026-10-20
 
 Several changes below break existing callers; they are listed under **Breaking**. Annual `:view :compustat` values are unchanged (old vs new code compared on 14 tickers, including a point-in-time `:as-of` run), so the 0.5.0 Compustat rates still stand.
@@ -339,7 +356,8 @@ Initial release.
 - HTTP layer: SEC User-Agent identity (`e/init!`), 10 requests/second rate limiter, in-memory TTL cache, retry with exponential backoff on 429/5xx.
 - Four unused dependencies (`next.jdbc`, `honeysql`, `sqlite-jdbc`, `datajure`) moved to an optional `:future` alias.
 
-[Unreleased]: https://github.com/clojure-finance/edgarjure/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/clojure-finance/edgarjure/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/clojure-finance/edgarjure/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/clojure-finance/edgarjure/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/clojure-finance/edgarjure/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/clojure-finance/edgarjure/compare/v0.4.1...v0.4.2

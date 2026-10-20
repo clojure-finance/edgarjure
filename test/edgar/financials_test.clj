@@ -647,8 +647,12 @@
 ;;; ---------------------------------------------------------------------------
 
 (def ^:private fsds-ruleset
-  {:fsds {:da-marker "D&A Presented on Income Statement"
-          :da-tags ["DepreciationAndAmortization"]
+  {:fsds {:markers [{:label "D&A Presented on Income Statement"
+                     :on-income-statement true
+                     :tags ["DepreciationAndAmortization"]}
+                    {:label "R&D Not Presented on Income Statement"
+                     :on-income-statement false
+                     :tags ["ResearchAndDevelopmentExpense"]}]
           :extension-labels [["(?i)fulfil?lment" "Fulfillment Expense"]
                              ["(?i)technologyand(content|infrastructure)"
                               "Technology and Content Expense"]]}})
@@ -698,6 +702,14 @@
       (let [cf-only (assoc ctx :placement {"DepreciationAndAmortization" #{"CF"}})]
         (is (nil? (get (by-li (run "10-K" [annual] :context (constantly cf-only)))
                        "D&A Presented on Income Statement")))))
+    (testing "an :on-income-statement false marker fires only when no tag is on the IS"
+      (let [rd (fn [placement]
+                 (get (by-li (run "10-K" [annual]
+                                  :context (constantly (assoc ctx :placement placement))))
+                      "R&D Not Presented on Income Statement"))]
+        (is (= [1.0] (mapv :val (rd {"ResearchAndDevelopmentExpense" #{"UN"}}))))
+        (is (= [1.0] (mapv :val (rd {}))))
+        (is (nil? (rd {"ResearchAndDevelopmentExpense" #{"IS"}})))))
     (testing "quarterly windows and non-USD periods receive nothing"
       (is (empty? (run "10-K" [(fsds-period "2023-10-01" "2023-12-31")]
                        :context (constantly ctx))))
@@ -706,6 +718,11 @@
     (testing "one context lookup per distinct period, keyed by the filing date"
       (reset! calls [])
       (run "10-K" [annual (assoc annual :line-item "Revenue")] :context (constantly ctx))
+      (is (= [["0000320193" "2024-02-02"]] @calls)))
+    (testing "a row first reported by a later 10-K does not add that filing's context"
+      (reset! calls [])
+      (run "10-K" [(assoc annual :line-item "Revenue" :filed "2025-02-01") annual]
+           :context (constantly ctx))
       (is (= [["0000320193" "2024-02-02"]] @calls)))
     (testing "10-Q forms and a disabled cache produce no rows"
       (is (empty? (run "10-Q" [annual] :context (constantly ctx))))
@@ -857,6 +874,49 @@
             fy17 (first (filter #(= "2017-09-30" (str (:end %)))
                                 (ds/rows w {:nil-missing? true})))]
         (is (= 48351.0 (get fy17 "Net Income")))))))
+
+(deftest compustat-view-first-reported-test
+  ;; :view :compustat keeps the value the fiscal year's own 10-K reported;
+  ;; the other views keep the latest restatement
+  (with-redefs [company/company-cik (fn [t] t)
+                xbrl/get-facts-dataset (fn [_ & _] (ds/->dataset aapl-like-10k-facts))]
+    (let [fy17 (fn [& opts]
+                 (->> (ds/rows (apply fin/income-statement "X" :industry :standard
+                                      :shape :wide opts)
+                               {:nil-missing? true})
+                      (filter #(= "2017-09-30" (str (:end %))))
+                      first
+                      (#(get % "Net Income"))))]
+      (testing ":compustat returns the first-reported value"
+        (is (= 48351.0 (fy17 :view :compustat))))
+      (testing ":standardized returns the latest restatement"
+        (is (= 48000.0 (fy17 :view :standardized))))
+      (testing "the balance sheet and cash flow follow the same rule"
+        (with-redefs [xbrl/get-facts-dataset
+                      (fn [_ & _]
+                        (ds/->dataset
+                         [(fact "Assets" nil "2017-09-30" 375.0 "2017-11-03")
+                          (fact "Assets" nil "2017-09-30" 370.0 "2018-11-05")]))]
+          (let [assets (fn [view]
+                         (->> (ds/rows (fin/balance-sheet "X" :view view)
+                                       {:nil-missing? true})
+                              (filter #(= "Total Assets" (:line-item %)))
+                              first :val))]
+            (is (= 375.0 (assets :compustat)))
+            (is (= 370.0 (assets :standardized))))))
+      (testing "10-Q statements keep the latest value"
+        (with-redefs [xbrl/get-facts-dataset
+                      (fn [_ & _]
+                        (ds/->dataset
+                         [(fact "NetIncomeLoss" "2017-07-02" "2017-09-30" 10.0 "2017-11-03"
+                                :form "10-Q")
+                          (fact "NetIncomeLoss" "2017-07-02" "2017-09-30" 9.0 "2018-11-05"
+                                :form "10-Q")]))]
+          (is (= [9.0] (->> (ds/rows (fin/income-statement "X" :industry :standard
+                                                           :form "10-Q" :view :compustat)
+                                     {:nil-missing? true})
+                            (filter #(= "Net Income" (:line-item %)))
+                            (mapv :val)))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Derived line items (imputation) — :view :standardized

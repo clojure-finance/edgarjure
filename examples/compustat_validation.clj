@@ -102,6 +102,21 @@
        Gross Profit 0 -> 9 of 17). The 2026-07/08 income figures for the
        13 industrials (XSGA 58%, COGS 52%) do not reproduce on this extract
        under either rule set, so compare rule versions on one extract.
+     Current rules, re-measured 2026-10-20 on the same extract and sample
+       (in-sample: the rules added then were developed on it), old vs new
+       code: income COGS 45 -> 63%, XOPR 42 -> 63%, XSGA 50 -> 66%, Gross
+       Profit 40 -> 51%, OIBDP 23 -> 30%, OIADP 28 -> 35%, DP 74 -> 80%,
+       XRD 84 -> 90%, Revenue (Compustat) 96% (now emitted for every
+       filer), Special Items unchanged at 10%; balance SEQ/CEQ/TEQ 98%,
+       RE 98%, RECT 71%, CHE 69%, DLTT 87%, DLC 57%; banks and insurers
+       RE/SEQ/TEQ 100%. AMZN: COGS 15/17, XSGA 17/17, XRD 17/17. Across
+       the 22 firms 538 firm-year items moved from miss to match and 33
+       the other way (AAPL FY2009, where Compustat took the 10-K/A
+       restatement; AMZN FY2012-2013 DP tag choice; scattered single
+       years). The largest single source of the gain is the first-reported
+       vintage of :view :compustat; the rest comes from DP tag selection,
+       the FSDS R&D-placement guard, and presentation rules for oil
+       (CVX) and expense-by-nature (UPS) filers.
 
    Known matching pitfalls this study codified into the harness:
      - Compustat DATADATE is calendar month-end; XBRL :end is the exact

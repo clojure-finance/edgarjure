@@ -33,7 +33,11 @@
     (testing ":neg-sum ignores zero-valued operands"
       (is (= {:val -100.0 :used ["A"]} (f [:neg-sum "A" "Z"] g))))
     (testing ":neg-sum is nil when no operand is present with a non-zero value"
-      (is (nil? (f [:neg-sum "Missing" "Z"] g))))))
+      (is (nil? (f [:neg-sum "Missing" "Z"] g))))
+    (testing ":max picks the largest present operand and names only it in :used"
+      (is (= {:val 100.0 :used ["A"]} (f [:max "B" "Missing" "A"] g))))
+    (testing ":max is nil when no operand is present"
+      (is (nil? (f [:max "Missing" "Other"] g))))))
 
 (deftest eval-formula-negated-operand-test
   (let [f #'edgar.reclass/eval-formula
@@ -102,7 +106,13 @@
           "700 vs 451"))
     (testing ":ties fails when the formula or the label cannot be resolved"
       (is (not (f [:ties [:- "Revenue" "Missing"] "Gross Profit" 0.005] g)))
-      (is (not (f [:ties [:- "Revenue" "Cost of Revenue"] "Missing" 0.005] g))))))
+      (is (not (f [:ties [:- "Revenue" "Cost of Revenue"] "Missing" 0.005] g))))
+    (testing ":at-least compares the formula to a share of the label's value"
+      (is (f [:at-least [:+ "Cost of Revenue"] "Revenue" 0.3] g) "300 >= 0.3 x 1000")
+      (is (not (f [:at-least [:+ "Cost of Revenue"] "Revenue" 0.5] g)) "300 < 500"))
+    (testing ":at-least passes when the label is absent, fails when the formula is"
+      (is (f [:at-least [:+ "Cost of Revenue"] "Missing" 0.5] g))
+      (is (not (f [:at-least [:+ "Missing"] "Revenue" 0.1] g))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; apply-ruleset — engine mechanics
@@ -293,10 +303,18 @@
                "Special Items (Compustat)" "OIADP (Compustat)"
                "OIBDP (Compustat)" "Revenue (Compustat)" "XRD (Compustat)"}
              (set (map :target (:rules rs))))))
-    (testing "the FSDS spec declares the D&A marker and extension labels"
-      (is (string? (get-in rs [:fsds :da-marker])))
-      (is (seq (get-in rs [:fsds :da-tags])))
+    (testing "the FSDS spec declares the placement markers and extension labels"
+      (is (= #{"D&A Presented on Income Statement" "R&D Not Presented on Income Statement"}
+             (set (map :label (get-in rs [:fsds :markers])))))
+      (is (every? (comp seq :tags) (get-in rs [:fsds :markers])))
       (is (seq (get-in rs [:fsds :extension-labels]))))
+    (testing "extension patterns match the expense tags, not tags merely containing them"
+      (let [label-of (fn [tag] (some (fn [[p l]] (when (re-find (re-pattern p) tag) l))
+                                     (get-in rs [:fsds :extension-labels])))]
+        (is (= "Fulfillment Expense" (label-of "FulfillmentExpense")))
+        (is (= "Technology and Content Expense" (label-of "TechnologyAndInfrastructureExpense")))
+        (is (nil? (label-of "StockBasedCompensationExpenseAssociatedWithFulfillmentExpense")))
+        (is (nil? (label-of "ShareBasedCompensationTechnologyAndContentExpense")))))
     (testing "rule ids are unique"
       (let [ids (map :id (:rules rs))]
         (is (= (count ids) (count (set ids))))))))
@@ -486,8 +504,8 @@
     (is (= -20.0 (v "Special Items (Compustat)")) "negated charges")
     (is (= 270.0 (v "OIADP (Compustat)")) "OI - SPI = OI + charges")
     (is (= 310.0 (v "OIBDP (Compustat)")) "OIADP + D&A")
-    (testing "no excise taxes tagged -> no Revenue (Compustat) row"
-      (is (nil? (v "Revenue (Compustat)"))))))
+    (testing "no excise taxes tagged -> Revenue (Compustat) is the revenue as tagged"
+      (is (= 1000.0 (v "Revenue (Compustat)"))))))
 
 (deftest compustat-dp-components-preference-test
   ;; modeled on AMZN FY2023 (verified live): cash-flow D&A 48663 includes
@@ -511,6 +529,74 @@
             dp2 (first (filter #(= "DP (Compustat)" (:line-item %)) result2))]
         (is (= 48663.0 (:val dp2)))
         (is (= :dp (:rule dp2)))))))
+
+(deftest compustat-dp-tag-selection-test
+  ;; modeled on UPS: a footnote-scope Depreciation fragment and a footnote
+  ;; DepreciationDepletionAndAmortization beside the cash-flow
+  ;; DepreciationAndAmortization that equals Compustat DP
+  (let [dp (fn [aux] (->> (reclass/apply-ruleset [] aux reclass/compustat-income-ruleset)
+                          (filter #(= "DP (Compustat)" (:line-item %)))
+                          first ((juxt :val :rule))))]
+    (testing "a Depreciation tag under half of a combined D&A tag is a fragment"
+      (is (= [2360.0 :dp-largest-tag]
+             (dp [(row "Depreciation" 212.0) (row "Amortization of Intangibles" 377.0)
+                  (row "DepreciationAndAmortization" 2360.0)]))))
+    (testing "the largest combined D&A tag wins when several are tagged"
+      (is (= [3746.0 :dp-largest-tag]
+             (dp [(row "D&A" 3000.0)
+                  (row "DepreciationDepletionAndAmortization" 3000.0)
+                  (row "DepreciationAndAmortization" 3746.0)]))))
+    (testing "components at least half of the combined tag still win"
+      (is (= [1050.0 :dp-components]
+             (dp [(row "Depreciation" 1000.0) (row "Amortization of Intangibles" 50.0)
+                  (row "DepreciationDepletionAndAmortization" 1100.0)]))))))
+
+(deftest compustat-oil-gas-presentation-test
+  ;; modeled on CVX FY2023 (verified against a FUNDA extract): COGS =
+  ;; purchased crude + operating expenses + taxes other than on income;
+  ;; XSGA = SG&A + exploration; no operating-income line, so OIADP comes
+  ;; bottom-up once XOPR + DP ties to the reported total costs
+  (let [rows [(row "Revenue" 196913.0 {:concept "RevenueFromContractWithCustomerExcludingAssessedTax"})
+              (row "Cost of Revenue" 119196.0 {:concept "CostOfGoodsAndServicesSold"})
+              (row "SG&A Expense" 4141.0 {:concept "SellingGeneralAndAdministrativeExpense"})
+              (row "R&D Expense" 320.0 {:concept "ResearchAndDevelopmentExpense"})
+              (row "Total Costs and Expenses" 171365.0 {:concept "CostsAndExpenses"})]
+        aux [(row "D&A" 17326.0)
+             (row "ExplorationExpense" 914.0)
+             (row "OperatingCostsAndExpenses" 24887.0)
+             (row "TaxesOther" 4220.0)]
+        result (vec (reclass/apply-ruleset rows aux reclass/compustat-income-ruleset))
+        v (fn [li] ((juxt :val :rule) (first (filter #(= li (:line-item %)) result))))]
+    (testing "COGS and XSGA follow the oil presentation"
+      (is (= [148303.0 :cogs-oil-gas] (v "COGS (Compustat)")))
+      (is (= [5055.0 :xsga-oil-gas] (v "XSGA (Compustat)"))))
+    (testing "OIADP bottom-up when XOPR + DP ties to total costs"
+      (is (= [(- 196913.0 153358.0 17326.0) :oiadp-bottom-up] (v "OIADP (Compustat)")))
+      (is (= [(- 196913.0 153358.0) :oibdp] (v "OIBDP (Compustat)"))))
+    (testing "no bottom-up OIADP when the reconstruction misses costs"
+      (let [result2 (reclass/apply-ruleset (assoc-in rows [4 :val] 190000.0) aux
+                                           reclass/compustat-income-ruleset)]
+        (is (not-any? #(= "OIADP (Compustat)" (:line-item %)) result2))))))
+
+(deftest compustat-total-costs-presentation-test
+  ;; modeled on UPS FY2025: expenses by nature, no cost-of-revenue or SG&A
+  ;; line; Compustat COGS = XOPR = total costs - DP - special-item charges
+  (let [rows [(row "Revenue" 88661.0 {:concept "RevenueFromContractWithCustomerExcludingAssessedTax"})
+              (row "Total Costs and Expenses" 80794.0 {:concept "CostsAndExpenses"})
+              (row "Operating Income" 7867.0 {:concept "OperatingIncomeLoss"})
+              (row "Impairment Charges" 201.0 {:concept "AssetImpairmentCharges"})]
+        aux [(row "DepreciationAndAmortization" 3746.0)]
+        result (vec (reclass/apply-ruleset rows aux reclass/compustat-income-ruleset))
+        v (fn [li] ((juxt :val :rule) (first (filter #(= li (:line-item %)) result))))]
+    (testing "COGS and XOPR from the reported total"
+      (is (= [76847.0 :cogs-total-costs] (v "COGS (Compustat)")))
+      (is (= [76847.0 :xopr-total-costs] (v "XOPR (Compustat)"))))
+    (testing "a cost-of-revenue line disables the total-costs rules"
+      (let [result2 (reclass/apply-ruleset
+                     (conj rows (row "Cost of Revenue" 50000.0 {:concept "CostOfRevenue"}))
+                     aux reclass/compustat-income-ruleset)]
+        (is (= :cogs-ex-da (:rule (first (filter #(= "COGS (Compustat)" (:line-item %))
+                                                 result2)))))))))
 
 (deftest compustat-glp-rdip-test
   ;; GLP: signed gains/losses on asset sales leave OIADP by subtraction;
@@ -612,11 +698,32 @@
                             {:concept "RevenueFromContractWithCustomerExcludingAssessedTax"}))
         v (fn [rows] (->> (reclass/apply-ruleset rows [] reclass/compustat-income-ruleset)
                           (filter #(= "Revenue (Compustat)" (:line-item %)))
-                          first :val))]
+                          first ((juxt :val :rule))))]
     (testing "excise netted when the revenue concept may be gross of excise"
-      (is (= 950.0 (v gross))))
+      (is (= [950.0 :revt-ex-excise] (v gross))))
     (testing "not netted when revenue is already net of assessed taxes"
-      (is (nil? (v net))))))
+      (is (= [1000.0 :revt] (v net))))))
+
+(deftest compustat-revt-gross-revenue-tags-test
+  ;; modeled on CVX: the Revenues total includes equity-affiliate and other
+  ;; income; REVT comes from the sales tags, net of excise
+  (let [v (fn [rows aux]
+            (->> (reclass/apply-ruleset rows aux reclass/compustat-income-ruleset)
+                 (filter #(= "Revenue (Compustat)" (:line-item %)))
+                 first ((juxt :val :rule))))
+        revenues (row "Revenue" 114472.0 {:concept "Revenues"})
+        excise (row "Excise Taxes" 6905.0 {:concept "ExciseAndSalesTaxes"})]
+    (testing "IncludingAssessedTax revenue less excise beats the Revenues total"
+      (is (= [103310.0 :revt-incl-tax-ex-excise]
+             (v [revenues excise]
+                [(row "RevenueFromContractWithCustomerIncludingAssessedTax" 110215.0)]))))
+    (testing "oil and gas revenue less excise, for filers with an exploration line"
+      (is (= [159293.0 :revt-oil-gas]
+             (v [(assoc revenues :val 171636.0) (assoc excise :val 8109.0)]
+                [(row "OilAndGasRevenue" 167402.0) (row "ExplorationExpense" 1342.0)]))))
+    (testing "without the exploration line OilAndGasRevenue is not used"
+      (is (= :revt-ex-excise
+             (second (v [revenues excise] [(row "OilAndGasRevenue" 100000.0)])))))))
 
 (deftest compustat-excise-gp-tieout-test
   ;; modeled on MO FY2016: revenue tagged ExcludingAssessedTax still includes
@@ -641,11 +748,12 @@
     (testing "no tie-out (gross profit already excludes only COGS): not netted"
       (let [genuine-net (assoc-in mo [3 :val] 17998.0)
             result (out genuine-net)]
-        (is (nil? (get-row result "Revenue (Compustat)")))
-        (is (= :gross-profit (:rule (get-row result "Gross Profit (Compustat)"))))))
+        (is (= [25744.0 :revt] ((juxt :val :rule) (get-row result "Revenue (Compustat)"))))
+        (is (= (- 25744.0 (- 7746.0 204.0))
+               (:val (get-row result "Gross Profit (Compustat)"))))))
     (testing "a derived (imputed) Gross Profit never licenses the tie-out"
       (let [derived-gp (assoc-in mo [3 :concept] nil)]
-        (is (nil? (get-row (out derived-gp) "Revenue (Compustat)")))))))
+        (is (= :revt (:rule (get-row (out derived-gp) "Revenue (Compustat)"))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; financials wiring — :view :compustat
