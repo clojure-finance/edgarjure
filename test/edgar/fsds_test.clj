@@ -82,10 +82,13 @@
 ;;; ---------------------------------------------------------------------------
 
 (def ^:private ctx-adsh "0001018724-24-000008")
+(def ^:private later-adsh "0001018724-24-000777")
 
 (defn- write-context-zip!
-  "Quarter zip with full FSDS columns: one AMZN 10-K whose D&A sits on the
-   cash flow only and whose income statement carries an extension line."
+  "Quarter zip with full FSDS columns: one AMZN 10-K (filed 2024-02-02)
+   whose D&A sits on the cash flow only and whose income statement carries
+   an extension line, plus a second AMZN 10-K filed later in the same
+   quarter (2024-03-20) for the point-in-time cutoff tests."
   [path]
   (let [entry! (fn [^ZipOutputStream zos ^String name ^String content]
                  (.putNextEntry zos (ZipEntry. name))
@@ -95,6 +98,7 @@
       (entry! zos "sub.txt"
               (str "adsh\tcik\tname\tform\tperiod\tfiled\n"
                    ctx-adsh "\t1018724\tAMAZON COM INC\t10-K\t20231231\t20240202\n"
+                   later-adsh "\t1018724\tAMAZON COM INC\t10-K\t20231231\t20240320\n"
                    "0000320193-24-000099\t320193\tAPPLE INC\t10-K\t20230930\t20240115\n"))
       (entry! zos "pre.txt"
               (str "adsh\treport\tline\tstmt\ttag\tversion\tplabel\n"
@@ -121,6 +125,12 @@
         (is (= "AMAZON COM INC"
                (:name (fsds/submission-row zip "1018724" :form "10-K"))))
         (is (nil? (fsds/submission-row zip "999999" :form "10-K"))))
+      (testing "submission-row :as-of excludes submissions filed after it"
+        (is (= later-adsh (:adsh (fsds/submission-row zip "1018724" :form "10-K"))))
+        (is (= ctx-adsh (:adsh (fsds/submission-row zip "1018724" :form "10-K"
+                                                    :as-of "20240202"))))
+        (is (nil? (fsds/submission-row zip "1018724" :form "10-K"
+                                       :as-of "20240115"))))
       (testing "filing-rows streams a single filing's rows by adsh prefix"
         (is (= 3 (count (fsds/filing-rows zip :pre ctx-adsh))))
         (is (= 3 (count (fsds/filing-rows zip :num ctx-adsh)))))
@@ -137,6 +147,18 @@
         (is (= ctx-adsh
                (:adsh (fsds/annual-filing-context "0001018724" "2024-02-02"
                                                   :dir (str dir))))))
+      (testing "no look-ahead: a 10-K filed later in the quarter is invisible"
+        ;; ctx-adsh filed 2024-02-02, later-adsh 2024-03-20 — a February
+        ;; lookup must not return March data labeled as February's
+        (is (= ctx-adsh
+               (:adsh (fsds/annual-filing-context "1018724" "2024-02-10"
+                                                  :dir (str dir)))))
+        (is (= later-adsh
+               (:adsh (fsds/annual-filing-context "1018724" "2024-03-25"
+                                                  :dir (str dir)))))
+        (is (nil? (fsds/annual-filing-context "1018724" "2024-01-15"
+                                              :dir (str dir)))
+            "before the first 10-K of the quarter there is no context"))
       (finally (fs/delete-tree dir)))))
 
 (deftest context-cache-keyed-by-dir-test
@@ -145,12 +167,12 @@
   (let [dir-a (fs/create-temp-dir)
         dir-b (fs/create-temp-dir)]
     (try
-      (write-context-zip! (fs/path dir-a "2021q1.zip"))
+      (write-context-zip! (fs/path dir-a "2024q1.zip"))
       ;; dir-b: a quarter zip without the AMZN submission
-      (write-fake-fsds-zip! (fs/path dir-b "2021q1.zip"))
-      (is (= ctx-adsh (:adsh (fsds/annual-filing-context "1018724" "2021-02-02"
+      (write-fake-fsds-zip! (fs/path dir-b "2024q1.zip"))
+      (is (= ctx-adsh (:adsh (fsds/annual-filing-context "1018724" "2024-02-02"
                                                          :dir (str dir-a)))))
-      (is (nil? (fsds/annual-filing-context "1018724" "2021-02-02" :dir (str dir-b)))
+      (is (nil? (fsds/annual-filing-context "1018724" "2024-02-02" :dir (str dir-b)))
           "dir-b has no AMZN 10-K; dir-a's cached context must not leak")
       (finally
         (fs/delete-tree dir-a)

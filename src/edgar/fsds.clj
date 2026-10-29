@@ -279,11 +279,15 @@
 
 (defn submission-row
   "The sub.txt row (keywordized string map) of a company's latest submission
-   of the given form in a quarter zip, or nil. cik may be padded or not."
-  [zip-path cik & {:keys [form]}]
+   of the given form in a quarter zip, or nil. cik may be padded or not.
+   :as-of (a yyyymmdd string, sub.txt's filed format) keeps only submissions
+   filed on or before that date, so a mid-quarter lookup cannot see a filing
+   made later in the same quarter."
+  [zip-path cik & {:keys [form as-of]}]
   (let [ciks (str (Long/parseLong (str cik)))]
     (->> (rows-where zip-path :sub #(= (second %) ciks))
          (filter #(or (nil? form) (= form (:form %))))
+         (filter #(or (nil? as-of) (not (pos? (compare (:filed %) as-of)))))
          (sort-by :filed #(compare %2 %1))
          first)))
 
@@ -301,27 +305,36 @@
 
 (defonce ^:private context-cache (atom {}))
 
+(defn- yyyymmdd
+  "ISO date string or LocalDate → sub.txt's yyyymmdd filed format."
+  [d]
+  (let [^LocalDate ld (if (instance? LocalDate d) d (LocalDate/parse (str d)))]
+    (str/replace (str ld) "-" "")))
+
 (defn annual-filing-context
-  "FSDS context of the 10-K a company filed in the quarter containing
-   filed-date:
+  "FSDS context of the latest 10-K a company filed on or before filed-date
+   within the quarter containing filed-date (point-in-time: a 10-K filed
+   later in the same quarter is invisible, so an :as-of lookup cannot pick
+   up a value that was not yet public):
      {:adsh      accession number
       :placement {tag #{\"IS\" \"CF\" ...}}   (statement placement, all tags)
       :is-extension-values [{:tag :label :value :end}]  (annual values of
                             extension tags presented on the income statement;
                             :end is the FSDS month-end period date)}
    Returns nil when the quarter isn't cached/published or the filing isn't
-   found. Results are cached per [cik year quarter cache-dir] for the
+   found. Results are cached per [cik filed-date cache-dir] for the
    session (the directory is part of the key, so contexts built from
    different cache directories never shadow each other)."
   [cik filed-date & {:keys [dir]}]
   (let [[y q] (quarter-of-date filed-date)
-        ck [(str (Long/parseLong (str cik))) y q
+        cutoff (yyyymmdd filed-date)
+        ck [(str (Long/parseLong (str cik))) cutoff
             (or dir (when (cache-enabled?) (active-dir)))]]
     (if-let [hit (find @context-cache ck)]
       (val hit)
       (let [ctx
             (when-let [zip (cached-quarter! y q :dir dir)]
-              (when-let [subrow (submission-row zip cik :form "10-K")]
+              (when-let [subrow (submission-row zip cik :form "10-K" :as-of cutoff)]
                 (let [adsh (:adsh subrow)
                       pre (filing-rows zip :pre adsh)
                       placement (placement-map pre)

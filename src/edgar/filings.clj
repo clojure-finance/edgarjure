@@ -66,7 +66,9 @@
      :end-date        - filter to filings on/before this date string \"YYYY-MM-DD\"
      :limit           - max number of results (default all)
      :include-amends? - include amended filings e.g. 10-K/A, 10-Q/A (default
-                        false; implied when :form itself is an amendment)"
+                        false; implied when :form itself is an amendment).
+                        With :form, the form's amendments match too
+                        (:form \"10-K\" also returns \"10-K/A\")"
   [ticker-or-cik & {:keys [form start-date end-date limit include-amends?]
                     :or {include-amends? false}}]
   (let [cik (company/company-cik ticker-or-cik)
@@ -75,12 +77,16 @@
         extra-filings (fetch-extra-filings company)
         filings (->> (concat main-filings extra-filings)
                      (map #(enrich-filing cik %)))
-        strip-amends? (not (or include-amends? (amended? {:form form})))]
+        strip-amends? (not (or include-amends? (amended? {:form form})))
+        form-set (when form
+                   (if (and include-amends? (not (amended? {:form form})))
+                     #{form (str form "/A")}
+                     #{form}))]
     (cond->> filings
       ;; the seq is newest-first, so stop instead of fetching older chunks
       start-date (take-while #(>= (compare (:filingDate %) start-date) 0))
       strip-amends? (remove amended?)
-      form (filter #(= form (:form %)))
+      form-set (filter (comp form-set :form))
       end-date (filter #(<= (compare (:filingDate %) end-date) 0))
       limit (take limit))))
 

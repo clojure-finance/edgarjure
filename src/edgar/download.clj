@@ -22,6 +22,27 @@
   (when-let [primary (filing/primary-doc (filing/filing-index f))]
     (str (fs/path (filing/save-dir f dir) (:name primary)))))
 
+(defn- all-output-paths
+  "Return the output file paths of every document filing-save-all! would
+   write for a filing, or nil when its index lists none."
+  [f dir]
+  (let [out-dir (filing/save-dir f dir)]
+    (->> (:files (filing/filing-index f))
+         (keep :name)
+         distinct
+         (map #(str (fs/path out-dir %)))
+         seq)))
+
+(defn- fully-downloaded?
+  "True when every file a download of this filing would write already
+   exists — all documents with :download-all?, else the primary document."
+  [f dir download-all?]
+  (boolean
+   (if download-all?
+     (when-let [paths (all-output-paths f dir)]
+       (every? #(fs/exists? (fs/path %)) paths))
+     (when-let [p (output-path f dir)] (fs/exists? (fs/path p))))))
+
 (defn download-filings!
   "Download filings for a ticker or CIK to a local directory.
    Options:
@@ -30,7 +51,9 @@
      :start-date      - \"YYYY-MM-DD\"
      :end-date        - \"YYYY-MM-DD\"
      :download-all?   - download all attachments, not just primary doc (default false)
-     :skip-existing?  - skip filings whose output file already exists (default false)
+     :skip-existing?  - skip filings already fully on disk: the primary
+                        document exists, or with :download-all? every
+                        document in the filing's index (default false)
    Returns a seq of result maps per filing:
      {:status :ok    :path  \"...\"}              ; primary-doc-only download
      {:status :ok    :paths [\"...\" \"...\"]}     ; download-all? download
@@ -49,8 +72,7 @@
       (doall
        (for [f fs-list]
          (try
-           (if (and skip-existing?
-                    (when-let [p (output-path f dir)] (fs/exists? (fs/path p))))
+           (if (and skip-existing? (fully-downloaded? f dir download-all?))
              {:status :skipped :accession-number (:accessionNumber f)}
              (if download-all?
                {:status :ok :paths (filing/filing-save-all! f dir)}

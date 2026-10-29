@@ -165,9 +165,11 @@
      :start-date      - \"YYYY-MM-DD\"
      :end-date        - \"YYYY-MM-DD\"
      :limit           - max results
-     :include-amends? - include amended filings e.g. 10-K/A (default false);
-                        an amendment :form (\"10-K/A\") returns the
-                        amendments themselves regardless"
+     :include-amends? - include amended filings e.g. 10-K/A (default false;
+                        with :form, its amendments match too: :form \"10-K\"
+                        also returns \"10-K/A\"); an amendment :form
+                        (\"10-K/A\") returns the amendments themselves
+                        regardless"
   [ticker-or-cik & {:keys [form start-date end-date limit include-amends?]
                     :or {include-amends? false}}]
   (schema/validate! schema/FilingsArgs {:ticker-or-cik ticker-or-cik
@@ -188,9 +190,10 @@
    Options:
      :form            - form type string (default \"10-K\")
      :n               - return the nth latest (0-indexed, default 0)
-     :include-amends? - include amended filings (default false); an
-                        amendment :form (\"10-K/A\") returns the amendments
-                        themselves regardless"
+     :include-amends? - include amended filings (default false; the :form's
+                        amendments match too: :form \"10-K\" also returns
+                        \"10-K/A\"); an amendment :form (\"10-K/A\") returns
+                        the amendments themselves regardless"
   [ticker-or-cik & {:keys [form n include-amends?] :or {form "10-K" n 0 include-amends? false}}]
   (schema/validate! schema/FilingArgs {:ticker-or-cik ticker-or-cik
                                        :form form

@@ -29,6 +29,10 @@
     (testing ":form \"10-K/A\" returns the amendments without :include-amends?"
       (is (= ["0001193125-10-012091"]
              (map :accessionNumber (filings/get-filings "320193" :form "10-K/A")))))
+    (testing ":form \"10-K\" with :include-amends? true also returns 10-K/A"
+      (is (= ["10-K" "10-K/A" "10-K"]
+             (map :form (filings/get-filings "320193" :form "10-K"
+                                             :include-amends? true)))))
     (testing ":include-amends? true keeps amendments in an unfiltered listing"
       (is (= 4 (count (filings/get-filings "320193" :include-amends? true)))))
     (testing "returned maps carry the padded CIK and the document URL"

@@ -286,6 +286,32 @@
         (is (= 110 (get latest "Revenue (Q)")))
         (is (= 460 (get latest "Revenue (LTM)")))))))
 
+(deftest to-wide-mixed-units-test
+  ;; regression: the pivot grouped on [end line-item] only, so a line item
+  ;; reported in two currencies collapsed into one cell — EUR supplied the
+  ;; plain value and USD the (Q) value of the same column, unlabeled
+  (let [f #'edgar.financials/to-wide
+        rows [{:end "2024-03-31" :line-item "Revenue" :unit "USD" :val 100
+               :val-q 100 :val-ltm nil}
+              {:end "2024-03-31" :line-item "Revenue" :unit "EUR" :val 90
+               :val-q 90 :val-ltm nil}
+              {:end "2024-03-31" :line-item "Net Income" :unit "USD" :val 10
+               :val-q 10 :val-ltm nil}]
+        result (f (ds/->dataset rows))
+        col-names (set (map name (ds/column-names result)))
+        row (first (ds/rows result {:nil-missing? true}))]
+    (testing "a multi-unit line item gets one column per unit, unit-labeled"
+      (is (contains? col-names "Revenue (USD)"))
+      (is (contains? col-names "Revenue (EUR)"))
+      (is (not (contains? col-names "Revenue")) "no unlabeled mixed column"))
+    (testing "values and (Q) derivations stay within their unit"
+      (is (= 100 (get row "Revenue (USD)")))
+      (is (= 100 (get row "Revenue (USD) (Q)")))
+      (is (= 90 (get row "Revenue (EUR)")))
+      (is (= 90 (get row "Revenue (EUR) (Q)"))))
+    (testing "a single-unit line item keeps its plain label"
+      (is (= 10 (get row "Net Income"))))))
+
 (deftest to-wide-no-quarterly-columns-test
   (let [f #'edgar.financials/to-wide
         ;; 10-K long output: no :val-q or :val-ltm columns

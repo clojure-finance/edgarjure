@@ -950,13 +950,18 @@
    surface as annual values or as extra annual periods. Instant rows and
    irregular windows (e.g. transition periods) are kept.
 
-   When several windows exist for the same [end line-item] (10-Q flow
+   When several windows exist for the same [end line-item unit] (10-Q flow
    statements: a ~3-month and a YTD row), the longest window — by its
    :start/:end dates — supplies the plain value (the reported YTD figure;
    among equal windows, e.g. unduplicated :as-reported restatements, the
    latest :filed) and the derived :val-q/:val-ltm — which are period-level,
    not row-level — are taken from whichever row has them. They appear as
    \"<line-item> (Q)\" and \"<line-item> (LTM)\" columns.
+
+   Rows never mix units: a line item reported in more than one :unit (e.g.
+   two currencies) gets one column per unit, labeled
+   \"<line-item> (<unit>)\"; a line item with a single unit keeps its plain
+   label.
 
    Columns: :end first, then the line items in line-order (a seq of labels
    or concepts, e.g. chain order; items it does not name follow
@@ -970,20 +975,33 @@
            has-ltm? (boolean (some #{:val-ltm} (ds/column-names ds)))
            reps (->> (ds/rows ds {:nil-missing? true})
                      (remove #(and (= form "10-K") (util/quarterly-window? %)))
-                     (group-by (juxt :end line-key))
+                     (group-by (juxt :end line-key :unit))
                      vals
                      (map (fn [grows]
                             (-> (reduce #(if (util/preferred-observation? %2 %1) %2 %1) grows)
                                 (assoc :val-q (some :val-q grows)
                                        :val-ltm (some :val-ltm grows))))))
+           multi-unit? (->> reps
+                            (group-by line-key)
+                            (into {} (map (fn [[li rs]]
+                                            [li (< 1 (count (distinct (map :unit rs))))]))))
+           col-name (fn [r]
+                      (let [li (line-key r)]
+                        (if (multi-unit? li)
+                          (str li " (" (or (:unit r) "?") ")")
+                          li)))
            rank (into {} (map-indexed (fn [i li] [li i])) (distinct line-order))
-           lines (sort-by (fn [li] [(get rank li Long/MAX_VALUE) (str li)])
-                          (distinct (map line-key reps)))
+           lines (->> reps
+                      (map (juxt line-key col-name))
+                      distinct
+                      (sort-by (fn [[li col]]
+                                 [(get rank li Long/MAX_VALUE) (str li) (str col)]))
+                      (map second))
            cols (into [:end]
-                      (mapcat (fn [li]
-                                (cond-> [li]
-                                  has-q? (conj (str li " (Q)"))
-                                  has-ltm? (conj (str li " (LTM)")))))
+                      (mapcat (fn [col]
+                                (cond-> [col]
+                                  has-q? (conj (str col " (Q)"))
+                                  has-ltm? (conj (str col " (LTM)")))))
                       lines)]
        (util/ordered-dataset
         (->> reps
@@ -991,10 +1009,10 @@
              (sort-by key #(compare %2 %1))
              (map (fn [[period rows]]
                     (reduce (fn [m r]
-                              (let [li (line-key r)]
-                                (cond-> (assoc m li (:val r))
-                                  has-q? (assoc (str li " (Q)") (:val-q r))
-                                  has-ltm? (assoc (str li " (LTM)") (:val-ltm r)))))
+                              (let [col (col-name r)]
+                                (cond-> (assoc m col (:val r))
+                                  has-q? (assoc (str col " (Q)") (:val-q r))
+                                  has-ltm? (assoc (str col " (LTM)") (:val-ltm r)))))
                             {:end period}
                             rows))))
         cols)))))

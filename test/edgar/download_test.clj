@@ -1,5 +1,6 @@
 (ns edgar.download-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [babashka.fs :as fs]
             [edgar.download :as download]
             [edgar.core :as core]
@@ -69,6 +70,33 @@
       (let [r (first result)]
         (is (= :skipped (:status r)))
         (is (= "0000320193-24-000001" (:accession-number r)))))))
+
+(deftest download-filings-skip-existing-all-test
+  ;; regression: with :download-all? the skip check looked only at the
+  ;; primary document, so a resumed bulk download skipped filings whose
+  ;; exhibits were still missing
+  (let [idx {:files [{:sequence "1" :name "report.htm" :type "10-K"}
+                     {:sequence "2" :name "ex21.htm" :type "EX-21"}]}]
+    (testing "download-all?: a filing with a missing exhibit is re-downloaded"
+      (let [result (with-redefs [filings/get-filings (fn [& _] [mock-filing])
+                                 filing/filing-index (fn [_] idx)
+                                 fs/exists? (fn [p] (str/ends-with? (str p) "report.htm"))
+                                 filing/filing-save-all!
+                                 (fn [_ _] ["/d/report.htm" "/d/ex21.htm"])]
+                     (download/download-filings! "AAPL" "/data" :form "10-K"
+                                                 :download-all? true
+                                                 :skip-existing? true))]
+        (is (= :ok (:status (first result))))
+        (is (= ["/d/report.htm" "/d/ex21.htm"] (:paths (first result))))))
+    (testing "download-all?: skipped only when every document exists"
+      (let [result (with-redefs [filings/get-filings (fn [& _] [mock-filing])
+                                 filing/filing-index (fn [_] idx)
+                                 fs/exists? (fn [_] true)]
+                     (download/download-filings! "AAPL" "/data" :form "10-K"
+                                                 :download-all? true
+                                                 :skip-existing? true))]
+        (is (= :skipped (:status (first result))))
+        (is (= "0000320193-24-000001" (:accession-number (first result))))))))
 
 (deftest download-filings-error-shape-test
   (testing "exception during download produces {:status :error ...} envelope"
