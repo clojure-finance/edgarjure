@@ -342,7 +342,7 @@ Income statement, balance sheet, and cash flow — with automatic line-item reso
 (e/cashflow "AAPL" :form "10-Q")        ; single-quarter + trailing 12 months
 ```
 
-A 10-K also carries quarterly-footnote figures (e.g. fourth-quarter data sharing the fiscal-year end date). Long-format 10-K income and cash-flow output keeps those rows and tags every row with `:duration-months` (3/6/9/12) — select `(= 12 :duration-months)` for the annual figures. `:shape :wide` keeps only the annual windows.
+A 10-K also carries quarterly-footnote figures (e.g. fourth-quarter data sharing the fiscal-year end date). Long-format 10-K income and cash-flow output keeps those rows and tags every row with `:duration-months` (3/6/9/12) — select `(= 12 :duration-months)` for the annual figures. `:shape :wide` keeps only the annual windows. As in `e/pivot`, wide output never mixes units in one cell: a line item reported in several units (e.g. two currencies) gets one `"<line item> (<unit>)"` column per unit.
 
 ### Quarterly and LTM Derivation
 
