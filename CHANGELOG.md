@@ -4,6 +4,8 @@ All notable changes to edgarjure are documented here.
 
 ## [Unreleased]
 
+## [0.5.5] — 2026-10-31
+
 ### Fixed
 - `e/tables` folded an all-text first data row into the column names when it sat under a colspan'd header, losing the row: the splitting row folded whenever nothing in it parsed as a number, which also matched director/signature-style grids (`Director | John | Smith` under a spanned `Name` header became columns `"Name John"`/`"Name Smith"`). A non-numeric splitting row now folds only when it is also label-less; rows with text under the first header range always stay data.
 - `e/tables` silently dropped a column when a rowspan from a discarded sparse row occupied part of the header row: grid positions not covered by any header-cell span got no logical column, so the data under them vanished (typically the label column). Uncovered positions — before, between or past the header's spans — now each become their own column.
@@ -381,7 +383,8 @@ Initial release.
 - HTTP layer: SEC User-Agent identity (`e/init!`), 10 requests/second rate limiter, in-memory TTL cache, retry with exponential backoff on 429/5xx.
 - Four unused dependencies (`next.jdbc`, `honeysql`, `sqlite-jdbc`, `datajure`) moved to an optional `:future` alias.
 
-[Unreleased]: https://github.com/clojure-finance/edgarjure/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/clojure-finance/edgarjure/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/clojure-finance/edgarjure/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/clojure-finance/edgarjure/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/clojure-finance/edgarjure/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/clojure-finance/edgarjure/compare/v0.5.1...v0.5.2
