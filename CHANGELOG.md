@@ -4,6 +4,12 @@ All notable changes to edgarjure are documented here.
 
 ## [Unreleased]
 
+### Added
+- `e/tables` reports each number's unit and scale from the filing's own iXBRL tagging: a numeric column whose cells all carry the same `ix:nonFraction` unit and scale gets `{:unit :scale}` column metadata — `(meta (ds/column d "…2026"))` ⇒ `{:unit "USD" :scale 6 …}` is USD in millions (displayed value × 10^scale; `"pure"` with scale −2 is a percentage). Unit refs are resolved through the document's `xbrli:unit` definitions to the same spelling as `e/facts` units (`"USD"`, `"shares"`, `"USD/shares"`). Columns that mix units (income-statement columns holding both totals and per-share lines) and untagged (pre-iXBRL) filings carry no metadata rather than a wrong one.
+
+### Fixed
+- `e/tables` left label-less note rows under one header cell — a lone `"(unaudited)"` or `"September 30, 2026"` — in the data, which kept that column string-typed; such leading rows now fold into the column name (`"As of September 30, 2026 (unaudited)"`). A side effect is that `:min-rows` now counts only true data rows: a table whose only other row was such a note needs `:min-rows 1` to be returned.
+
 ## [0.5.3] — 2026-10-31
 
 ### Fixed

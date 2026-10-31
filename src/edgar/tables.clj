@@ -64,6 +64,26 @@
   [cell]
   (clean-text (node-text cell)))
 
+(defn- cell-ix-meta
+  "The iXBRL numeric tagging of a td/th cell, as {:unit-ref \"usd\" :scale 6},
+   when every ix:nonFraction value in the cell is tagged alike (a
+   \"0.03% – 5.75%\" range counts once). nil for untagged cells and mixed
+   tagging. A missing scale attribute is scale 0 per the iXBRL spec; the
+   displayed number times 10^scale is the tagged value (6 = millions,
+   3 = thousands, -2 = a percentage tagged as its decimal fraction)."
+  [cell]
+  (let [metas (->> (tree-seq #(and (map? %) (:content %)) :content cell)
+                   (filter #(and (map? %) (= :ix:nonfraction (:tag %))))
+                   (keep (fn [t]
+                           (when-let [ref (get-in t [:attrs :unitref])]
+                             {:unit-ref ref
+                              :scale (or (some-> (get-in t [:attrs :scale])
+                                                 str/trim
+                                                 parse-long)
+                                         0)})))
+                   distinct)]
+    (when (= 1 (count metas)) (first metas))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Row extraction
 ;;; Rows are laid out on the table's grid: th and td cells are treated
@@ -88,16 +108,18 @@
 (defn- layout-row
   "Lay one tr out on the grid. occupied maps grid column -> number of rows
    (this one included) a rowspan from above still covers. Returns
-   {:cells <text by grid position> :spans <[start end) of each own cell>
+   {:cells <text by grid position> :metas <grid position -> cell-ix-meta,
+    tagged cells only> :spans <[start end) of each own cell>
     :occupied <occupied map for the next row>}."
   [tr occupied]
-  (loop [cells (cell-nodes tr) col 0 texts {} spans [] added {}]
+  (loop [cells (cell-nodes tr) col 0 texts {} metas {} spans [] added {}]
     (cond
       (pos? (get occupied col 0))
-      (recur cells (inc col) texts spans added)
+      (recur cells (inc col) texts metas spans added)
 
       (empty? cells)
       {:cells (reduce-kv assoc (vec (repeat col "")) texts)
+       :metas metas
        :spans spans
        :occupied (into added
                        (keep (fn [[p r]] (when (> r 1) [p (dec r)])))
@@ -110,6 +132,7 @@
         (recur (rest cells)
                end
                (assoc texts col (cell-text cell))
+               (if-let [m (cell-ix-meta cell)] (assoc metas col m) metas)
                (conj spans [col end])
                (cond-> added
                  (> rows 1) (into (map (fn [p] [p (dec rows)])) (range col end))))))))
@@ -302,34 +325,47 @@
         groups))
 
 (defn- sub-header-row?
-  "True when a grid data row looks like a sub-header for the split header
+  "True when a grid data row looks like a sub-header for the given header
    ranges: every one of its non-blank cells lies inside one of them, so the
    label region is blank (a \"September 30,\" or year row)."
-  [split-ranges row]
-  (every? (fn [p] (some (fn [[s e]] (and (<= s p) (< p e))) split-ranges))
+  [ranges row]
+  (every? (fn [p] (some (fn [[s e]] (and (<= s p) (< p e))) ranges))
           (keep-indexed (fn [i c] (when-not (str/blank? c) i)) row)))
 
 (defn- sub-header-count
   "How many leading grid data rows are further header rows to fold into the
-   column names: the rows before the first splitting row (see column-groups)
-   whose non-blank cells all sit inside split header ranges (period/date
-   rows above the row that fixed the split), plus the splitting row itself
-   when it also looks like a header — nothing in it parses as a number
-   (\"Amount\" / \"Rate\" under a year), or it too is label-less (a year row
-   that split its period header into years)."
+   column names. Walking from the top, a row folds when it is
+   - a row before the first splitting row (see column-groups) whose
+     non-blank cells all sit inside split header ranges (period/date rows,
+     year rows above the row that fixed the split), or
+   - a label-less row — nothing under the first header range — with no
+     numeric cell and some text (\"(unaudited)\", a lone
+     \"September 30, 2026\"), or
+   - the splitting row itself, when nothing in it parses as a number
+     (\"Amount\" / \"Rate\" under a year) or it too is label-less (a year
+     row that split its period header into years); folding stops there."
   [groups data-rows]
-  (let [splits (filterv :split-by groups)]
-    (if-let [b (some->> (seq (map :split-by splits)) (reduce min))]
-      (let [srs (distinct (map :header-range splits))
-            pre (count (take-while #(sub-header-row? srs %) (take b data-rows)))]
-        (if (and (= pre b)
-                 (< b (count data-rows))
-                 (let [row (nth data-rows b)]
-                   (or (not-any? parse-number row)
-                       (sub-header-row? srs row))))
-          (inc b)
-          pre))
-      0)))
+  (let [splits (filterv :split-by groups)
+        srs (distinct (map :header-range splits))
+        b (some->> (seq (map :split-by splits)) (reduce min))
+        first-range (:header-range (first groups))
+        value-ranges (remove #{first-range} (distinct (map :header-range groups)))
+        label-less-text? (fn [row]
+                           (and (not-any? parse-number row)
+                                (some #(re-find #"[A-Za-z]" %) row)
+                                (sub-header-row? value-ranges row)))]
+    (loop [i 0]
+      (if (>= i (count data-rows))
+        i
+        (let [row (nth data-rows i)]
+          (cond
+            (and b (= i b)) (if (or (not-any? parse-number row)
+                                    (sub-header-row? srs row))
+                              (inc i)
+                              i)
+            (and b (< i b) (sub-header-row? srs row)) (recur (inc i))
+            (label-less-text? row) (recur (inc i))
+            :else i))))))
 
 (defn- spread-row
   "Map a sub-header grid row onto the logical columns with colspan
@@ -355,13 +391,31 @@
           header-row
           sub-rows))
 
-(defn- drop-blank-columns
-  "Remove the columns that are blank in every data row (the header row is
-   first and does not count)."
+(defn- column-ix-metas
+  "Per logical column, the one iXBRL tagging its data cells agree on, with
+   the unit ref resolved through the document's xbrli:unit definitions:
+   {:unit \"USD\" :scale 6}, or nil when the column's cells are untagged or
+   tagged differently. cells-rows and metas-rows are the grid data rows'
+   padded :cells and their :metas, sub-header rows already removed."
+  [groups unit-map cells-rows metas-rows]
+  (mapv (fn [{r :range}]
+          (let [ms (distinct
+                    (for [[cells metas] (map vector cells-rows metas-rows)
+                          p (non-blank-positions r cells)
+                          :let [m (metas p)]
+                          :when m]
+                      m))]
+            (when (= 1 (count ms))
+              (let [{:keys [unit-ref scale]} (first ms)]
+                {:unit (get unit-map unit-ref unit-ref) :scale scale}))))
+        groups))
+
+(defn- non-blank-column-idx
+  "The indices of the columns that are non-blank in at least one data row
+   (the header row is first and does not count)."
   [[_ & data :as rows]]
-  (let [keep-idx (filterv (fn [ci] (some #(not (str/blank? (nth % ci))) data))
-                          (range (count (first rows))))]
-    (mapv (fn [row] (mapv row keep-idx)) rows)))
+  (filterv (fn [ci] (some #(not (str/blank? (nth % ci))) data))
+           (range (count (first rows)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Table → dataset conversion
@@ -371,35 +425,44 @@
   "Convert a seq of row-vectors (all strings) into a tech.ml.dataset.
    First row is used as column names. Remaining rows are data.
    Pads short rows with blanks; truncates overlong rows.
-   Columns keep their left-to-right order from the HTML table."
-  [rows table-idx]
-  (when (>= (count rows) 2)
-    (let [header (first rows)
-          data-rows (rest rows)
-          ncols (count header)
-          ;; Pad/truncate each data row to ncols
-          aligned (mapv (fn [row]
-                          (let [padded (into (vec row) (repeat (- ncols (count row)) ""))]
-                            (subvec padded 0 ncols)))
-                        data-rows)
-          ;; Build column seqs
-          col-seqs (for [ci (range ncols)]
-                     (mapv #(nth % ci) aligned))
-          ;; Deduplicate column names
-          col-names (loop [names header used #{} result []]
-                      (if (empty? names)
-                        result
-                        (let [n (first names)
-                              n (if (str/blank? n) (str "col_" (count result)) n)
-                              ;; first of n, n_1, n_2, ... not already taken
-                              uniq-n (first (remove used (cons n (map #(str n "_" %) (iterate inc 1)))))]
-                          (recur (rest names)
-                                 (conj used uniq-n)
-                                 (conj result uniq-n)))))
-          ;; Infer types; build columns in order (a column map would be a
-          ;; hash map beyond 8 entries and scramble the column order)
-          columns (map ds/new-column col-names (map infer-column col-seqs))]
-      (ds/new-dataset {:dataset-name (str "table-" table-idx)} columns))))
+   Columns keep their left-to-right order from the HTML table.
+   col-metas, when given, holds one {:unit :scale} map (or nil) per column,
+   attached as column metadata to the columns that infer as numeric."
+  ([rows table-idx] (matrix->dataset rows table-idx nil))
+  ([rows table-idx col-metas]
+   (when (>= (count rows) 2)
+     (let [header (first rows)
+           data-rows (rest rows)
+           ncols (count header)
+           ;; Pad/truncate each data row to ncols
+           aligned (mapv (fn [row]
+                           (let [padded (into (vec row) (repeat (- ncols (count row)) ""))]
+                             (subvec padded 0 ncols)))
+                         data-rows)
+           ;; Build column seqs
+           col-seqs (for [ci (range ncols)]
+                      (mapv #(nth % ci) aligned))
+           ;; Deduplicate column names
+           col-names (loop [names header used #{} result []]
+                       (if (empty? names)
+                         result
+                         (let [n (first names)
+                               n (if (str/blank? n) (str "col_" (count result)) n)
+                               ;; first of n, n_1, n_2, ... not already taken
+                               uniq-n (first (remove used (cons n (map #(str n "_" %) (iterate inc 1)))))]
+                           (recur (rest names)
+                                  (conj used uniq-n)
+                                  (conj result uniq-n)))))
+           ;; Infer types; build columns in order (a column map would be a
+           ;; hash map beyond 8 entries and scramble the column order)
+           columns (map (fn [nm vals m]
+                          (if (and m (some number? vals))
+                            (ds/new-column nm vals m)
+                            (ds/new-column nm vals)))
+                        col-names
+                        (map infer-column col-seqs)
+                        (concat (or col-metas []) (repeat nil)))]
+       (ds/new-dataset {:dataset-name (str "table-" table-idx)} columns)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Main extraction pipeline
@@ -409,6 +472,24 @@
   "Parse an HTML string into a hickory tree."
   [html-str]
   (hickory/as-hickory (hickory/parse html-str)))
+
+(defn- unit-definitions
+  "Map of the document's xbrli:unit ids (ix:nonFraction unitRef targets) to
+   unit strings: the measure names without their namespace prefix
+   (iso4217:USD → \"USD\", xbrli:shares → \"shares\", xbrli:pure → \"pure\"),
+   a divide joined as \"USD/shares\" — the same spelling as XBRL fact
+   :unit values."
+  [hick]
+  (into {}
+        (keep (fn [u]
+                (when-let [id (get-in u [:attrs :id])]
+                  (let [measures (->> (tree-seq #(and (map? %) (:content %)) :content u)
+                                      (filter #(and (map? %) (= :xbrli:measure (:tag %))))
+                                      (map #(-> (apply str (filter string? (:content %)))
+                                                str/trim
+                                                (str/replace #"^[^:]+:" ""))))]
+                    (when (seq measures) [id (str/join "/" measures)])))))
+        (sel/select (sel/tag :xbrli:unit) hick)))
 
 (defn- tr-node? [n] (and (map? n) (= :tr (:tag n))))
 
@@ -434,8 +515,10 @@
    cell whose span covers them, fragments (\"$\", \"%\", \")\") are merged
    into their numbers, sub-header rows directly below the header (period
    dates, years, \"Amount\"/\"Rate\" labels) are folded into the column
-   names, and columns blank in every data row are removed."
-  [table-node table-idx]
+   names, and columns blank in every data row are removed. Numeric columns
+   whose cells carry one agreed iXBRL tagging get {:unit :scale} column
+   metadata, the unit ref resolved through unit-map (see column-ix-metas)."
+  [table-node table-idx unit-map]
   (let [rows (->> (layout-rows (direct-rows table-node))
                   (map #(update % :cells merge-fragments))
                   ;; Filter out rows where every cell is blank
@@ -452,12 +535,17 @@
             header-row (fold-sub-headers groups
                                          (group-row groups :header-range header)
                                          (subvec data 0 n-sub))
-            [header-row & data-rows] (->> (subvec data n-sub)
-                                          (map #(group-row groups :range %))
-                                          (cons header-row)
-                                          drop-blank-columns)]
+            col-metas (column-ix-metas groups unit-map (subvec data n-sub)
+                                       (mapv :metas (drop (+ header-idx 1 n-sub) rows)))
+            [header-row & data-rows :as grouped] (->> (subvec data n-sub)
+                                                      (map #(group-row groups :range %))
+                                                      (cons header-row))
+            keep-idx (non-blank-column-idx (vec grouped))
+            header-row (mapv header-row keep-idx)
+            data-rows (mapv (fn [row] (mapv row keep-idx)) data-rows)]
         (when-not (layout-table? data-rows)
-          (matrix->dataset (cons header-row data-rows) table-idx))))))
+          (matrix->dataset (cons header-row data-rows) table-idx
+                           (mapv col-metas keep-idx)))))))
 
 (defn extract-tables
   "Extract HTML tables from a filing as a seq of tech.ml.dataset objects.
@@ -489,6 +577,13 @@
      - a column whose cells are all numbers, blanks or dash placeholders
        (\"—\", \"–\", \"-\") is numeric: commas, currency symbols and \"%\"
        are stripped, parentheses mean negative, blanks and dashes are nil
+     - a numeric column whose cells carry one agreed iXBRL tagging gets
+       {:unit :scale} column metadata — (meta (ds/column d \"2026\")) =>
+       {:unit \"USD\" :scale 6 …} means the values are USD in millions
+       (displayed value × 10^scale; \"pure\" with :scale -2 is a
+       percentage). Units spell like XBRL fact :unit values
+       (\"USD\", \"shares\", \"USD/shares\", \"pure\"); untagged (pre-iXBRL)
+       filings and mixed-tagged columns carry no metadata
 
    Tables that appear to be layout/navigation (no data row with at least two
    non-blank cells) are automatically filtered out.
@@ -518,8 +613,9 @@
       (if n nil [])
       (let [hick (parse-html html-str)
             table-nodes (sel/select (sel/tag :table) hick)
+            unit-map (unit-definitions hick)
             all-datasets (->> table-nodes
-                              (map-indexed (fn [idx node] (extract-table node idx)))
+                              (map-indexed (fn [idx node] (extract-table node idx unit-map)))
                               (keep identity)
                               (filter #(>= (ds/row-count %) min-rows))
                               (filter #(>= (ds/column-count %) min-cols)))]

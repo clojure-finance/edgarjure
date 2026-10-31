@@ -385,11 +385,18 @@
 
    Layout and navigation tables (no data row with at least two non-blank cells)
    are filtered out.
-   Column names come from the first substantive row; duplicates are suffixed _1, _2, etc.
-   Colspan/rowspan grids are collapsed to one column per header cell (all-blank
+   Column names come from the first substantive row, with sub-header rows
+   (period dates, years, units) folded in; duplicates are suffixed _1, _2, etc.
+   Colspan/rowspan grids are collapsed to one column per sub-column (all-blank
    columns dropped); \"$\"/\"%\"/\")\" cells are merged into their number.
    Numeric columns: commas, currency and % stripped, parentheses → negative,
    \"—\"/\"–\"/\"-\" → nil.
+   A numeric column whose cells carry one agreed iXBRL tagging gets
+   {:unit :scale} column metadata — (meta (ds/column d \"2026\")) =>
+   {:unit \"USD\" :scale 6 …} means USD in millions (displayed value ×
+   10^scale; \"pure\" :scale -2 is a percentage). A column that mixes units
+   (an income statement with per-share rows) or an untagged (pre-iXBRL)
+   filing carries none.
 
    Examples:
      (def f (e/filing \"AAPL\" :form \"10-K\"))

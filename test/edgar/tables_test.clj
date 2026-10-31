@@ -347,7 +347,7 @@
         </table>"
         tree (hickory/as-hickory (hickory/parse table-html))
         table-node (first (sel/select (sel/tag :table) tree))
-        result (f table-node 0)]
+        result (f table-node 0 {})]
     (testing "returns a dataset"
       (is (instance? tech.v3.dataset.impl.dataset.Dataset result)))
     (testing "has correct column count"
@@ -367,7 +367,7 @@
         tree (hickory/as-hickory (hickory/parse layout-html))
         table-node (first (sel/select (sel/tag :table) tree))]
     (testing "layout table returns nil"
-      (is (nil? (f table-node 0))))))
+      (is (nil? (f table-node 0 {}))))))
 
 (deftest extract-table-blank-header-cell-alignment-test
   ;; Regression test for Issue #6:
@@ -381,7 +381,7 @@
         </table>"
         tree (hickory/as-hickory (hickory/parse html))
         table-node (first (sel/select (sel/tag :table) tree))
-        result (f table-node 0)]
+        result (f table-node 0 {})]
     (testing "returns a dataset"
       (is (instance? tech.v3.dataset.impl.dataset.Dataset result)))
     (testing "3 columns preserved even though middle header cell is blank"
@@ -409,7 +409,7 @@
         </table>"
         tree (hickory/as-hickory (hickory/parse html))
         table-node (first (sel/select (sel/tag :table) tree))
-        result (f table-node 0)]
+        result (f table-node 0 {})]
     (testing "returns a dataset (not nil)"
       (is (some? result)))
     (testing "nested-table rows are not double-counted — exactly 2 data rows"
@@ -558,7 +558,40 @@
              (vec (ds/column d "2024 Amount (in millions)")))))
     (testing "text columns keep their text"
       (is (= "Fixed-rate 0.000% – 4.850% notes" (nth (ds/column d "col_0") 1)))
-      (is (= "0.03% – 5.75%" (nth (ds/column d "2025 Effective Interest Rate") 1))))))
+      (is (= "0.03% – 5.75%" (nth (ds/column d "2025 Effective Interest Rate") 1))))
+    (testing "an unresolvable unitRef (no xbrli:unit defs in the fixture) is kept as-is"
+      (is (= {:unit "usd" :scale 6}
+             (-> (ds/column d "2025 Amount (in millions)")
+                 meta (select-keys [:unit :scale])))))))
+
+(deftest label-less-sub-header-rows-fold-test
+  ;; A lone "(unaudited)" or date row under one header cell leaked into the
+  ;; data (GOOGL balance sheet), keeping the column string-typed.
+  (let [f #'edgar.tables/extract-table
+        html "<table>
+          <tr><th>Metric</th><th>As of December 31, 2025</th><th>As of September 30, 2026</th></tr>
+          <tr><td></td><td></td><td>(unaudited)</td></tr>
+          <tr><td>Cash</td><td>23,264</td><td>24,459</td></tr>
+          <tr><td>Receivables</td><td>56,334</td><td>57,166</td></tr>
+        </table>"
+        tree (hickory/as-hickory (hickory/parse html))
+        d (f (first (sel/select (sel/tag :table) tree)) 0 {})]
+    (testing "the (unaudited) row folds into the column name"
+      (is (= ["Metric" "As of December 31, 2025" "As of September 30, 2026 (unaudited)"]
+             (ds/column-names d))))
+    (testing "both value columns are numeric"
+      (is (= [:string :int64 :int64] (col-types d)))
+      (is (= [24459 57166] (vec (ds/column d "As of September 30, 2026 (unaudited)")))))
+    (testing "a numeric or labeled first data row does not fold"
+      (let [plain (f (first (sel/select (sel/tag :table)
+                                        (hickory/as-hickory (hickory/parse "<table>
+                        <tr><th>Exhibit</th><th>Description</th></tr>
+                        <tr><td>EX-31.1</td><td>Certification</td></tr>
+                        <tr><td>EX-32.1</td><td>Certification</td></tr>
+                      </table>"))))
+                     0 {})]
+        (is (= 2 (ds/row-count plain)))
+        (is (= ["Exhibit" "Description"] (ds/column-names plain)))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Real paired amount + "% of revenues" columns — trimmed from Alphabet's
@@ -600,7 +633,18 @@
       (is (= [48 29 17 6 0 100]
              (vec (ds/column d "Three Months Ended September 30, 2025_1"))))
       (is (= [67681 32695 19906 7101 194 127577]
-             (vec (ds/column d "Three Months Ended September 30, 2026")))))))
+             (vec (ds/column d "Three Months Ended September 30, 2026")))))
+    (testing "iXBRL tagging becomes column metadata, unit refs resolved"
+      (is (= {:unit "USD" :scale 6}
+             (-> (ds/column d "Three Months Ended September 30, 2026")
+                 meta (select-keys [:unit :scale])))
+          "amounts are USD in millions")
+      (is (= {:unit "pure" :scale -2}
+             (-> (ds/column d "Three Months Ended September 30, 2026_1")
+                 meta (select-keys [:unit :scale])))
+          "the % of revenues columns are percentages")
+      (is (= {} (-> (ds/column d "col_0") meta (select-keys [:unit :scale])))
+          "the untagged label column carries no unit metadata"))))
 
 (deftest googl-disaggregated-revenues-test
   ;; Regression: the "September 30," and year rows used to stay as data, so
