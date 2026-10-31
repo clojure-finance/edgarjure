@@ -160,6 +160,10 @@
 
 (defn filings
   "Return a lazy seq of filing metadata maps for a company.
+   Keys are EDGAR's own camelCase field names, passed through as keywords —
+   :filingDate :reportDate :accessionNumber :primaryDocument :form
+   :isInlineXBRL … — plus :cik and :url; there are no kebab-case aliases
+   (a lookup like :filing-date is simply nil).
    Options:
      :form            - form type string e.g. \"10-K\" \"10-Q\" \"8-K\" \"4\"
      :start-date      - \"YYYY-MM-DD\"

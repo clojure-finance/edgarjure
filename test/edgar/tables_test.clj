@@ -46,7 +46,13 @@
     (testing "strings Double/parseDouble would accept are not numbers"
       (is (nil? (f "1.5d")))
       (is (nil? (f "NaN")))
-      (is (nil? (f "1e5"))))))
+      (is (nil? (f "1e5"))))
+    (testing "two space-joined tokens are not one number (merged amount + % pair)"
+      (is (nil? (f "48,758 48")))
+      (is (nil? (f "$48,758 48%")))
+      (is (nil? (f "67,681 53")))
+      (is (nil? (f "138,785 48 %")))
+      (is (nil? (f "2025 2026"))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; infer-column
@@ -553,3 +559,67 @@
     (testing "text columns keep their text"
       (is (= "Fixed-rate 0.000% – 4.850% notes" (nth (ds/column d "col_0") 1)))
       (is (= "0.03% – 5.75%" (nth (ds/column d "2025 Effective Interest Rate") 1))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Real paired amount + "% of revenues" columns — trimmed from Alphabet's
+;;; Q3 2026 10-Q. Each period header spans two years; two sub-header rows
+;;; ("September 30," and the years) sit above the data, and in the first
+;;; table each year holds an amount + % pair that must not be merged into
+;;; one fabricated number ("67,681 53" → 6768153).
+;;; ---------------------------------------------------------------------------
+
+(def ^:private googl-tables-html
+  (slurp (io/resource "fixtures/googl_10q_tables.html")))
+
+(defn- googl-tables []
+  (with-redefs [edgar.filing/filing-html (fn [_] googl-tables-html)]
+    (vec (tables/extract-tables {:form "10-Q"}))))
+
+(deftest googl-revenues-by-geography-test
+  (let [d (first (googl-tables))]
+    (testing "each year splits into its own amount and % columns, no pair merged"
+      (is (= ["col_0"
+              "Three Months Ended September 30, 2025"
+              "Three Months Ended September 30, 2025_1"
+              "Three Months Ended September 30, 2026"
+              "Three Months Ended September 30, 2026_1"
+              "Nine Months Ended September 30, 2025"
+              "Nine Months Ended September 30, 2025_1"
+              "Nine Months Ended September 30, 2026"
+              "Nine Months Ended September 30, 2026_1"]
+             (ds/column-names d))))
+    (testing "the two sub-header rows are folded, not left as data"
+      (is (= ["United States" "EMEA(1)" "APAC(1)" "Other Americas(1)"
+              "Hedging gains (losses)" "Total revenues"]
+             (vec (ds/column d "col_0")))))
+    (testing "every value column is numeric and holds the filed figures"
+      (is (= [:string :int64 :int64 :int64 :int64 :int64 :int64 :int64 :int64]
+             (col-types d)))
+      (is (= [48758 29911 17819 6065 -207 102346]
+             (vec (ds/column d "Three Months Ended September 30, 2025"))))
+      (is (= [48 29 17 6 0 100]
+             (vec (ds/column d "Three Months Ended September 30, 2025_1"))))
+      (is (= [67681 32695 19906 7101 194 127577]
+             (vec (ds/column d "Three Months Ended September 30, 2026")))))))
+
+(deftest googl-disaggregated-revenues-test
+  ;; Regression: the "September 30," and year rows used to stay as data, so
+  ;; the 2025 columns kept strings ("$56,567") while the 2026 columns were
+  ;; coerced to numbers — mixed types across one line item.
+  (let [d (second (googl-tables))]
+    (testing "year sub-header splits each period and folds into the names"
+      (is (= ["col_0"
+              "Three Months Ended September 30, 2025"
+              "Three Months Ended September 30, 2026"
+              "Nine Months Ended September 30, 2025"
+              "Nine Months Ended September 30, 2026"]
+             (ds/column-names d))))
+    (testing "all value columns are numeric — no mixed types across years"
+      (is (= [:string :int64 :int64 :int64 :int64] (col-types d))))
+    (testing "values parse with $, commas and parentheses handled"
+      (is (= "Google Search & other" (first (ds/column d "col_0"))))
+      (is (= 56567 (first (ds/column d "Three Months Ended September 30, 2025"))))
+      (is (= 63350 (first (ds/column d "Three Months Ended September 30, 2026"))))
+      (is (= [-207 194] [(nth (ds/column d "Three Months Ended September 30, 2025") 8)
+                         (nth (ds/column d "Three Months Ended September 30, 2026") 8)]))
+      (is (= 102346 (last (ds/column d "Three Months Ended September 30, 2025")))))))

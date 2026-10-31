@@ -192,6 +192,8 @@ clj -M:clerk:nrepl
 (e/filings "AAPL" :form "10-K" :limit 5)
 (e/filings "AAPL" :form "10-K" :include-amends? true)   ; 10-K and 10-K/A
 (e/filings "AAPL" :form "10-K/A")                       ; amendments only
+;; Keys are EDGAR's own camelCase field names (:filingDate :reportDate
+;; :accessionNumber :primaryDocument :isInlineXBRL …), not kebab-case
 
 ;; Get a specific filing
 (e/filing "AAPL" :form "10-K")          ; latest
@@ -300,7 +302,7 @@ Every map these functions return works directly with `e/html`, `e/text`, `e/item
 (e/save-all! f "/data/filings")  ; all attachments
 ```
 
-`e/tables` skips layout tables and turns each data table into a dataset: column names come from the header row (a sub-header row such as units is folded in, e.g. `"2025 Amount (in millions)"`), colspan grids collapse to one column per header cell, `$`/`%`/`)` fragment cells merge into their number, parentheses become negatives, and `—`/`-` placeholders read as nil so the column stays numeric. Most filings number their exhibits, so `e/exhibit` wants the full type (`"EX-21.1"`, not `"EX-21"`) — list them with `e/exhibits`.
+`e/tables` skips layout tables and turns each data table into a dataset: column names come from the header row with sub-header rows folded in (period dates, years, units — e.g. `"Three Months Ended September 30, 2026"` or `"2025 Amount (in millions)"`), colspan grids collapse to one column per sub-column (a header spanning two years, or an amount + "% of revenues" pair per year, splits into one column each), `$`/`%`/`)` fragment cells merge into their number, parentheses become negatives, and `—`/`-` placeholders read as nil so the column stays numeric. Most filings number their exhibits, so `e/exhibit` wants the full type (`"EX-21.1"`, not `"EX-21"`) — list them with `e/exhibits`.
 
 Pre-2001 plain-text filings are parsed line by line (item headings such as `ITEM 7. MANAGEMENT'S DISCUSSION ...`), with the same `:only` filtering; when the index lists only the complete submission text file, that file serves as the primary document. Older variants (10-K405, 10-KT, 10-KSB, 10-QSB, 10-QT) and amendments use the item list of their base form (10-KSB: MD&A is Item 6). Known limitations: PART headings are not section boundaries, so the last Part I item of a 10-K ends with the "PART II" heading text; 8-K item titles come back empty when a filing puts the title in a separate HTML element from the "Item 2.02" label.
 

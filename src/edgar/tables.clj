@@ -188,20 +188,27 @@
 (defn- parse-number
   "Try to parse a cell string as a number.
    Handles: commas, parentheses for negatives, leading $ (and other currency
-   symbols), trailing %, spaces, the Unicode minus sign."
+   symbols), trailing %, the Unicode minus sign, and spaces as thousands
+   separators (\"1 234\"). Interior whitespace that is not grouping digits by
+   three means two space-joined tokens (\"48,758 48\"), not a number — nil."
   [s]
   (when-not (str/blank? s)
-    (let [clean (-> s
-                    str/trim
-                    (str/replace #"^US\$" "")
-                    (str/replace #"[$€£¥,%\s]" "")
-                    (str/replace "−" "-")
-                    (str/replace #"^\((.+)\)$" "-$1"))]
-      (when (re-matches #"-?(?:\d+\.?\d*|\.\d+)" clean)
-        (if (str/includes? clean ".")
-          (Double/parseDouble clean)
-          (try (Long/parseLong clean)
-               (catch NumberFormatException _ (Double/parseDouble clean))))))))
+    (let [t (-> s
+                str/trim
+                (str/replace #"^US\$" "")
+                (str/replace #"[$€£¥%]" "")
+                (str/replace "−" "-")
+                str/trim
+                (str/replace #"^\((.+)\)$" "-$1")
+                str/trim)]
+      (when (or (not (re-find #"\s" t))
+                (re-matches #"-?\d{1,3}(?:\s\d{3})+(?:\.\d+)?" t))
+        (let [clean (str/replace t #"[,\s]" "")]
+          (when (re-matches #"-?(?:\d+\.?\d*|\.\d+)" clean)
+            (if (str/includes? clean ".")
+              (Double/parseDouble clean)
+              (try (Long/parseLong clean)
+                   (catch NumberFormatException _ (Double/parseDouble clean))))))))))
 
 (defn- infer-column
   "Given a seq of cell strings for one column, return the best typed vector.
@@ -234,32 +241,54 @@
 
 (defn- non-blank-count [row] (count (remove str/blank? row)))
 
-(defn- split-range
-  "Split the grid range [s e) at the positions of row's non-blank cells
-   inside it (the first piece always starts at s)."
+(defn- non-blank-positions
+  "Positions of row's non-blank cells inside the grid range [s e)."
   [[s e] row]
-  (let [starts (filterv #(and (> % s) (not (str/blank? (row %)))) (range s e))
-        bounds (conj (into [s] starts) e)]
-    (mapv vector bounds (rest bounds))))
+  (filterv #(not (str/blank? (row %))) (range s e)))
+
+(defn- split-bounds
+  "Positions that split the grid range [s e) into one piece per logical
+   column, with :split-by the index of the first data row with the most
+   non-blank cells in the range (k of them; nil when no row has two). Those
+   \"full\" rows dictate k pieces, and each boundary sits between the i-th
+   and (i+1)-th cell of every full row — at the smallest (i+1)-th position.
+   Rows place the same logical value at slightly different grid positions
+   (a merged \"$\" shifts the number one cell right), so splitting at one
+   row's own positions would misalign the others; should the full rows
+   still not agree on a boundary, the first one's positions are used."
+  [r data-rows]
+  (let [poss (mapv #(non-blank-positions r %) data-rows)
+        k (reduce max 0 (map count poss))]
+    (when (> k 1)
+      (let [full (filterv #(= k (count %)) poss)
+            bounds (reduce (fn [acc i]
+                             (let [lo (reduce max (map #(nth % i) full))
+                                   hi (reduce min (map #(nth % (inc i)) full))]
+                               (if (< lo hi) (conj acc hi) (reduced nil))))
+                           []
+                           (range (dec k)))]
+        {:bounds (or bounds (vec (rest (first full))))
+         :split-by (first (keep-indexed #(when (= k (count %2)) %1) poss))}))))
 
 (defn- column-groups
   "Logical columns as {:range [start end) :header-range [start end)} grid
    ranges: one per header-row cell (a header cell spanning three grid
    columns owns all three, which is where Workiva puts \"$\", the number and
    a spacer), plus one per grid position past the header's width. A header
-   cell over several sub-columns (the first data row that holds two or more
-   values under it, typically a sub-header row) is split at that row's
-   cells; every piece keeps the header cell as its :header-range and records
-   the index of the splitting row as :split-by. rows are padded to width."
+   cell over several sub-columns (data rows holding two or more values
+   under it — one per year, or an amount + \"% of revenues\" pair per year)
+   is split per split-bounds; every piece keeps the header cell as its
+   :header-range and records the splitting row's index as :split-by.
+   rows are padded to width."
   [header-spans data-rows width]
   (let [hdr-end (if (seq header-spans) (second (peek header-spans)) 0)
         ranges (into header-spans (map (fn [p] [p (inc p)])) (range hdr-end width))]
     (into []
           (mapcat (fn [[s e :as r]]
-                    (if-let [i (first (keep-indexed #(when (< 1 (non-blank-count (subvec %2 s e))) %1)
-                                                    data-rows))]
-                      (map (fn [p] {:range p :header-range r :split-by i})
-                           (split-range r (nth data-rows i)))
+                    (if-let [{:keys [bounds split-by]} (split-bounds r data-rows)]
+                      (let [starts (into [s] bounds)]
+                        (map (fn [p] {:range p :header-range r :split-by split-by})
+                             (mapv vector starts (conj (vec (rest starts)) e))))
                       [{:range r :header-range r}])))
           ranges)))
 
@@ -272,17 +301,59 @@
             (str/join " " (remove str/blank? (subvec row s e)))))
         groups))
 
-(defn- fold-sub-header
-  "When the first data row is a second header row — it split a header cell
-   into sub-columns (see column-groups) and none of its cells is numeric
-   (\"Amount\" / \"Rate\" under a year) — append its texts to the header
-   names and drop it. rows are grouped rows, header first."
-  [groups [header sub & more :as rows]]
-  (if (and sub
-           (some #(= 0 (:split-by %)) groups)
-           (not-any? parse-number sub))
-    (into [(mapv (fn [h s] (str/trim (str h " " s))) header sub)] more)
-    (vec rows)))
+(defn- sub-header-row?
+  "True when a grid data row looks like a sub-header for the split header
+   ranges: every one of its non-blank cells lies inside one of them, so the
+   label region is blank (a \"September 30,\" or year row)."
+  [split-ranges row]
+  (every? (fn [p] (some (fn [[s e]] (and (<= s p) (< p e))) split-ranges))
+          (keep-indexed (fn [i c] (when-not (str/blank? c) i)) row)))
+
+(defn- sub-header-count
+  "How many leading grid data rows are further header rows to fold into the
+   column names: the rows before the first splitting row (see column-groups)
+   whose non-blank cells all sit inside split header ranges (period/date
+   rows above the row that fixed the split), plus the splitting row itself
+   when it also looks like a header — nothing in it parses as a number
+   (\"Amount\" / \"Rate\" under a year), or it too is label-less (a year row
+   that split its period header into years)."
+  [groups data-rows]
+  (let [splits (filterv :split-by groups)]
+    (if-let [b (some->> (seq (map :split-by splits)) (reduce min))]
+      (let [srs (distinct (map :header-range splits))
+            pre (count (take-while #(sub-header-row? srs %) (take b data-rows)))]
+        (if (and (= pre b)
+                 (< b (count data-rows))
+                 (let [row (nth data-rows b)]
+                   (or (not-any? parse-number row)
+                       (sub-header-row? srs row))))
+          (inc b)
+          pre))
+      0)))
+
+(defn- spread-row
+  "Map a sub-header grid row onto the logical columns with colspan
+   semantics: within each header range, a cell covers the pieces from its
+   own up to the one holding the row's next non-blank cell in that range
+   (\"2025\" over an amount + % pair; \"September 30,\" over all four).
+   Returns one string per group."
+  [groups row]
+  (mapv (fn [{[gs ge] :range hr :header-range}]
+          (let [qs (non-blank-positions hr row)
+                own (filterv #(and (<= gs %) (< % ge)) qs)]
+            (if (seq own)
+              (str/join " " (map row own))
+              (or (some->> qs (filter #(< % gs)) last row) ""))))
+        groups))
+
+(defn- fold-sub-headers
+  "Append the texts of the sub-header grid rows (see sub-header-count) to
+   the grouped header row, each spread per spread-row."
+  [groups header-row sub-rows]
+  (reduce (fn [hdr sub]
+            (mapv (fn [h s] (str/trim (str h " " s))) hdr (spread-row groups sub)))
+          header-row
+          sub-rows))
 
 (defn- drop-blank-columns
   "Remove the columns that are blank in every data row (the header row is
@@ -361,8 +432,9 @@
    The header is the first row with at least two non-blank cells; rows
    above it are dropped. Data cells are assigned to the column of the header
    cell whose span covers them, fragments (\"$\", \"%\", \")\") are merged
-   into their numbers, a sub-header row directly below the header is folded
-   into the column names, and columns blank in every data row are removed."
+   into their numbers, sub-header rows directly below the header (period
+   dates, years, \"Amount\"/\"Rate\" labels) are folded into the column
+   names, and columns blank in every data row are removed."
   [table-node table-idx]
   (let [rows (->> (layout-rows (direct-rows table-node))
                   (map #(update % :cells merge-fragments))
@@ -374,11 +446,15 @@
       (let [width (reduce max 0 (map (comp count :cells) rows))
             pad #(into % (repeat (- width (count %)) ""))
             [header & data] (map (comp pad :cells) (drop header-idx rows))
-            groups (column-groups (:spans (nth rows header-idx)) (vec data) width)
-            [header-row & data-rows] (->> data
+            data (vec data)
+            groups (column-groups (:spans (nth rows header-idx)) data width)
+            n-sub (sub-header-count groups data)
+            header-row (fold-sub-headers groups
+                                         (group-row groups :header-range header)
+                                         (subvec data 0 n-sub))
+            [header-row & data-rows] (->> (subvec data n-sub)
                                           (map #(group-row groups :range %))
-                                          (cons (group-row groups :header-range header))
-                                          (fold-sub-header groups)
+                                          (cons header-row)
                                           drop-blank-columns)]
         (when-not (layout-table? data-rows)
           (matrix->dataset (cons header-row data-rows) table-idx))))))
@@ -404,6 +480,10 @@
      - colspan cells hold their value once; each data cell goes to the
        column of the header cell spanning it, and columns blank in every
        row are dropped
+     - a header cell over several sub-columns (one per year, or an amount +
+       \"% of revenues\" pair per year) becomes one column per sub-column,
+       and sub-header rows below the header (period dates, years,
+       \"Amount\"/\"Rate\" labels) are folded into the column names
      - \"$\", \"(\", \")\" and \"%\" in cells of their own are merged into the
        adjacent number
      - a column whose cells are all numbers, blanks or dash placeholders

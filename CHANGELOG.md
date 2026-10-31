@@ -5,10 +5,15 @@ All notable changes to edgarjure are documented here.
 ## [Unreleased]
 
 ### Fixed
+- `e/tables` merged paired amount + "% of revenues" columns into one, fabricating numbers: a header range was split at the cells of the *first* data row holding two or more values under it (typically the year row), so when the real data rows held four (an amount + % pair per year), each pair was space-joined (`"$48,758 48%"`) and the joined text could even parse (`"67,681 53"` → `6768153`, indistinguishable from a real figure). Splitting is now driven by the rows with the *most* values in the range, with each boundary placed between the i-th and (i+1)-th cell of every such row (GOOGL 10-Q revenues by geography: one amount and one % column per year). Two defenses in depth: `parse-number` returns nil for two space-joined tokens (interior whitespace that is not three-digit grouping), and sub-header rows below the header row — period dates, years, `"Amount"`/`"Rate"` labels — are folded into the column names instead of leaking into the data (previously only a single sub-header row that split the header was folded). Folding also fixes mixed column types within one table: `"September 30,"`/year rows left in the data kept some year columns as strings (`"$56,567"`) while others coerced to numbers.
+
 - FSDS look-ahead bias: `annual-filing-context` picked the quarter's **latest** 10-K regardless of the requested filing date, so when a company filed two 10-Ks in one quarter, a point-in-time lookup dated between them returned the later filing's values labeled with the earlier date. The lookup now keeps only submissions filed on or before the requested date (`submission-row` gains an `:as-of` option), and the session context cache is keyed by the date instead of the quarter.
 - Wide statements silently mixed currencies: the pivot grouped on [end line-item] without `:unit`, so a line item reported in two currencies collapsed into one unlabeled cell (one currency supplying the plain value, the other its `(Q)` value). A line item with more than one unit now gets one column per unit, labeled `"<line-item> (<unit>)"`; single-unit line items are unchanged.
 - `:include-amends? true` with `:form` returned no amendments: the exact form filter ran after the amendment filter, so `(e/filings … :form "10-K" :include-amends? true)` still excluded `"10-K/A"`. The form's amendments now match too; an amendment `:form` and listings without `:form` behave as before.
 - Resuming bulk downloads with `:download-all? true :skip-existing? true` skipped a filing when its **primary document** existed, leaving missing attachments missing forever. The skip check now requires every document in the filing's index to exist on disk.
+
+### Changed
+- `e/filings` docstring and README state that filing-map keys are EDGAR's own camelCase field names (`:filingDate`, `:accessionNumber`, …) passed through as keywords, with no kebab-case aliases.
 
 ## [0.5.2] — 2026-10-20
 
