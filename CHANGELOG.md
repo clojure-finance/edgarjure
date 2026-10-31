@@ -4,6 +4,8 @@ All notable changes to edgarjure are documented here.
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-10-31
+
 ### Added
 - `e/tables` reports each number's unit and scale from the filing's own iXBRL tagging: a numeric column whose cells all carry the same `ix:nonFraction` unit and scale gets `{:unit :scale}` column metadata — `(meta (ds/column d "…2026"))` ⇒ `{:unit "USD" :scale 6 …}` is USD in millions (displayed value × 10^scale; `"pure"` with scale −2 is a percentage). Unit refs are resolved through the document's `xbrli:unit` definitions to the same spelling as `e/facts` units (`"USD"`, `"shares"`, `"USD/shares"`). Columns that mix units (income-statement columns holding both totals and per-share lines) and untagged (pre-iXBRL) filings carry no metadata rather than a wrong one.
 
@@ -375,7 +377,8 @@ Initial release.
 - HTTP layer: SEC User-Agent identity (`e/init!`), 10 requests/second rate limiter, in-memory TTL cache, retry with exponential backoff on 429/5xx.
 - Four unused dependencies (`next.jdbc`, `honeysql`, `sqlite-jdbc`, `datajure`) moved to an optional `:future` alias.
 
-[Unreleased]: https://github.com/clojure-finance/edgarjure/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/clojure-finance/edgarjure/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/clojure-finance/edgarjure/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/clojure-finance/edgarjure/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/clojure-finance/edgarjure/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/clojure-finance/edgarjure/compare/v0.5.0...v0.5.1
