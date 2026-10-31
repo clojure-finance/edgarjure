@@ -37,7 +37,7 @@ Pull a company's income statement in two lines. Screen an XBRL line item across 
 
 ```clojure
 ;; deps.edn
-{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.5.2"}}}
+{:deps {com.github.clojure-finance/edgarjure {:mvn/version "0.5.3"}}}
 ```
 
 ## Getting Started
@@ -628,7 +628,7 @@ Disk entries expire after 24 hours for JSON endpoints and the daily-changing ful
 # Start REPL (random port, written to .nrepl-port)
 clj -M:nrepl
 
-# Run offline unit tests (298 tests, 1620 assertions, no network)
+# Run offline unit tests (302 tests, 1657 assertions, no network)
 clj -M:test
 
 # Run live integration tests (36 tests, 186 assertions; manual only, requires network)

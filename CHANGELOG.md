@@ -4,6 +4,8 @@ All notable changes to edgarjure are documented here.
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-10-31
+
 ### Fixed
 - `e/tables` merged paired amount + "% of revenues" columns into one, fabricating numbers: a header range was split at the cells of the *first* data row holding two or more values under it (typically the year row), so when the real data rows held four (an amount + % pair per year), each pair was space-joined (`"$48,758 48%"`) and the joined text could even parse (`"67,681 53"` → `6768153`, indistinguishable from a real figure). Splitting is now driven by the rows with the *most* values in the range, with each boundary placed between the i-th and (i+1)-th cell of every such row (GOOGL 10-Q revenues by geography: one amount and one % column per year). Two defenses in depth: `parse-number` returns nil for two space-joined tokens (interior whitespace that is not three-digit grouping), and sub-header rows below the header row — period dates, years, `"Amount"`/`"Rate"` labels — are folded into the column names instead of leaking into the data (previously only a single sub-header row that split the header was folded). Folding also fixes mixed column types within one table: `"September 30,"`/year rows left in the data kept some year columns as strings (`"$56,567"`) while others coerced to numbers.
 
@@ -367,7 +369,8 @@ Initial release.
 - HTTP layer: SEC User-Agent identity (`e/init!`), 10 requests/second rate limiter, in-memory TTL cache, retry with exponential backoff on 429/5xx.
 - Four unused dependencies (`next.jdbc`, `honeysql`, `sqlite-jdbc`, `datajure`) moved to an optional `:future` alias.
 
-[Unreleased]: https://github.com/clojure-finance/edgarjure/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/clojure-finance/edgarjure/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/clojure-finance/edgarjure/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/clojure-finance/edgarjure/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/clojure-finance/edgarjure/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/clojure-finance/edgarjure/compare/v0.4.2...v0.5.0
