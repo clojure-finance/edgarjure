@@ -4,6 +4,10 @@ All notable changes to edgarjure are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- `e/tables` folded an all-text first data row into the column names when it sat under a colspan'd header, losing the row: the splitting row folded whenever nothing in it parsed as a number, which also matched director/signature-style grids (`Director | John | Smith` under a spanned `Name` header became columns `"Name John"`/`"Name Smith"`). A non-numeric splitting row now folds only when it is also label-less; rows with text under the first header range always stay data.
+- `e/tables` silently dropped a column when a rowspan from a discarded sparse row occupied part of the header row: grid positions not covered by any header-cell span got no logical column, so the data under them vanished (typically the label column). Uncovered positions — before, between or past the header's spans — now each become their own column.
+
 ## [0.5.4] — 2026-10-31
 
 ### Added

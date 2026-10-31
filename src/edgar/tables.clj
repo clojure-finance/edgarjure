@@ -69,8 +69,12 @@
    when every ix:nonFraction value in the cell is tagged alike (a
    \"0.03% – 5.75%\" range counts once). nil for untagged cells and mixed
    tagging. A missing scale attribute is scale 0 per the iXBRL spec; the
-   displayed number times 10^scale is the tagged value (6 = millions,
-   3 = thousands, -2 = a percentage tagged as its decimal fraction)."
+   displayed number times 10^scale is the tagged value's magnitude (6 =
+   millions, 3 = thousands, -2 = a percentage tagged as its decimal
+   fraction). The ix sign attribute is deliberately ignored: extracted
+   cells keep the displayed value, whose own sign (parentheses, minus)
+   already parses, so a sign=\"-\" fact shown without one stays positive
+   here as displayed."
   [cell]
   (let [metas (->> (tree-seq #(and (map? %) (:content %)) :content cell)
                    (filter #(and (map? %) (= :ix:nonfraction (:tag %))))
@@ -139,7 +143,7 @@
 
 (defn- layout-rows
   "Lay the tr nodes of one table out on a common grid (see layout-row).
-   Returns one {:cells :spans} map per tr, in order."
+   Returns one {:cells :spans :metas} map per tr, in order."
   [trs]
   (loop [trs trs occupied {} out []]
     (if-let [tr (first trs)]
@@ -297,15 +301,22 @@
   "Logical columns as {:range [start end) :header-range [start end)} grid
    ranges: one per header-row cell (a header cell spanning three grid
    columns owns all three, which is where Workiva puts \"$\", the number and
-   a spacer), plus one per grid position past the header's width. A header
+   a spacer), plus one per grid position no header cell covers — before,
+   between (a rowspan from a dropped sparse row can occupy part of the
+   header row, leaving a hole in its spans) or past them. A header
    cell over several sub-columns (data rows holding two or more values
    under it — one per year, or an amount + \"% of revenues\" pair per year)
    is split per split-bounds; every piece keeps the header cell as its
    :header-range and records the splitting row's index as :split-by.
    rows are padded to width."
   [header-spans data-rows width]
-  (let [hdr-end (if (seq header-spans) (second (peek header-spans)) 0)
-        ranges (into header-spans (map (fn [p] [p (inc p)])) (range hdr-end width))]
+  (let [singletons (fn [from to] (map (fn [p] [p (inc p)]) (range from to)))
+        ranges (loop [acc [] pos 0 spans (seq header-spans)]
+                 (if-let [[s e :as span] (first spans)]
+                   (recur (conj (into acc (singletons pos s)) span)
+                          (long e)
+                          (next spans))
+                   (into acc (singletons pos width))))]
     (into []
           (mapcat (fn [[s e :as r]]
                     (if-let [{:keys [bounds split-by]} (split-bounds r data-rows)]
@@ -341,9 +352,12 @@
    - a label-less row — nothing under the first header range — with no
      numeric cell and some text (\"(unaudited)\", a lone
      \"September 30, 2026\"), or
-   - the splitting row itself, when nothing in it parses as a number
-     (\"Amount\" / \"Rate\" under a year) or it too is label-less (a year
-     row that split its period header into years); folding stops there."
+   - the splitting row itself, when its non-blanks all sit inside split
+     header ranges (a year row that split its period header into years)
+     or it is label-less with nothing parsing as a number (\"Amount\" /
+     \"Rate\" under a year); folding stops there. A row with text under
+     the first header range is data, never folded — an all-text row with
+     a real label (a signature or director grid) must survive."
   [groups data-rows]
   (let [splits (filterv :split-by groups)
         srs (distinct (map :header-range splits))
@@ -359,8 +373,9 @@
         i
         (let [row (nth data-rows i)]
           (cond
-            (and b (= i b)) (if (or (not-any? parse-number row)
-                                    (sub-header-row? srs row))
+            (and b (= i b)) (if (or (sub-header-row? srs row)
+                                    (and (not-any? parse-number row)
+                                         (sub-header-row? value-ranges row)))
                               (inc i)
                               i)
             (and b (< i b) (sub-header-row? srs row)) (recur (inc i))
@@ -537,10 +552,8 @@
                                          (subvec data 0 n-sub))
             col-metas (column-ix-metas groups unit-map (subvec data n-sub)
                                        (mapv :metas (drop (+ header-idx 1 n-sub) rows)))
-            [header-row & data-rows :as grouped] (->> (subvec data n-sub)
-                                                      (map #(group-row groups :range %))
-                                                      (cons header-row))
-            keep-idx (non-blank-column-idx (vec grouped))
+            data-rows (mapv #(group-row groups :range %) (subvec data n-sub))
+            keep-idx (non-blank-column-idx (into [header-row] data-rows))
             header-row (mapv header-row keep-idx)
             data-rows (mapv (fn [row] (mapv row keep-idx)) data-rows)]
         (when-not (layout-table? data-rows)

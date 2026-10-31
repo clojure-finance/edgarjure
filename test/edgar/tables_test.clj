@@ -593,6 +593,40 @@
         (is (= 2 (ds/row-count plain)))
         (is (= ["Exhibit" "Description"] (ds/column-names plain)))))))
 
+(deftest labeled-all-text-splitting-row-stays-data-test
+  ;; An all-text first data row with a real label (a director or signature
+  ;; grid under a colspan'd header) is data, even though it is the row that
+  ;; splits the header range — it must not fold into the column names.
+  (let [f #'edgar.tables/extract-table
+        html "<table>
+          <tr><th>Category</th><th colspan=\"2\">Name</th></tr>
+          <tr><td>Director</td><td>John</td><td>Smith</td></tr>
+          <tr><td>Officer</td><td>Jane</td><td>Doe</td></tr>
+        </table>"
+        tree (hickory/as-hickory (hickory/parse html))
+        d (f (first (sel/select (sel/tag :table) tree)) 0 {})]
+    (is (= ["Category" "Name" "Name_1"] (ds/column-names d)))
+    (is (= 2 (ds/row-count d)))
+    (is (= ["Director" "Officer"] (vec (ds/column d "Category"))))))
+
+(deftest rowspan-hole-in-header-keeps-column-test
+  ;; A rowspan from a dropped sparse row (fewer than two non-blank cells)
+  ;; can occupy part of the header row; grid positions its spans leave
+  ;; uncovered must still become columns instead of silently dropping data.
+  (let [f #'edgar.tables/extract-table
+        html "<table>
+          <tr><td rowspan=\"2\">Title</td><td colspan=\"2\"></td></tr>
+          <tr><td>Revenue</td><td>Profit</td></tr>
+          <tr><td>Alpha</td><td>1</td><td>2</td></tr>
+          <tr><td>Beta</td><td>3</td><td>4</td></tr>
+        </table>"
+        tree (hickory/as-hickory (hickory/parse html))
+        d (f (first (sel/select (sel/tag :table) tree)) 0 {})]
+    (is (= ["col_0" "Revenue" "Profit"] (ds/column-names d)))
+    (is (= [["Alpha" 1 2] ["Beta" 3 4]]
+           (mapv (juxt #(get % "col_0") #(get % "Revenue") #(get % "Profit"))
+                 (ds/rows d))))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Real paired amount + "% of revenues" columns — trimmed from Alphabet's
 ;;; Q3 2026 10-Q. Each period header spans two years; two sub-header rows

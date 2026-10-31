@@ -628,7 +628,7 @@ Disk entries expire after 24 hours for JSON endpoints and the daily-changing ful
 # Start REPL (random port, written to .nrepl-port)
 clj -M:nrepl
 
-# Run offline unit tests (303 tests, 1666 assertions, no network)
+# Run offline unit tests (305 tests, 1671 assertions, no network)
 clj -M:test
 
 # Run live integration tests (36 tests, 186 assertions; manual only, requires network)
